@@ -187,6 +187,77 @@ impl ShellSession {
         }
     }
 
+    /// Scan the visible screen for Claude Code's status-line pattern
+    /// (`✽ Wandering…`, `✶ Pondering…`, etc.) and return it if found.
+    /// Lets tmnl mirror Claude's live spinner — the glyph cycles and
+    /// the verb changes, so the tab label updates each tick. Returns
+    /// `None` if no spinner-like line is visible (caller falls back
+    /// to the OSC title).
+    ///
+    /// Pattern: any visible row that (a) contains one of the spinner
+    /// glyphs Claude uses and (b) contains a Unicode ellipsis `…` or
+    /// `...` (the trailing dots on "Wandering…" / "Pondering..." —
+    /// pretty unique to spinner UIs). The match starts at the spinner
+    /// glyph and extends to the end of the visible word + ellipsis,
+    /// trimming Claude's trailing "(esc to interrupt)" / duration.
+    /// Scans bottom-up since the spinner lives near the input box.
+    pub fn detect_status_line(&self) -> Option<String> {
+        const SPINNER_CHARS: &[char] = &[
+            '✱', '✶', '✦', '✧', '⋆', '✽', '✻', '❋', '✿', '✺', '✷', '✸', '✹', '❉', '❅', '◐',
+            '◓', '◑', '◒',
+        ];
+        const MAX_LABEL_CHARS: usize = 30;
+        let p = self.parser.lock().ok()?;
+        let screen = p.screen();
+        let (rows, cols) = screen.size();
+        // Scan the whole visible region from the bottom up. Claude
+        // typically renders its spinner near the input prompt at the
+        // bottom; vim, htop etc. that might also match a spinner-like
+        // pattern usually do so on a status row also at the bottom.
+        for row in (0..rows).rev() {
+            // Build the row's text content into one string.
+            let mut line = String::new();
+            for col in 0..cols {
+                if let Some(c) = screen.cell(row, col) {
+                    line.push_str(&c.contents());
+                }
+            }
+            let line_trimmed = line.trim_end();
+            // Must contain BOTH a spinner glyph AND an ellipsis
+            // (`…` U+2026 or `...` three dots) — the two-signal
+            // combo rejects unrelated lines that happen to start
+            // with `*` etc.
+            let glyph_pos = line_trimmed.chars().position(|c| SPINNER_CHARS.contains(&c));
+            let Some(glyph_pos) = glyph_pos else { continue };
+            let has_ellipsis = line_trimmed.contains('…') || line_trimmed.contains("...");
+            if !has_ellipsis {
+                continue;
+            }
+            // Take from the glyph onward, capped at MAX_LABEL_CHARS.
+            let from_glyph: String = line_trimmed
+                .chars()
+                .skip(glyph_pos)
+                .take(MAX_LABEL_CHARS)
+                .collect();
+            // Trim Claude's trailing UI metadata. Common shapes:
+            //   "✽ Wandering… (running stop hook · 2s · esc to interrupt)"
+            //   "✻ Crunched for 2s · 1.2k tokens"
+            //   "✶ Pondering… (3s · esc to interrupt)"
+            // Stop at the first `(` (parenthetical context) or `·`
+            // (Claude's bullet separator) — whichever comes first.
+            let cut_at = from_glyph
+                .char_indices()
+                .find(|(_, c)| *c == '(' || *c == '·')
+                .map(|(i, _)| i)
+                .unwrap_or(from_glyph.len());
+            let label = from_glyph[..cut_at].trim_end().to_string();
+            if !label.is_empty() {
+                return Some(label);
+            }
+        }
+        None
+    }
+
     /// Did new output arrive since the last `apply_to_grid`? Used to skip
     /// rebuilding instances when the shell's been idle.
     pub fn dirty(&self) -> bool {
