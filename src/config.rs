@@ -59,8 +59,7 @@ impl Config {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let text =
-            toml::to_string_pretty(self).map_err(std::io::Error::other)?;
+        let text = toml::to_string_pretty(self).map_err(std::io::Error::other)?;
         std::fs::write(&path, text)?;
         log::info!("config: saved → {}", path.display());
         Ok(())

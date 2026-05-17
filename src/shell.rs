@@ -3,8 +3,8 @@
 //! renderer downstream, totally different source of cells.
 
 use std::io::{Read, Write};
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
@@ -221,8 +221,8 @@ impl ShellSession {
     /// Scans bottom-up since the spinner lives near the input box.
     pub fn detect_status_line(&self) -> Option<String> {
         const SPINNER_CHARS: &[char] = &[
-            '✱', '✶', '✦', '✧', '⋆', '✽', '✻', '❋', '✿', '✺', '✷', '✸', '✹', '❉', '❅', '◐',
-            '◓', '◑', '◒',
+            '✱', '✶', '✦', '✧', '⋆', '✽', '✻', '❋', '✿', '✺', '✷', '✸', '✹', '❉', '❅', '◐', '◓',
+            '◑', '◒',
         ];
         const MAX_LABEL_CHARS: usize = 30;
         let p = self.parser.lock().ok()?;
@@ -245,7 +245,9 @@ impl ShellSession {
             // (`…` U+2026 or `...` three dots) — the two-signal
             // combo rejects unrelated lines that happen to start
             // with `*` etc.
-            let glyph_pos = line_trimmed.chars().position(|c| SPINNER_CHARS.contains(&c));
+            let glyph_pos = line_trimmed
+                .chars()
+                .position(|c| SPINNER_CHARS.contains(&c));
             let Some(glyph_pos) = glyph_pos else { continue };
             let has_ellipsis = line_trimmed.contains('…') || line_trimmed.contains("...");
             if !has_ellipsis {
@@ -342,12 +344,7 @@ impl Drop for ShellSession {
 fn vt_color_to_rgba(c: vt100::Color, default: [f32; 4]) -> [f32; 4] {
     match c {
         vt100::Color::Default => default,
-        vt100::Color::Rgb(r, g, b) => [
-            r as f32 / 255.0,
-            g as f32 / 255.0,
-            b as f32 / 255.0,
-            1.0,
-        ],
+        vt100::Color::Rgb(r, g, b) => [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0],
         vt100::Color::Idx(i) => ansi_color(i),
     }
 }
@@ -466,7 +463,6 @@ fn encode_named(n: NamedKey, _mods: ModifiersState) -> Option<Vec<u8>> {
     })
 }
 
-
 /// Scan a chunk of pty bytes for OSC 1337 sequences and flip
 /// `attention` when one is seen. Doesn't consume the bytes — they
 /// continue downstream to vt100 (which silently drops the unhandled
@@ -481,11 +477,7 @@ fn encode_named(n: NamedKey, _mods: ModifiersState) -> Option<Vec<u8>> {
 /// + tmux occasionally emit other 1337 sequences (cursor color,
 /// etc.) and harmlessly trigger an attention blip — acceptable
 /// false-positive cost.
-fn scan_osc_1337(
-    chunk: &[u8],
-    carry: &mut Vec<u8>,
-    attention: &std::sync::atomic::AtomicBool,
-) {
+fn scan_osc_1337(chunk: &[u8], carry: &mut Vec<u8>, attention: &std::sync::atomic::AtomicBool) {
     use std::sync::atomic::Ordering;
     const OSC_START: &[u8] = b"\x1b]1337;";
     const MAX_PAYLOAD: usize = 256; // longest plausible OSC 1337 args
@@ -597,8 +589,6 @@ mod scan_tests {
 
     #[test]
     fn surrounded_by_normal_text() {
-        assert!(flag_after(&[
-            b"hello \x1b]1337;Notify=ok\x07 world",
-        ]));
+        assert!(flag_after(&[b"hello \x1b]1337;Notify=ok\x07 world",]));
     }
 }

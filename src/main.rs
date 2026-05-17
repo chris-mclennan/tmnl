@@ -23,12 +23,12 @@ use grid::Grid;
 use launcher::{Launcher, LauncherConfig, LauncherPoll};
 use menu::AppMenu;
 use pipeline::CellPipeline;
-use settings_ui::SettingsState;
 use protocol::{
     BUTTON_LEFT, BUTTON_MIDDLE, BUTTON_NONE, BUTTON_RIGHT, Frame, InputEvent, KeyCode, KeyInput,
     MOD_ALT, MOD_CTRL, MOD_SHIFT, MOD_SUPER, MouseInput, MouseKind, unpack_rgba,
 };
 use server::{Server, ServerEvent, default_socket_path};
+use settings_ui::SettingsState;
 use shell::{ShellSession, winit_key_to_bytes};
 
 const FONT_PX: f32 = 14.0;
@@ -125,6 +125,10 @@ struct App {
     gpu: Option<Gpu>,
     mods: ModifiersState,
     cursor_cell: (u16, u16),
+    /// Raw cursor pixel position from the most recent `CursorMoved`.
+    /// Cached so `MouseInput` can hit-test the strip region (where pixel
+    /// resolution matters — chip rects sit between cell boundaries).
+    cursor_px: (f64, f64),
     buttons_down: u8,
     /// Open tabs. Always non-empty (closing the last tab exits the
     /// process). Single-tab today; multi-tab pieces (keybinds, chip
@@ -171,6 +175,11 @@ struct Gpu {
     inset_px: f32,
     /// Strip pipeline — paints the tab-strip background rect.
     strip_pipeline: pipeline::StripPipeline,
+    /// Pixel-x extents `(x0, x1, tab_idx)` of every rendered chip,
+    /// captured by `strip_chip_instances`. Used by the main event loop
+    /// to route strip-region mouse clicks (left → switch_to_tab,
+    /// middle → close_tab_at).
+    strip_chip_rects: Vec<(f32, f32, usize)>,
     /// Tab chips painted in the strip. `(label, is_active)` per tab,
     /// in display order. App rewrites this each tick. Empty Vec ⇒
     /// strip is bg only. Length 1 ⇒ single label, centered (Safari-
@@ -253,6 +262,7 @@ impl Gpu {
             inset_px,
             strip_pipeline,
             strip_chips: Vec::new(),
+            strip_chip_rects: Vec::new(),
         }
     }
 
@@ -290,6 +300,7 @@ impl Gpu {
     /// Inactive chip: bg = STRIP_BG, fg = DIM_FG.
     fn strip_chip_instances(&mut self) -> Vec<pipeline::Instance> {
         use crate::atlas::style_from_attrs;
+        self.strip_chip_rects.clear();
         if self.strip_chips.is_empty() || MACOS_TAB_STRIP_PX <= 0.0 {
             return Vec::new();
         }
@@ -315,6 +326,11 @@ impl Gpu {
                 Self::CHIP_START_X_PX
             };
             let base_x = (label_x_px - self.inset_px) / cell_w;
+            // Single chip — click anywhere on it is still a no-op (only
+            // one tab), but record the rect so middle-click → close still
+            // works (`close_tab_at` exits when there's just one tab).
+            self.strip_chip_rects
+                .push((label_x_px, label_x_px + label_w_px, 0));
             let mut out = Vec::with_capacity(label.chars().count());
             for (i, ch) in label.chars().enumerate() {
                 let g = self.atlas.glyph(ch, style_from_attrs(0), &self.queue);
@@ -347,7 +363,8 @@ impl Gpu {
         let chips: Vec<(String, bool)> = self.strip_chips.clone();
         let space_g = self.atlas.glyph(' ', style_from_attrs(0), &self.queue);
         let mut out: Vec<pipeline::Instance> = Vec::new();
-        for (label, active) in chips.iter() {
+        for (i, (label, active)) in chips.iter().enumerate() {
+            let chip_x0_px = start_x_px + col_offset * cell_w;
             let (fg, bg) = if *active {
                 (TEXT_FG, ACTIVE_CHIP_BG)
             } else {
@@ -399,6 +416,10 @@ impl Gpu {
                 });
                 col_offset += 1.0;
             }
+            // Record the chip's pixel-x extent BEFORE moving past the
+            // gap so the click region matches the painted chip exactly.
+            let chip_x1_px = start_x_px + col_offset * cell_w;
+            self.strip_chip_rects.push((chip_x0_px, chip_x1_px, i));
             // Inter-chip gap.
             col_offset += Self::CHIP_GAP_CELLS;
         }
@@ -531,8 +552,7 @@ impl Gpu {
             MACOS_TAB_STRIP_PX,
             STRIP_BG,
         );
-        let mut instances =
-            CellPipeline::build_instances(&self.grid, &mut self.atlas, &self.queue);
+        let mut instances = CellPipeline::build_instances(&self.grid, &mut self.atlas, &self.queue);
         // Append tab-strip label glyphs (rendered through the same cell
         // pipeline via fractional `cell_pos` values — they land in the
         // strip area above the grid).
@@ -819,6 +839,14 @@ impl ApplicationHandler for App {
                     let (col, row) = gpu.pixel_to_cell(position.x, position.y);
                     let prev = self.cursor_cell;
                     self.cursor_cell = (col, row);
+                    self.cursor_px = (position.x, position.y);
+                    // Drags that originated in the strip stay in chrome —
+                    // don't forward them as terminal drag events. (Hit-test
+                    // by Y: anything above the grid is chrome.)
+                    let in_chrome = position.y < (gpu.inset_px + MACOS_TAB_STRIP_PX) as f64;
+                    if in_chrome {
+                        return;
+                    }
                     if let Mode::Native { server, .. } = &self.tabs[self.active].mode
                         && self.buttons_down != 0
                         && prev != self.cursor_cell
@@ -847,6 +875,33 @@ impl ApplicationHandler for App {
                 } else {
                     self.buttons_down &= !(1u8 << b);
                 }
+                // Strip-region intercept — clicks on tab chips switch
+                // (left) / close (middle). Tested against the cached
+                // pixel cursor against the rects produced by the last
+                // `strip_chip_instances` pass. Runs only on press so
+                // releases don't fire a second time; never forwards
+                // strip clicks to the terminal (return early).
+                if let Some(gpu) = &self.gpu {
+                    let (px, py) = self.cursor_px;
+                    let in_chrome = py < (gpu.inset_px + MACOS_TAB_STRIP_PX) as f64;
+                    if in_chrome {
+                        if pressed {
+                            let hit = gpu
+                                .strip_chip_rects
+                                .iter()
+                                .find(|(x0, x1, _)| px >= *x0 as f64 && px < *x1 as f64)
+                                .map(|(_, _, idx)| *idx);
+                            if let Some(idx) = hit {
+                                match button {
+                                    MouseButton::Left => self.switch_to_tab(idx),
+                                    MouseButton::Middle => self.close_tab_at(idx, event_loop),
+                                    _ => {}
+                                }
+                            }
+                        }
+                        return;
+                    }
+                }
                 if let Mode::Native { server, .. } = &self.tabs[self.active].mode {
                     let (col, row) = self.cursor_cell;
                     server.send_input(&InputEvent::Mouse(MouseInput {
@@ -863,6 +918,16 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
+                // Don't scroll the terminal when the wheel event lands in
+                // the chrome strip — chip-scrolling can come later but
+                // forwarding now would scroll the underlying terminal,
+                // which is surprising when the cursor is on a chip.
+                if let Some(gpu) = &self.gpu {
+                    let (_, py) = self.cursor_px;
+                    if py < (gpu.inset_px + MACOS_TAB_STRIP_PX) as f64 {
+                        return;
+                    }
+                }
                 let Mode::Native { server, .. } = &self.tabs[self.active].mode else {
                     return;
                 };
@@ -1045,22 +1110,36 @@ impl App {
     /// when their Tab is removed (Launcher::Drop kills the spawned
     /// client; ShellSession's reader thread joins via its own Drop).
     fn close_active_tab(&mut self, event_loop: &ActiveEventLoop) {
+        self.close_tab_at(self.active, event_loop);
+    }
+
+    /// Close a specific tab by index. Used by middle-click on a chip;
+    /// when `idx` is the active tab, behaves identically to
+    /// `close_active_tab`. Closing the last tab exits the process.
+    fn close_tab_at(&mut self, idx: usize, event_loop: &ActiveEventLoop) {
+        if idx >= self.tabs.len() {
+            return;
+        }
         if self.tabs.len() <= 1 {
             event_loop.exit();
             return;
         }
-        let idx = self.active;
+        let was_active = idx == self.active;
         self.tabs.remove(idx);
-        // After removal, `self.active` (was `idx`) now points to the
-        // next tab (or past-end). Clamp to the last valid index.
-        if self.active >= self.tabs.len() {
-            self.active = self.tabs.len() - 1;
+        if was_active {
+            // Active tab closed — clamp + swap from prev_active=self.active
+            // (the now-stale slot, which `swap_active_tab` treats as a
+            // no-op for the outgoing save).
+            if self.active >= self.tabs.len() {
+                self.active = self.tabs.len() - 1;
+            }
+            self.swap_active_tab(self.active);
+        } else if idx < self.active {
+            // Closed a non-active tab to the left — shift active index
+            // down so it still points at the same tab.
+            self.active -= 1;
         }
-        // The removed tab's resources have been dropped; the new
-        // active tab's grid snapshot needs to come onto the GPU.
-        // Pass `self.active` itself as `prev_active` so the swap
-        // skips the "save outgoing" step (the outgoing tab is gone).
-        self.swap_active_tab(self.active);
+        // If `idx > self.active`, the active index is unaffected.
     }
 
     /// Switch to tab `idx` (0-based). No-op if out of range. Restores
@@ -1122,10 +1201,7 @@ impl App {
             match &mut self.tabs[self.active].mode {
                 Mode::Shell { session: Some(s) } => {
                     let (cc, cr, vis) = s.apply_to_grid(&mut gpu.grid);
-                    if vis
-                        && (cc as u32) < gpu.grid.cols
-                        && (cr as u32) < gpu.grid.rows
-                    {
+                    if vis && (cc as u32) < gpu.grid.cols && (cr as u32) < gpu.grid.rows {
                         let i = (cr as u32 * gpu.grid.cols + cc as u32) as usize;
                         gpu.grid.cells[i].attrs |= ATTR_CURSOR_BLOCK;
                         gpu.last_cursor = Some(i);
@@ -1168,20 +1244,24 @@ impl App {
                     // done) — handled below.
                     const STATUS_STICKY_MS: u128 = 2000;
                     let now = std::time::Instant::now();
-                    let live = session
-                        .as_ref()
-                        .and_then(|s| s.detect_status_line());
+                    let live = session.as_ref().and_then(|s| s.detect_status_line());
                     if let Some(s) = live.clone() {
                         tab.last_status = Some((s, now));
                     }
                     let sticky = tab
                         .last_status
                         .as_ref()
-                        .filter(|(_, when)| now.duration_since(*when).as_millis() < STATUS_STICKY_MS)
+                        .filter(|(_, when)| {
+                            now.duration_since(*when).as_millis() < STATUS_STICKY_MS
+                        })
                         .map(|(t, _)| t.clone());
                     let osc = session.as_ref().and_then(|s| {
                         let t = s.osc_title();
-                        if t.is_empty() { None } else { Some(t.to_string()) }
+                        if t.is_empty() {
+                            None
+                        } else {
+                            Some(t.to_string())
+                        }
                     });
                     sticky.or(osc).unwrap_or_else(|| {
                         session
@@ -1224,13 +1304,11 @@ impl App {
         // same exact string appears more than once. Chrome / VS Code
         // pattern: don't number eagerly, but number every occurrence
         // (including the first) once there's a collision.
-        let mut counts: std::collections::HashMap<&str, usize> =
-            std::collections::HashMap::new();
+        let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
         for t in &self.tabs {
             *counts.entry(t.label.as_str()).or_insert(0) += 1;
         }
-        let mut seen: std::collections::HashMap<&str, usize> =
-            std::collections::HashMap::new();
+        let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
         let chips: Vec<(String, bool)> = self
             .tabs
             .iter()
@@ -1275,10 +1353,7 @@ impl App {
                 if s.dirty() {
                     let (cc, cr, vis) = s.apply_to_grid(&mut gpu.grid);
                     gpu.last_cursor = None; // Shell mode tracks cursor via apply_to_grid
-                    if vis
-                        && (cc as u32) < gpu.grid.cols
-                        && (cr as u32) < gpu.grid.rows
-                    {
+                    if vis && (cc as u32) < gpu.grid.cols && (cr as u32) < gpu.grid.rows {
                         let i = (cr as u32 * gpu.grid.cols + cc as u32) as usize;
                         gpu.grid.cells[i].attrs |= ATTR_CURSOR_BLOCK;
                         gpu.last_cursor = Some(i);
@@ -1621,6 +1696,7 @@ fn main() {
         gpu: None,
         mods: ModifiersState::empty(),
         cursor_cell: (0, 0),
+        cursor_px: (0.0, 0.0),
         buttons_down: 0,
         tabs: vec![initial_tab],
         active: 0,

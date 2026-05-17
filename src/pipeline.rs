@@ -225,11 +225,7 @@ impl CellPipeline {
         queue.write_buffer(&self.globals_buf, 0, bytemuck::bytes_of(&g));
     }
 
-    pub fn build_instances(
-        grid: &Grid,
-        atlas: &mut Atlas,
-        queue: &wgpu::Queue,
-    ) -> Vec<Instance> {
+    pub fn build_instances(grid: &Grid, atlas: &mut Atlas, queue: &wgpu::Queue) -> Vec<Instance> {
         let mut out = Vec::with_capacity(grid.cells.len());
         for row in 0..grid.rows {
             for col in 0..grid.cols {
