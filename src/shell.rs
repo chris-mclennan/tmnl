@@ -36,6 +36,11 @@ pub struct ShellSession {
     /// Claude Code emits this when a turn finishes and it's waiting on
     /// the user. `take_attention()` reads + clears.
     attention_requested: Arc<AtomicBool>,
+    /// Basename of the shell we launched (`zsh` / `bash` / `fish` / …)
+    /// — used as the tab label fallback when no OSC title has been set
+    /// by anything running in the shell. Matches Terminal.app / iTerm2
+    /// / Kitty convention.
+    shell_name: String,
 }
 
 impl ShellSession {
@@ -56,6 +61,11 @@ impl ShellSession {
             .map_err(|e| format!("openpty: {e}"))?;
 
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+        let shell_name = std::path::Path::new(&shell)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("shell")
+            .to_string();
         let mut cmd = CommandBuilder::new(&shell);
         cmd.env("TERM", "xterm-256color");
         // Login shell so users' rc files load and the prompt is set up.
@@ -127,7 +137,15 @@ impl ShellSession {
             default_bg,
             default_fg,
             attention_requested,
+            shell_name,
         })
+    }
+
+    /// Basename of `$SHELL` (e.g. `zsh`, `bash`, `fish`). Used as a
+    /// last-resort tab label when nothing else (OSC title, spinner)
+    /// supplies one.
+    pub fn shell_name(&self) -> &str {
+        &self.shell_name
     }
 
     /// Read + clear the OSC 1337 attention flag. Returns `true` if
