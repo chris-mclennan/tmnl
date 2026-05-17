@@ -1023,9 +1023,10 @@ impl App {
                 self.tabs[self.active].last_cursor_snapshot = gpu.last_cursor;
                 gpu.grid = grid::Grid::new(gpu.grid.cols, gpu.grid.rows, CLEAR_BG);
                 gpu.last_cursor = None;
+                let initial_label = s.shell_name().to_string();
                 let tab = Tab {
                     mode: Mode::Shell { session: Some(s) },
-                    label: "shell".to_string(),
+                    label: initial_label,
                     attention: false,
                     last_status: None,
                     grid_snapshot: None,
@@ -1182,9 +1183,12 @@ impl App {
                         let t = s.osc_title();
                         if t.is_empty() { None } else { Some(t.to_string()) }
                     });
-                    sticky
-                        .or(osc)
-                        .unwrap_or_else(|| "shell".to_string())
+                    sticky.or(osc).unwrap_or_else(|| {
+                        session
+                            .as_ref()
+                            .map(|s| s.shell_name().to_string())
+                            .unwrap_or_else(|| "shell".to_string())
+                    })
                 }
                 Mode::Native { conn, .. } => match conn {
                     ConnState::Waiting => "(no client)".to_string(),
