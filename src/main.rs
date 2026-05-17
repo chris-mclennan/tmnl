@@ -10,6 +10,7 @@ mod shell;
 
 use tmnl_protocol as protocol;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -27,7 +28,7 @@ use protocol::{
     BUTTON_LEFT, BUTTON_MIDDLE, BUTTON_NONE, BUTTON_RIGHT, Frame, InputEvent, KeyCode, KeyInput,
     MOD_ALT, MOD_CTRL, MOD_SHIFT, MOD_SUPER, MouseInput, MouseKind, unpack_rgba,
 };
-use server::{Server, ServerEvent, default_socket_path};
+use server::{Server, ServerEvent, default_socket_path, native_tab_socket_path};
 use settings_ui::SettingsState;
 use shell::{ShellSession, winit_key_to_bytes};
 
@@ -160,6 +161,22 @@ struct App {
     app_menu: Option<AppMenu>,
     /// Settings modal — `Some` while the user has the panel open.
     settings: Option<SettingsState>,
+    /// Template for spawning a new Native (editor) tab. Captured at
+    /// startup when `--editor` is set; used by ⌘T to spin up another
+    /// mnml instance on a fresh socket. `None` ⇒ shell mode (⌘T opens
+    /// a shell instead).
+    editor_template: Option<EditorTabTemplate>,
+    /// Monotonic counter for unique per-tab Native socket paths.
+    /// Combined with the process PID to keep tab sockets disjoint
+    /// (`tmnl-<pid>-<nonce>.sock`).
+    native_tab_nonce: u32,
+}
+
+#[derive(Clone)]
+struct EditorTabTemplate {
+    command: PathBuf,
+    workspace: PathBuf,
+    extra_args: Vec<String>,
 }
 
 struct Gpu {
@@ -859,7 +876,14 @@ impl ApplicationHandler for App {
                     let shift = self.mods.shift_key();
                     match (c, shift) {
                         (Some('t'), false) => {
-                            self.new_shell_tab();
+                            // ⌘T spawns the same kind of tab the window
+                            // launched with — Native when --editor was
+                            // set, shell otherwise.
+                            if self.editor_template.is_some() {
+                                self.new_native_tab();
+                            } else {
+                                self.new_shell_tab();
+                            }
                             if let Some(w) = &self.window {
                                 w.request_redraw();
                             }
@@ -976,7 +1000,11 @@ impl ApplicationHandler for App {
                                 .map(|(x0, x1)| px >= x0 as f64 && px < x1 as f64)
                                 .unwrap_or(false);
                             if on_plus && button == MouseButton::Left {
-                                self.new_shell_tab();
+                                if self.editor_template.is_some() {
+                                    self.new_native_tab();
+                                } else {
+                                    self.new_shell_tab();
+                                }
                                 return;
                             }
                             let hit = gpu
@@ -1168,6 +1196,70 @@ impl App {
     /// Append a fresh shell tab and switch to it. Sized from the
     /// current GPU grid; spawn failures leave the existing active
     /// tab in place and toast the error to stderr.
+    /// Spawn a new Native (editor) tab — fresh socket, fresh Server,
+    /// fresh Launcher pointing at the same `editor_template.command`
+    /// the original tab used. No-op when shell mode is active
+    /// (`editor_template == None`).
+    fn new_native_tab(&mut self) {
+        let Some(tmpl) = self.editor_template.clone() else {
+            // Fall back to a shell tab — gives ⌘T a sensible behavior
+            // in shell-mode windows.
+            self.new_shell_tab();
+            return;
+        };
+        let Some(gpu) = self.gpu.as_mut() else {
+            return;
+        };
+        // Allocate a unique socket path for this tab.
+        let socket_path = native_tab_socket_path(self.native_tab_nonce);
+        self.native_tab_nonce = self.native_tab_nonce.saturating_add(1);
+        let server = match Server::start(socket_path.clone()) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("tmnl: new native tab failed (server start): {e}");
+                return;
+            }
+        };
+        let cfg = LauncherConfig {
+            command: tmpl.command.clone(),
+            workspace: tmpl.workspace.clone(),
+            socket: socket_path.clone(),
+            extra_args: tmpl.extra_args.clone(),
+        };
+        let mut l = Launcher::new(cfg);
+        let launcher = match l.spawn() {
+            Ok(()) => Some(l),
+            Err(e) => {
+                eprintln!(
+                    "tmnl: new native tab launch failed ({e}); start mnml manually with --blit {}",
+                    socket_path.display()
+                );
+                None
+            }
+        };
+        // Save outgoing tab's grid + create a fresh blank for the new
+        // Native tab (mirrors new_shell_tab).
+        self.tabs[self.active].grid_snapshot = Some(gpu.grid.clone());
+        self.tabs[self.active].last_cursor_snapshot = gpu.last_cursor;
+        gpu.grid = grid::Grid::new(gpu.grid.cols, gpu.grid.rows, CLEAR_BG);
+        gpu.last_cursor = None;
+        let tab = Tab {
+            mode: Mode::Native {
+                server,
+                conn: ConnState::Waiting,
+                launcher,
+                client_title: None,
+            },
+            label: "mnml".to_string(),
+            attention: false,
+            last_status: None,
+            grid_snapshot: None,
+            last_cursor_snapshot: None,
+        };
+        self.tabs.push(tab);
+        self.active = self.tabs.len() - 1;
+    }
+
     fn new_shell_tab(&mut self) {
         let Some(gpu) = self.gpu.as_mut() else {
             return;
@@ -1739,6 +1831,20 @@ fn main() {
     }
     let (workspace_arg, _) = launcher::parse_argv(&filtered);
 
+    // Capture launch-time defaults for spawning additional Native tabs
+    // via ⌘T later. `None` ⇒ shell mode (⌘T opens a shell instead).
+    let editor_template: Option<EditorTabTemplate> = if editor_mode {
+        let workspace = launcher::resolve_workspace(workspace_arg.as_deref());
+        let command = launcher::resolve_launch_command();
+        let extra_args = launcher::default_extra_args();
+        Some(EditorTabTemplate {
+            command,
+            workspace,
+            extra_args,
+        })
+    } else {
+        None
+    };
     let mode = if editor_mode {
         let socket_path = default_socket_path();
         eprintln!("tmnl: editor mode — listening on {}", socket_path.display());
@@ -1749,35 +1855,34 @@ fn main() {
                 socket_path.display()
             );
             None
-        } else {
-            let workspace = launcher::resolve_workspace(workspace_arg.as_deref());
-            let command = launcher::resolve_launch_command();
-            let extra_args = launcher::default_extra_args();
+        } else if let Some(tmpl) = editor_template.as_ref() {
             let cfg = LauncherConfig {
-                command: command.clone(),
-                workspace: workspace.clone(),
+                command: tmpl.command.clone(),
+                workspace: tmpl.workspace.clone(),
                 socket: socket_path.clone(),
-                extra_args,
+                extra_args: tmpl.extra_args.clone(),
             };
             let mut l = Launcher::new(cfg);
             match l.spawn() {
                 Ok(()) => {
                     eprintln!(
                         "tmnl: spawned {} for workspace {}",
-                        command.display(),
-                        workspace.display()
+                        tmpl.command.display(),
+                        tmpl.workspace.display()
                     );
                     Some(l)
                 }
                 Err(e) => {
                     eprintln!(
                         "tmnl: failed to launch {} ({e}); start mnml manually with --blit {}",
-                        command.display(),
+                        tmpl.command.display(),
                         socket_path.display()
                     );
                     None
                 }
             }
+        } else {
+            None
         };
         Mode::Native {
             server,
@@ -1816,6 +1921,8 @@ fn main() {
         altscreen_active: false,
         app_menu: None,
         settings: None,
+        editor_template,
+        native_tab_nonce: 1,
     };
     event_loop.run_app(&mut app).unwrap();
     drop(app);

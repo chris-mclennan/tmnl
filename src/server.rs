@@ -177,6 +177,19 @@ pub fn default_socket_path() -> PathBuf {
     PathBuf::from(format!("{}tmnl-{}.sock", strip_trailing_slash(&tmp), pid))
 }
 
+/// Unique socket path for a non-initial Native tab in the same tmnl
+/// process. `nonce` is a per-tab counter (`App.native_tab_nonce`).
+pub fn native_tab_socket_path(nonce: u32) -> PathBuf {
+    let tmp = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+    let pid = std::process::id();
+    PathBuf::from(format!(
+        "{}tmnl-{}-{}.sock",
+        strip_trailing_slash(&tmp),
+        pid,
+        nonce
+    ))
+}
+
 fn strip_trailing_slash(s: &str) -> String {
     let mut out = s.to_string();
     if !out.ends_with('/') {
