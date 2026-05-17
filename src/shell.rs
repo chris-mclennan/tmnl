@@ -4,7 +4,7 @@
 
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
 
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
@@ -31,6 +31,11 @@ pub struct ShellSession {
     last_applied_bytes: u64,
     default_bg: [f32; 4],
     default_fg: [f32; 4],
+    /// Set by the reader thread when an OSC 1337 sequence is seen in
+    /// the pty stream (iTerm2 convention for "process needs attention").
+    /// Claude Code emits this when a turn finishes and it's waiting on
+    /// the user. `take_attention()` reads + clears.
+    attention_requested: Arc<AtomicBool>,
 }
 
 impl ShellSession {
@@ -75,10 +80,15 @@ impl ShellSession {
         let r_parser = Arc::clone(&parser);
         let r_exited = Arc::clone(&exited);
         let r_bytes = Arc::clone(&bytes_seen);
+        let attention_requested = Arc::new(AtomicBool::new(false));
+        let r_attention = Arc::clone(&attention_requested);
         let reader = thread::Builder::new()
             .name("tmnl-shell-reader".into())
             .spawn(move || {
                 let mut buf = [0u8; 8192];
+                // Spans an OSC parse across read boundaries — if a chunk
+                // ends mid-sequence, carry the prefix forward.
+                let mut osc_carry: Vec<u8> = Vec::new();
                 loop {
                     match reader_handle.read(&mut buf) {
                         Ok(0) | Err(_) => {
@@ -88,6 +98,7 @@ impl ShellSession {
                             return;
                         }
                         Ok(n) => {
+                            scan_osc_1337(&buf[..n], &mut osc_carry, &r_attention);
                             if let Ok(mut p) = r_parser.lock() {
                                 p.process(&buf[..n]);
                             }
@@ -115,7 +126,16 @@ impl ShellSession {
             last_applied_bytes: 0,
             default_bg,
             default_fg,
+            attention_requested,
         })
+    }
+
+    /// Read + clear the OSC 1337 attention flag. Returns `true` if
+    /// the shell emitted an attention-request since the last call —
+    /// app uses this to badge background tabs with a notification
+    /// indicator. Claude Code triggers this when waiting on input.
+    pub fn take_attention(&self) -> bool {
+        self.attention_requested.swap(false, Ordering::Relaxed)
     }
 
     pub fn resize(&mut self, rows: u16, cols: u16) {
@@ -355,4 +375,141 @@ fn encode_named(n: NamedKey, _mods: ModifiersState) -> Option<Vec<u8>> {
         NamedKey::F12 => b"\x1b[24~".to_vec(),
         _ => return None,
     })
+}
+
+
+/// Scan a chunk of pty bytes for OSC 1337 sequences and flip
+/// `attention` when one is seen. Doesn't consume the bytes — they
+/// continue downstream to vt100 (which silently drops the unhandled
+/// OSC). `carry` buffers partial sequences across read-boundary
+/// splits so a `\x1b]1337` that lands at the end of one chunk and
+/// `;Notify=...\x07` at the start of the next still resolves.
+///
+/// OSC format we recognize: `ESC ] 1337 ; <payload> (BEL | ESC \)`.
+/// Any payload triggers attention — we don't parse the iTerm2
+/// sub-grammar (`Notify=…`, `RequestAttention=…`, `StealFocus`).
+/// Claude Code uses `RequestAttention=…` when a turn finishes; vim
+/// + tmux occasionally emit other 1337 sequences (cursor color,
+/// etc.) and harmlessly trigger an attention blip — acceptable
+/// false-positive cost.
+fn scan_osc_1337(
+    chunk: &[u8],
+    carry: &mut Vec<u8>,
+    attention: &std::sync::atomic::AtomicBool,
+) {
+    use std::sync::atomic::Ordering;
+    const OSC_START: &[u8] = b"\x1b]1337;";
+    const MAX_PAYLOAD: usize = 256; // longest plausible OSC 1337 args
+
+    // Combine carried prefix + new chunk into one owned view, then
+    // scan it. Avoids aliasing `carry` vs the borrow we'd need to
+    // mutate `carry` mid-loop. Cost: one Vec copy per chunk when
+    // there's nothing carried (the common path); cheaper than the
+    // alternative of threading an offset through every branch.
+    let view: Vec<u8> = if carry.is_empty() {
+        chunk.to_vec()
+    } else {
+        let mut v = std::mem::take(carry);
+        v.extend_from_slice(chunk);
+        v
+    };
+
+    let mut i = 0;
+    while i < view.len() {
+        // Find next OSC_START (possibly partial at tail).
+        if view[i] != 0x1b {
+            i += 1;
+            continue;
+        }
+        // Full OSC_START match?
+        if i + OSC_START.len() <= view.len() && &view[i..i + OSC_START.len()] == OSC_START {
+            // Look for terminator (BEL or ST = ESC \) up to MAX_PAYLOAD bytes.
+            let scan_end = (i + OSC_START.len() + MAX_PAYLOAD).min(view.len());
+            let mut term_at: Option<usize> = None;
+            let mut j = i + OSC_START.len();
+            while j < scan_end {
+                if view[j] == 0x07 {
+                    term_at = Some(j + 1);
+                    break;
+                }
+                if view[j] == 0x1b && j + 1 < scan_end && view[j + 1] == b'\\' {
+                    term_at = Some(j + 2);
+                    break;
+                }
+                j += 1;
+            }
+            match term_at {
+                Some(end) => {
+                    attention.store(true, Ordering::Relaxed);
+                    i = end;
+                    continue;
+                }
+                None => {
+                    // Incomplete payload — carry from `i` onward for the next read.
+                    carry.clear();
+                    carry.extend_from_slice(&view[i..]);
+                    return;
+                }
+            }
+        }
+        // Tail might be a partial OSC_START prefix (e.g. ends in `\x1b]133`).
+        // If everything from `i` to end of view matches a PREFIX of OSC_START,
+        // carry it and bail — we'll match in full once the next chunk arrives.
+        let tail = &view[i..];
+        if tail.len() < OSC_START.len() && OSC_START.starts_with(tail) {
+            carry.clear();
+            carry.extend_from_slice(tail);
+            return;
+        }
+        // Not OSC 1337 — move past this ESC.
+        i += 1;
+    }
+    // Whole view consumed; nothing partial to carry.
+    carry.clear();
+}
+
+#[cfg(test)]
+mod scan_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    fn flag_after(chunks: &[&[u8]]) -> bool {
+        let attention = AtomicBool::new(false);
+        let mut carry = Vec::new();
+        for c in chunks {
+            scan_osc_1337(c, &mut carry, &attention);
+        }
+        attention.load(Ordering::Relaxed)
+    }
+
+    #[test]
+    fn detects_bel_terminated_osc_1337() {
+        assert!(flag_after(&[b"\x1b]1337;Notify=hello\x07"]));
+    }
+
+    #[test]
+    fn detects_st_terminated_osc_1337() {
+        assert!(flag_after(&[b"\x1b]1337;RequestAttention=yes\x1b\\"]));
+    }
+
+    #[test]
+    fn ignores_other_osc() {
+        assert!(!flag_after(&[b"\x1b]0;Window Title\x07"]));
+        assert!(!flag_after(&[b"\x1b]2;Tab Title\x07"]));
+    }
+
+    #[test]
+    fn handles_split_across_reads() {
+        assert!(flag_after(&[
+            b"plain bytes \x1b]133",
+            b"7;Notify=split\x07 more",
+        ]));
+    }
+
+    #[test]
+    fn surrounded_by_normal_text() {
+        assert!(flag_after(&[
+            b"hello \x1b]1337;Notify=ok\x07 world",
+        ]));
+    }
 }

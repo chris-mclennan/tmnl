@@ -98,6 +98,11 @@ struct Tab {
     /// + the shell's OSC title where applicable. `App::tick`
     /// rewrites this; the renderer reads from `tabs[active].label`.
     label: String,
+    /// Set true when the hosted process emits an OSC 1337 attention
+    /// signal (Claude Code does this when a turn finishes and it's
+    /// waiting for user input). Cleared when the user switches to
+    /// this tab. Rendered as a `●` prefix in the chip.
+    attention: bool,
 }
 
 struct App {
@@ -987,6 +992,7 @@ impl App {
                 let tab = Tab {
                     mode: Mode::Shell { session: Some(s) },
                     label: "shell".to_string(),
+                    attention: false,
                 };
                 self.tabs.push(tab);
                 self.active = self.tabs.len() - 1;
@@ -1052,6 +1058,10 @@ impl App {
     ///     arrives from the client (commit 3/3 will buffer the last
     ///     frame per-tab).
     fn refresh_active_tab(&mut self) {
+        // Active tab can't be in "attention" state — the user is
+        // looking at it. Clear the badge as part of the switch so
+        // the chip drops the `●` prefix immediately, not on next tick.
+        self.tabs[self.active].attention = false;
         let Some(gpu) = self.gpu.as_mut() else { return };
         match &mut self.tabs[self.active].mode {
             Mode::Shell { session } => {
@@ -1089,7 +1099,8 @@ impl App {
         // Refresh each tab's strip label from its current Mode/Conn,
         // then hand the active-tab marker list to the renderer. Cheap —
         // both updates skip the write when nothing changed.
-        for tab in &mut self.tabs {
+        let active_idx = self.active;
+        for (i, tab) in self.tabs.iter_mut().enumerate() {
             let new_label: String = match &tab.mode {
                 Mode::Shell { session } => {
                     // Read the OSC title (set by `\033]0;<title>\007` from any
@@ -1112,6 +1123,21 @@ impl App {
             if tab.label != new_label {
                 tab.label = new_label;
             }
+            // Drain the shell session's attention flag (always — even
+            // for the active tab so the flag doesn't accumulate between
+            // unfocused intervals). On the active tab we keep it
+            // cleared; on background tabs we OR it into Tab.attention
+            // so the chip badge sticks until the user actually focuses.
+            if let Mode::Shell { session: Some(s) } = &tab.mode {
+                let new_attn = s.take_attention();
+                if i == active_idx {
+                    tab.attention = false;
+                } else if new_attn {
+                    tab.attention = true;
+                }
+            } else if i == active_idx {
+                tab.attention = false;
+            }
         }
         // Disambiguate duplicate labels with " (N)" — only when the
         // same exact string appears more than once. Chrome / VS Code
@@ -1129,13 +1155,18 @@ impl App {
             .iter()
             .enumerate()
             .map(|(i, t)| {
-                let label = if counts.get(t.label.as_str()).copied().unwrap_or(0) > 1 {
+                let mut label = if counts.get(t.label.as_str()).copied().unwrap_or(0) > 1 {
                     let n = seen.entry(t.label.as_str()).or_insert(0);
                     *n += 1;
                     format!("{} ({})", t.label, n)
                 } else {
                     t.label.clone()
                 };
+                // Attention dot for inactive tabs whose process flipped
+                // OSC 1337 since the last focus. Cleared on switch-to.
+                if t.attention && i != self.active {
+                    label = format!("● {label}");
+                }
                 (label, i == self.active)
             })
             .collect();
@@ -1499,6 +1530,7 @@ fn main() {
     let initial_tab = Tab {
         mode,
         label: String::new(),
+        attention: false,
     };
     let mut app = App {
         window: None,
