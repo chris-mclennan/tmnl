@@ -6,6 +6,7 @@ pub struct Cell {
     pub attrs: u32,
 }
 
+#[derive(Clone)]
 pub struct Grid {
     pub cols: u32,
     pub rows: u32,
