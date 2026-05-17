@@ -69,6 +69,12 @@ impl Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
+        // Give the client a chance to save before we tear the
+        // connection down. This pairs with Launcher::shutdown's grace
+        // period — the client (mnml's blit loop) sees the Quit, runs
+        // save_session_on_quit, and exits cleanly before the kill
+        // arrives.
+        self.send_quit();
         let _ = std::fs::remove_file(&self.socket_path);
     }
 }
