@@ -32,29 +32,17 @@ use server::{Server, ServerEvent, default_socket_path};
 use shell::{ShellSession, winit_key_to_bytes};
 
 const FONT_PX: f32 = 14.0;
-/// Extra top-side padding (added to whatever inset is configured) so
-/// the macOS traffic-light buttons don't sit right on top of the first
-/// cell row. `with_titlebar_transparent + fullsize_content_view` lets
-/// our wgpu surface extend behind where the title bar used to be —
-/// without this nudge, row 0 lands underneath the close/min/max chips.
-///
-/// Two values:
-///   - `TUI`  (16 px) used when a Native client is streaming TUI
-///     frames. The client's top row is typically chrome (bufferline /
-///     tab strip) so a smaller pad is fine — the buttons sit against
-///     a dark chrome bg rather than user content.
-///   - `BARE` (30 px) used everywhere else: idle screen, hosted
-///     `Mode::Shell`, or a connected-but-not-yet-streaming client.
-///     Row 0 holds free user content (shell prompt, idle banner) so
-///     the buttons need a fully separated band above it.
+/// Height of the chrome strip at the top of the window. Houses the
+/// traffic-light buttons (left ~80 px) and the tab chips (everything
+/// to their right). The cell grid starts immediately below it.
+/// `with_titlebar_transparent + fullsize_content_view` lets our wgpu
+/// surface extend through this area; the `StripPipeline` paints the
+/// background, and the cell pipeline draws on top with no overlap
+/// (offset by `inset_px + MACOS_TAB_STRIP_PX`).
 #[cfg(target_os = "macos")]
-const MACOS_TOP_PAD_TUI_PX: f32 = 16.0;
-#[cfg(target_os = "macos")]
-const MACOS_TOP_PAD_BARE_PX: f32 = 35.0;
+const MACOS_TAB_STRIP_PX: f32 = 56.0;
 #[cfg(not(target_os = "macos"))]
-const MACOS_TOP_PAD_TUI_PX: f32 = 0.0;
-#[cfg(not(target_os = "macos"))]
-const MACOS_TOP_PAD_BARE_PX: f32 = 0.0;
+const MACOS_TAB_STRIP_PX: f32 = 0.0;
 // Frame background — fills (a) the top pad reserved for the macOS
 // traffic-light buttons, (b) the letterbox gutter at the bottom when
 // the window height isn't a clean row multiple, and (c) any sub-cell
@@ -64,6 +52,10 @@ const MACOS_TOP_PAD_BARE_PX: f32 = 0.0;
 // the cell grid. Apps with different chrome would want to override
 // this through the protocol (TODO once a second app talks to tmnl).
 const CLEAR_BG: [f32; 4] = [0.106, 0.122, 0.153, 1.0];
+// Tab-strip background — the chrome row across the top of the window
+// where the traffic-light buttons + tab chips sit. `#22262e` matches
+// mnml's `statusline_bg` so the top and bottom chrome share a palette.
+const STRIP_BG: [f32; 4] = [0.133, 0.149, 0.180, 1.0];
 const TEXT_FG: [f32; 4] = [0.86, 0.87, 0.92, 1.0];
 const ACCENT_FG: [f32; 4] = [0.93, 0.73, 0.45, 1.0];
 const DIM_FG: [f32; 4] = [0.48, 0.50, 0.58, 1.0];
@@ -132,11 +124,12 @@ struct Gpu {
     /// Resolved from `--inset` / `TMNL_INSET` / `DEFAULT_INSET_PX` at
     /// startup (in that order).
     inset_px: f32,
-    /// Current top-side pad reserved for the macOS traffic-light buttons.
-    /// Switches between `MACOS_TOP_PAD_TUI_PX` (smaller, when a Native
-    /// client is streaming) and `MACOS_TOP_PAD_BARE_PX` (larger, for
-    /// idle / shell / pre-stream) — see `set_top_pad_px`.
-    top_pad_px: f32,
+    /// Strip pipeline — paints the tab-strip background rect.
+    strip_pipeline: pipeline::StripPipeline,
+    /// Active tab label, painted in the strip after the buttons.
+    /// Updated each tick by the App layer based on the current Mode.
+    /// Empty string = no label (strip is bg only).
+    strip_label: String,
 }
 
 impl Gpu {
@@ -194,14 +187,11 @@ impl Gpu {
 
         let atlas =
             Atlas::new(&device, &queue, FONT_PX * scale).expect("failed to build glyph atlas");
-        // Start with the BARE pad — the first frame is always the idle
-        // banner ("waiting for client") or a hosted shell. App layer
-        // shrinks it to TUI once a Native client begins streaming.
-        let top_pad_px = MACOS_TOP_PAD_BARE_PX;
-        let (cols, rows) = grid_dims(size.width, size.height, &atlas, inset_px, top_pad_px);
+        let (cols, rows) = grid_dims(size.width, size.height, &atlas, inset_px);
         let g = Grid::new(cols, rows, CLEAR_BG);
 
         let pipeline = CellPipeline::new(&device, format, &atlas, (cols * rows).max(1024) as u64);
+        let strip_pipeline = pipeline::StripPipeline::new(&device, format);
 
         Self {
             surface,
@@ -214,8 +204,76 @@ impl Gpu {
             grid: g,
             last_cursor: None,
             inset_px,
-            top_pad_px,
+            strip_pipeline,
+            strip_label: String::new(),
         }
+    }
+
+    /// Set the label rendered in the tab strip (after the traffic-light
+    /// button area). App calls this each tick with a description of
+    /// the current Mode — "shell", "mnml", "(no client)", etc.
+    fn set_strip_label(&mut self, label: &str) {
+        if self.strip_label != label {
+            self.strip_label.clear();
+            self.strip_label.push_str(label);
+        }
+    }
+
+    /// Build glyph instances for `self.strip_label`, positioned to land
+    /// inside the tab strip after the macOS traffic-light buttons.
+    /// Uses fractional / negative `cell_pos` values so the existing
+    /// cell pipeline draws the glyphs at pixel-precise locations
+    /// regardless of inset.
+    fn strip_label_instances(&mut self) -> Vec<pipeline::Instance> {
+        use crate::atlas::style_from_attrs;
+        if self.strip_label.is_empty() || MACOS_TAB_STRIP_PX <= 0.0 {
+            return Vec::new();
+        }
+        let cell_w = self.atlas.cell_w;
+        let cell_h = self.atlas.cell_h;
+        // Pixel positioning:
+        //   x: centered in the viewport (Safari-style "window title in
+        //      the title bar" — only really right for the single-tab
+        //      case; multi-tab will pivot to left-aligned chips). If
+        //      the centered label would collide with the macOS
+        //      traffic-light buttons (window too narrow), fall back to
+        //      left-aligned at 120 px which clears the buttons.
+        //   y: vertically centered in the strip — (strip_h - cell_h)/2
+        //      from the top of the window.
+        let label_w_px = self.strip_label.chars().count() as f32 * cell_w;
+        let viewport_w = self.config.width as f32;
+        let centered_x = (viewport_w - label_w_px) * 0.5;
+        // Buttons occupy roughly x=0..100 (3 buttons + window margin);
+        // add a 20px guard so the label doesn't touch them.
+        const BUTTONS_RESERVED_PX: f32 = 120.0;
+        let label_x_px = if centered_x >= BUTTONS_RESERVED_PX {
+            centered_x
+        } else {
+            BUTTONS_RESERVED_PX
+        };
+        let label_y_px = ((MACOS_TAB_STRIP_PX - cell_h) * 0.5).max(0.0);
+        // Cell pipeline applies: pixel = inset + cell_pos * cell_size.
+        // So cell_pos = (pixel - inset) / cell_size. inset_y in the
+        // pipeline is `inset_px + MACOS_TAB_STRIP_PX`.
+        let inset_y_total = self.inset_px + MACOS_TAB_STRIP_PX;
+        let base_x = (label_x_px - self.inset_px) / cell_w;
+        let base_y = (label_y_px - inset_y_total) / cell_h;
+        let mut out = Vec::with_capacity(self.strip_label.chars().count());
+        for (i, ch) in self.strip_label.chars().enumerate() {
+            let g = self.atlas.glyph(ch, style_from_attrs(0), &self.queue);
+            out.push(pipeline::Instance {
+                cell_pos: [base_x + i as f32, base_y],
+                fg: TEXT_FG,
+                bg: STRIP_BG,
+                uv_min: g.uv_min,
+                uv_max: g.uv_max,
+                glyph_offset: g.offset,
+                glyph_size: g.size,
+                attrs: 0,
+                _pad: 0,
+            });
+        }
+        out
     }
 
     fn resize(&mut self, w: u32, h: u32) -> Option<(u16, u16)> {
@@ -225,7 +283,7 @@ impl Gpu {
         self.config.width = w;
         self.config.height = h;
         self.surface.configure(&self.device, &self.config);
-        let (cols, rows) = grid_dims(w, h, &self.atlas, self.inset_px, self.top_pad_px);
+        let (cols, rows) = grid_dims(w, h, &self.atlas, self.inset_px);
         if cols != self.grid.cols || rows != self.grid.rows {
             self.grid.resize(cols, rows);
             self.last_cursor = None;
@@ -243,26 +301,7 @@ impl Gpu {
         }
         self.inset_px = inset_px;
         let (w, h) = (self.config.width, self.config.height);
-        let (cols, rows) = grid_dims(w, h, &self.atlas, self.inset_px, self.top_pad_px);
-        if cols != self.grid.cols || rows != self.grid.rows {
-            self.grid.resize(cols, rows);
-            self.last_cursor = None;
-            return Some((cols as u16, rows as u16));
-        }
-        None
-    }
-
-    /// Switch the top pad between TUI (compact) and BARE (wide). Called
-    /// from the App layer on mode/state transitions (Streaming ⇄ idle).
-    /// Returns the new grid dims if they shifted so the caller can push
-    /// the new size out to the connected client.
-    fn set_top_pad_px(&mut self, top_pad_px: f32) -> Option<(u16, u16)> {
-        if (self.top_pad_px - top_pad_px).abs() < f32::EPSILON {
-            return None;
-        }
-        self.top_pad_px = top_pad_px;
-        let (w, h) = (self.config.width, self.config.height);
-        let (cols, rows) = grid_dims(w, h, &self.atlas, self.inset_px, self.top_pad_px);
+        let (cols, rows) = grid_dims(w, h, &self.atlas, self.inset_px);
         if cols != self.grid.cols || rows != self.grid.rows {
             self.grid.resize(cols, rows);
             self.last_cursor = None;
@@ -344,21 +383,31 @@ impl Gpu {
             .create_view(&wgpu::TextureViewDescriptor::default());
 
         // Render the grid offset by exactly `inset_px` on left/right
-        // and `inset_px + top_pad_px` on top so every per-pixel
-        // nudge in Settings is visible AND the traffic-light buttons
-        // have a tiny strip of clear bg above the grid. The leftover
-        // (window % cell_w) lands on the right/bottom — at most one
-        // cell width, accepted as the price of an integer-cell grid.
+        // and `inset_px + MACOS_TAB_STRIP_PX` on top so the tab-strip
+        // chrome row sits above the grid. The strip pipeline paints
+        // its background rect over the same `[0, 0]..[w, strip_h]`
+        // area in the same render pass — the cell pipeline draws
+        // on top with `inset_y >= strip_h`, so no overlap.
         // inset == 0 still gets the ceil'd grid_dims so the rightmost
         // cells reach the edge — true edge-to-edge for TUIs.
         self.pipeline.write_globals(
             &self.queue,
             [self.config.width as f32, self.config.height as f32],
             [self.atlas.cell_w, self.atlas.cell_h],
-            [self.inset_px, self.inset_px + self.top_pad_px],
+            [self.inset_px, self.inset_px + MACOS_TAB_STRIP_PX],
         );
-        let instances =
+        self.strip_pipeline.write_globals(
+            &self.queue,
+            [self.config.width as f32, self.config.height as f32],
+            MACOS_TAB_STRIP_PX,
+            STRIP_BG,
+        );
+        let mut instances =
             CellPipeline::build_instances(&self.grid, &mut self.atlas, &self.queue);
+        // Append tab-strip label glyphs (rendered through the same cell
+        // pipeline via fractional `cell_pos` values — they land in the
+        // strip area above the grid).
+        instances.extend(self.strip_label_instances());
         self.pipeline
             .ensure_capacity(&self.device, instances.len() as u64);
         self.pipeline.upload(&self.queue, &instances);
@@ -370,7 +419,7 @@ impl Gpu {
             });
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("cells"),
+                label: Some("frame"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
@@ -388,6 +437,11 @@ impl Gpu {
                 occlusion_query_set: None,
                 timestamp_writes: None,
             });
+            // Strip background first — the cell pipeline draws on top.
+            pass.set_pipeline(&self.strip_pipeline.pipeline);
+            pass.set_bind_group(0, &self.strip_pipeline.bind_group, &[]);
+            pass.draw(0..4, 0..1);
+            // Cell grid (body content).
             pass.set_pipeline(&self.pipeline.pipeline);
             pass.set_bind_group(0, &self.pipeline.bind_group, &[]);
             pass.set_vertex_buffer(0, self.pipeline.instance_buf.slice(..));
@@ -398,30 +452,30 @@ impl Gpu {
     }
 }
 
-fn grid_dims(w: u32, h: u32, atlas: &Atlas, inset_px: f32, top_pad_px: f32) -> (u32, u32) {
-    // `inset_px == 0` → edge-to-edge horizontally; vertically we still
-    // reserve `top_pad_px` so the traffic-light buttons don't sit on
-    // top of the grid. Ceil cols so the rightmost cells reach the
-    // window edge (the partial overflow is clipped by the wgpu
-    // surface — no clear-bg stripe at the right seam). Floor rows
-    // so the LAST cell row gets its full font-row height — any
-    // leftover sub-row pixels at the bottom become a small letterbox
-    // gutter painted in `CLEAR_BG` by the wgpu clear (industry
-    // standard: Apple Terminal, iTerm2, Alacritty, Kitty all do
-    // this). The alternative — ceiling rows + clipping the last
-    // partial row — leaves a few-pixel sliver of whatever the app
-    // drew on the bottom row (status bar / cmdline), which reads
-    // as visual noise.
-    // `inset_px > 0` → reserve `inset_px` pixels on every side; floor
-    // cols/rows so the cells fit inside.
+fn grid_dims(w: u32, h: u32, atlas: &Atlas, inset_px: f32) -> (u32, u32) {
+    // `inset_px == 0` → edge-to-edge horizontally; vertically we
+    // reserve `MACOS_TAB_STRIP_PX` for the tab-strip chrome. Ceil
+    // cols so the rightmost cells reach the window edge (the partial
+    // overflow is clipped by the wgpu surface — no clear-bg stripe
+    // at the right seam). Floor rows so the LAST cell row gets its
+    // full font-row height — any leftover sub-row pixels at the
+    // bottom become a small letterbox gutter painted in `CLEAR_BG`
+    // by the wgpu clear (industry standard: Apple Terminal, iTerm2,
+    // Alacritty, Kitty all do this). The alternative — ceiling rows
+    // + clipping the last partial row — leaves a few-pixel sliver
+    // of whatever the app drew on the bottom row (status bar /
+    // cmdline), which reads as visual noise.
+    // `inset_px > 0` → reserve `inset_px` pixels on every side
+    // (and tab-strip on top); floor cols/rows so the cells fit inside.
+    let strip = MACOS_TAB_STRIP_PX;
     if inset_px <= 0.0 {
         let cols = (w as f32 / atlas.cell_w).ceil().max(1.0) as u32;
-        let usable_h = (h as f32 - top_pad_px).max(atlas.cell_h);
+        let usable_h = (h as f32 - strip).max(atlas.cell_h);
         let rows = (usable_h / atlas.cell_h).floor().max(1.0) as u32;
         return (cols, rows);
     }
     let usable_w = (w as f32 - 2.0 * inset_px).max(atlas.cell_w);
-    let usable_h = (h as f32 - 2.0 * inset_px - top_pad_px).max(atlas.cell_h);
+    let usable_h = (h as f32 - 2.0 * inset_px - strip).max(atlas.cell_h);
     let cols = (usable_w / atlas.cell_w).floor().max(1.0) as u32;
     let rows = (usable_h / atlas.cell_h).floor().max(1.0) as u32;
     (cols, rows)
@@ -710,7 +764,7 @@ impl Gpu {
     /// Clicks inside the inset margin saturate to (0, 0).
     fn pixel_to_cell(&self, px: f64, py: f64) -> (u16, u16) {
         let inset_x = self.inset_px as f64;
-        let inset_y = self.inset_px as f64 + self.top_pad_px as f64;
+        let inset_y = self.inset_px as f64 + MACOS_TAB_STRIP_PX as f64;
         let col = ((px - inset_x).max(0.0) / self.atlas.cell_w as f64).floor() as u16;
         let row = ((py - inset_y).max(0.0) / self.atlas.cell_h as f64).floor() as u16;
         (col, row)
@@ -771,6 +825,29 @@ impl App {
         let Some(gpu) = self.gpu.as_mut() else {
             return;
         };
+        // Refresh the tab-strip label from the current Mode/Conn so the
+        // strip always reflects what's hosted here. Cheap — `set_strip_label`
+        // is a no-op when the text is unchanged.
+        let strip_label_owned: String = match &self.mode {
+            Mode::Shell { session } => {
+                // Read the OSC title (set by `\033]0;<title>\007` from any
+                // process running in the shell — claude / vim / etc. all
+                // do this). Fall back to "shell" when nothing's been set.
+                session
+                    .as_ref()
+                    .and_then(|s| {
+                        let t = s.osc_title();
+                        if t.is_empty() { None } else { Some(t.to_string()) }
+                    })
+                    .unwrap_or_else(|| "shell".to_string())
+            }
+            Mode::Native { conn, .. } => match conn {
+                ConnState::Waiting => "(no client)".to_string(),
+                ConnState::Connected => "(connecting…)".to_string(),
+                ConnState::Streaming => "mnml".to_string(),
+            },
+        };
+        gpu.set_strip_label(&strip_label_owned);
         match &mut self.mode {
             Mode::Shell { session } => {
                 let Some(s) = session.as_mut() else {
@@ -819,11 +896,6 @@ impl App {
                         }
                         ServerEvent::ClientDisconnected => {
                             *conn = ConnState::Waiting;
-                            // Drop back to BARE pad — the idle banner needs the
-                            // full button clearance now that there's no chrome row.
-                            if let Some((cols, rows)) = gpu.set_top_pad_px(MACOS_TOP_PAD_BARE_PX) {
-                                let _ = (cols, rows); // no client to resize
-                            }
                             paint_idle(&mut gpu.grid, *conn, &server.socket_path);
                         }
                     }
@@ -836,12 +908,6 @@ impl App {
                 while let Ok(f) = server.frame_rx.try_recv() {
                     if *conn != ConnState::Streaming {
                         *conn = ConnState::Streaming;
-                        // Streaming TUI frames now — the client's top row is
-                        // chrome, so shrink the top pad. Notify the client of
-                        // the new grid size so its layout adapts.
-                        if let Some((cols, rows)) = gpu.set_top_pad_px(MACOS_TOP_PAD_TUI_PX) {
-                            server.send_resize(cols, rows);
-                        }
                     }
                     gpu.apply_frame(&f);
                     applied += 1;
