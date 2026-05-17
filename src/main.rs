@@ -78,6 +78,10 @@ enum Mode {
         server: Server,
         conn: ConnState,
         launcher: Option<Launcher>,
+        /// Tab title supplied by the connected client via
+        /// `Message::Title`. `None` until the client sends one — falls
+        /// back to "mnml" in the label-resolution chain.
+        client_title: Option<String>,
     },
 }
 
@@ -1366,10 +1370,16 @@ impl App {
                             .unwrap_or_else(|| "shell".to_string())
                     })
                 }
-                Mode::Native { conn, .. } => match conn {
+                Mode::Native {
+                    conn, client_title, ..
+                } => match conn {
                     ConnState::Waiting => "(no client)".to_string(),
                     ConnState::Connected => "(connecting…)".to_string(),
-                    ConnState::Streaming => "mnml".to_string(),
+                    // Client-supplied title (`Message::Title`, v3) takes
+                    // priority; falls back to "mnml" pre-handshake.
+                    ConnState::Streaming => {
+                        client_title.clone().unwrap_or_else(|| "mnml".to_string())
+                    }
                 },
             };
             if tab.label != new_label {
@@ -1458,18 +1468,24 @@ impl App {
                 server,
                 conn,
                 launcher,
+                client_title,
             } => {
                 // Drain server events.
                 while let Ok(ev) = server.events.try_recv() {
                     match ev {
                         ServerEvent::ClientConnected => {
                             *conn = ConnState::Connected;
+                            *client_title = None; // fresh connection, fresh title
                             server.send_resize(gpu.grid.cols as u16, gpu.grid.rows as u16);
                             paint_idle(&mut gpu.grid, *conn, &server.socket_path);
                         }
                         ServerEvent::ClientDisconnected => {
                             *conn = ConnState::Waiting;
+                            *client_title = None;
                             paint_idle(&mut gpu.grid, *conn, &server.socket_path);
+                        }
+                        ServerEvent::Title(s) => {
+                            *client_title = Some(s);
                         }
                     }
                 }
@@ -1767,6 +1783,7 @@ fn main() {
             server,
             conn: ConnState::Waiting,
             launcher,
+            client_title: None,
         }
     } else {
         eprintln!("tmnl: shell mode (run with --editor to launch mnml instead)");

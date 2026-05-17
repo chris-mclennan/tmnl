@@ -19,6 +19,10 @@ pub struct Server {
 pub enum ServerEvent {
     ClientConnected,
     ClientDisconnected,
+    /// Client supplied a tab title (`Message::Title`). Renderer
+    /// updates the Native tab's label to this string. Repeated
+    /// titles overwrite (each Title replaces the previous one).
+    Title(String),
 }
 
 impl Server {
@@ -149,6 +153,12 @@ fn reader_loop(
             Ok(Message::Resize(_)) => {}
             Ok(Message::Input(_)) => {}
             Ok(Message::Quit) => {}
+            Ok(Message::Title(s)) => {
+                if event_tx.send(ServerEvent::Title(s)).is_err() {
+                    log::warn!("event_tx.send(Title) failed; reader exiting");
+                    break;
+                }
+            }
             Err(e) => {
                 if e.kind() != std::io::ErrorKind::UnexpectedEof {
                     log::warn!("read error: {e:?}");
