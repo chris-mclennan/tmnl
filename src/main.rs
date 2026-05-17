@@ -110,6 +110,14 @@ struct Tab {
     /// and "Pondering…" — without stickiness the chip flips back
     /// to the static OSC title and flickers).
     last_status: Option<(String, std::time::Instant)>,
+    /// Snapshot of this tab's `Grid` and cursor index, captured when
+    /// the tab is in the background. The live grid sits on `Gpu` for
+    /// the *active* tab; switching tabs swaps the current live grid
+    /// into the outgoing tab's snapshot and restores the incoming
+    /// tab's snapshot into the GPU. `None` ⇒ this tab is currently
+    /// active (its grid is on the GPU, not here).
+    grid_snapshot: Option<grid::Grid>,
+    last_cursor_snapshot: Option<usize>,
 }
 
 struct App {
@@ -691,16 +699,29 @@ impl ApplicationHandler for App {
                 let Some((cols, rows)) = gpu.resize(size.width, size.height) else {
                     return;
                 };
-                match &mut self.tabs[self.active].mode {
-                    Mode::Shell { session } => {
-                        if let Some(s) = session.as_mut() {
-                            s.resize(rows, cols);
-                        }
+                // Resize every tab's background grid-snapshot to match
+                // the new window size — otherwise switching to a tab
+                // whose snapshot was captured at the old dimensions
+                // would render a stale-size grid (mismatched cell
+                // count, wrong cursor positions). For shell tabs we
+                // ALSO resize the underlying pty so the program inside
+                // re-paints at the new size.
+                for (i, tab) in self.tabs.iter_mut().enumerate() {
+                    if i != self.active
+                        && let Some(snap) = tab.grid_snapshot.as_mut()
+                    {
+                        snap.resize(cols as u32, rows as u32);
                     }
-                    Mode::Native { server, conn, .. } => {
-                        server.send_resize(cols, rows);
-                        if *conn != ConnState::Streaming {
-                            paint_idle(&mut gpu.grid, *conn, &server.socket_path);
+                    if let Mode::Shell { session: Some(s) } = &mut tab.mode {
+                        s.resize(rows, cols);
+                    } else if let Mode::Native { server, conn, .. } = &mut tab.mode {
+                        if i == self.active {
+                            server.send_resize(cols, rows);
+                            if *conn != ConnState::Streaming {
+                                paint_idle(&mut gpu.grid, *conn, &server.socket_path);
+                            }
+                        } else {
+                            server.send_resize(cols, rows);
                         }
                     }
                 }
@@ -990,17 +1011,25 @@ impl App {
     /// current GPU grid; spawn failures leave the existing active
     /// tab in place and toast the error to stderr.
     fn new_shell_tab(&mut self) {
-        let Some(gpu) = self.gpu.as_ref() else {
+        let Some(gpu) = self.gpu.as_mut() else {
             return;
         };
         let (cols, rows) = (gpu.grid.cols as u16, gpu.grid.rows as u16);
         match ShellSession::spawn(rows, cols, TEXT_FG, CLEAR_BG) {
             Ok(s) => {
+                // Save outgoing tab's grid into its snapshot, then
+                // create a fresh blank grid on the GPU for the new tab.
+                self.tabs[self.active].grid_snapshot = Some(gpu.grid.clone());
+                self.tabs[self.active].last_cursor_snapshot = gpu.last_cursor;
+                gpu.grid = grid::Grid::new(gpu.grid.cols, gpu.grid.rows, CLEAR_BG);
+                gpu.last_cursor = None;
                 let tab = Tab {
                     mode: Mode::Shell { session: Some(s) },
                     label: "shell".to_string(),
                     attention: false,
                     last_status: None,
+                    grid_snapshot: None,
+                    last_cursor_snapshot: None,
                 };
                 self.tabs.push(tab);
                 self.active = self.tabs.len() - 1;
@@ -1021,21 +1050,27 @@ impl App {
         }
         let idx = self.active;
         self.tabs.remove(idx);
+        // After removal, `self.active` (was `idx`) now points to the
+        // next tab (or past-end). Clamp to the last valid index.
         if self.active >= self.tabs.len() {
             self.active = self.tabs.len() - 1;
         }
-        // Repaint the new active tab's content onto the shared grid.
-        self.refresh_active_tab();
+        // The removed tab's resources have been dropped; the new
+        // active tab's grid snapshot needs to come onto the GPU.
+        // Pass `self.active` itself as `prev_active` so the swap
+        // skips the "save outgoing" step (the outgoing tab is gone).
+        self.swap_active_tab(self.active);
     }
 
-    /// Switch to tab `idx` (0-based). No-op if out of range. Repaints
-    /// the new active tab's content onto the shared `Gpu.grid`.
+    /// Switch to tab `idx` (0-based). No-op if out of range. Restores
+    /// the new tab's `grid_snapshot` to the GPU.
     fn switch_to_tab(&mut self, idx: usize) {
         if idx >= self.tabs.len() || idx == self.active {
             return;
         }
+        let prev = self.active;
         self.active = idx;
-        self.refresh_active_tab();
+        self.swap_active_tab(prev);
     }
 
     /// Cycle to the next (`forward=true`) / previous tab, wrapping.
@@ -1043,40 +1078,49 @@ impl App {
         if self.tabs.len() <= 1 {
             return;
         }
+        let prev = self.active;
         let n = self.tabs.len();
         self.active = if forward {
             (self.active + 1) % n
         } else {
             (self.active + n - 1) % n
         };
-        self.refresh_active_tab();
+        self.swap_active_tab(prev);
     }
 
-    /// Repaint the newly-active tab's view onto the shared grid.
-    /// Each tab's underlying state (the vt100 parser for shells, the
-    /// Server's last-known frame for Native) is still intact — we
-    /// just need to paint it onto the shared `Gpu.grid` so the new
-    /// tab's content materializes immediately on switch.
-    ///   - Shell: clear gpu.grid + apply_to_grid from the shell's
-    ///     parser. The shell session keeps its full vt100 state
-    ///     even while it's a background tab, so this restores the
-    ///     prompt + scrollback faithfully.
-    ///   - Native (Waiting/Connected): repaint idle banner.
-    ///   - Native (Streaming): grid stays empty until the next frame
-    ///     arrives from the client (commit 3/3 will buffer the last
-    ///     frame per-tab).
-    fn refresh_active_tab(&mut self) {
+    /// Swap grids: save the outgoing tab's current grid into its
+    /// snapshot, restore the incoming tab's snapshot onto the GPU.
+    /// Caller has already updated `self.active` to the NEW index;
+    /// this method needs the OLD index so it knows which tab to
+    /// save into. After the swap, the active tab's grid is on the
+    /// GPU; background tabs hold their grids in `grid_snapshot`.
+    ///
+    /// For Native tabs whose snapshot is still empty (no frame
+    /// received yet), repaint the idle banner so the chrome isn't
+    /// blank while the client reconnects.
+    fn swap_active_tab(&mut self, prev_active: usize) {
         // Active tab can't be in "attention" state — the user is
-        // looking at it. Clear the badge as part of the switch so
-        // the chip drops the `●` prefix immediately, not on next tick.
+        // looking at it. Clear the badge as part of the switch.
         self.tabs[self.active].attention = false;
         let Some(gpu) = self.gpu.as_mut() else { return };
-        match &mut self.tabs[self.active].mode {
-            Mode::Shell { session } => {
-                if let Some(s) = session.as_mut() {
-                    gpu.grid.clear();
+        // Stash outgoing.
+        if prev_active < self.tabs.len() && prev_active != self.active {
+            self.tabs[prev_active].grid_snapshot = Some(gpu.grid.clone());
+            self.tabs[prev_active].last_cursor_snapshot = gpu.last_cursor;
+        }
+        // Restore incoming.
+        if let Some(snap) = self.tabs[self.active].grid_snapshot.take() {
+            gpu.grid = snap;
+            gpu.last_cursor = self.tabs[self.active].last_cursor_snapshot.take();
+        } else {
+            // First focus on a tab that hasn't drawn yet — fall back
+            // to a blank grid + idle banner (Native) or
+            // apply_to_grid (Shell).
+            gpu.grid = grid::Grid::new(gpu.grid.cols, gpu.grid.rows, CLEAR_BG);
+            gpu.last_cursor = None;
+            match &mut self.tabs[self.active].mode {
+                Mode::Shell { session: Some(s) } => {
                     let (cc, cr, vis) = s.apply_to_grid(&mut gpu.grid);
-                    gpu.last_cursor = None;
                     if vis
                         && (cc as u32) < gpu.grid.cols
                         && (cr as u32) < gpu.grid.rows
@@ -1086,10 +1130,10 @@ impl App {
                         gpu.last_cursor = Some(i);
                     }
                 }
-            }
-            Mode::Native { conn, server, .. } => {
-                gpu.grid.clear();
-                paint_idle(&mut gpu.grid, *conn, &server.socket_path);
+                Mode::Native { conn, server, .. } => {
+                    paint_idle(&mut gpu.grid, *conn, &server.socket_path);
+                }
+                _ => {}
             }
         }
     }
@@ -1565,6 +1609,8 @@ fn main() {
         label: String::new(),
         attention: false,
         last_status: None,
+        grid_snapshot: None,
+        last_cursor_snapshot: None,
     };
     let mut app = App {
         window: None,
