@@ -81,13 +81,38 @@ enum Mode {
     },
 }
 
+/// One open tab in the tmnl window. Each tab is independent: its own
+/// `Mode` (Shell or Native) + its own current label. Multi-tab work
+/// builds up around this struct — the App holds a `Vec<Tab>` + an
+/// `active: usize` index; chip rendering walks `tabs` and highlights
+/// the active one; ⌘T / ⌘W / ⌘1..9 keybinds manipulate the Vec.
+///
+/// First step (this commit): App carries a `Vec<Tab>` with exactly
+/// one entry. Behaviorally identical to a single-Mode app. Future
+/// commits add per-tab `Grid` storage so background tabs preserve
+/// state, plus the keybinds and chip rendering.
+struct Tab {
+    /// Hosted process / connection state for this tab.
+    mode: Mode,
+    /// Cached label for the strip — refreshed each tick from `mode`
+    /// + the shell's OSC title where applicable. `App::tick`
+    /// rewrites this; the renderer reads from `tabs[active].label`.
+    label: String,
+}
+
 struct App {
     window: Option<Arc<Window>>,
     gpu: Option<Gpu>,
     mods: ModifiersState,
     cursor_cell: (u16, u16),
     buttons_down: u8,
-    mode: Mode,
+    /// Open tabs. Always non-empty (closing the last tab exits the
+    /// process). Single-tab today; multi-tab pieces (keybinds, chip
+    /// rendering, per-tab grids) land in follow-up commits.
+    tabs: Vec<Tab>,
+    /// Index into `tabs` of the currently visible tab. Invariant:
+    /// `active < tabs.len()`.
+    active: usize,
     /// Pre-resolved pixel inset (CLI / env / config / default) handed to
     /// `Gpu::new` on `resumed`. Per-mode — native can opt out
     /// (edge-to-edge TUI) while shell keeps a margin.
@@ -536,7 +561,7 @@ impl ApplicationHandler for App {
             self.app_menu = Some(AppMenu::build_and_install());
         }
         let mut gpu = pollster::block_on(Gpu::new(window.clone(), self.inset_px));
-        match &mut self.mode {
+        match &mut self.tabs[self.active].mode {
             Mode::Shell { session } => {
                 let (cols, rows) = (gpu.grid.cols as u16, gpu.grid.rows as u16);
                 match ShellSession::spawn(rows, cols, TEXT_FG, CLEAR_BG) {
@@ -570,7 +595,7 @@ impl ApplicationHandler for App {
                 let Some((cols, rows)) = gpu.resize(size.width, size.height) else {
                     return;
                 };
-                match &mut self.mode {
+                match &mut self.tabs[self.active].mode {
                     Mode::Shell { session } => {
                         if let Some(s) = session.as_mut() {
                             s.resize(rows, cols);
@@ -602,7 +627,7 @@ impl ApplicationHandler for App {
                 if self.settings.is_some() && self.settings_handle_key(&ke) {
                     return;
                 }
-                match &mut self.mode {
+                match &mut self.tabs[self.active].mode {
                     Mode::Shell { session } => {
                         if let Some(s) = session.as_mut()
                             && let Some(bytes) = winit_key_to_bytes(&ke.logical_key, self.mods)
@@ -627,7 +652,7 @@ impl ApplicationHandler for App {
                     let (col, row) = gpu.pixel_to_cell(position.x, position.y);
                     let prev = self.cursor_cell;
                     self.cursor_cell = (col, row);
-                    if let Mode::Native { server, .. } = &self.mode
+                    if let Mode::Native { server, .. } = &self.tabs[self.active].mode
                         && self.buttons_down != 0
                         && prev != self.cursor_cell
                     {
@@ -655,7 +680,7 @@ impl ApplicationHandler for App {
                 } else {
                     self.buttons_down &= !(1u8 << b);
                 }
-                if let Mode::Native { server, .. } = &self.mode {
+                if let Mode::Native { server, .. } = &self.tabs[self.active].mode {
                     let (col, row) = self.cursor_cell;
                     server.send_input(&InputEvent::Mouse(MouseInput {
                         kind: if pressed {
@@ -671,7 +696,7 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let Mode::Native { server, .. } = &self.mode else {
+                let Mode::Native { server, .. } = &self.tabs[self.active].mode else {
                     return;
                 };
                 let (dx, dy) = match delta {
@@ -827,28 +852,36 @@ impl App {
         };
         // Refresh the tab-strip label from the current Mode/Conn so the
         // strip always reflects what's hosted here. Cheap — `set_strip_label`
-        // is a no-op when the text is unchanged.
-        let strip_label_owned: String = match &self.mode {
-            Mode::Shell { session } => {
-                // Read the OSC title (set by `\033]0;<title>\007` from any
-                // process running in the shell — claude / vim / etc. all
-                // do this). Fall back to "shell" when nothing's been set.
-                session
-                    .as_ref()
-                    .and_then(|s| {
-                        let t = s.osc_title();
-                        if t.is_empty() { None } else { Some(t.to_string()) }
-                    })
-                    .unwrap_or_else(|| "shell".to_string())
+        // is a no-op when the text is unchanged. Recompute each tab's
+        // label so multi-tab chip rendering (next commit) can read from
+        // `tab.label` directly; only the active tab's label feeds the
+        // single-tab strip render today.
+        for tab in &mut self.tabs {
+            let new_label: String = match &tab.mode {
+                Mode::Shell { session } => {
+                    // Read the OSC title (set by `\033]0;<title>\007` from any
+                    // process running in the shell — claude / vim / etc. all
+                    // do this). Fall back to "shell" when nothing's been set.
+                    session
+                        .as_ref()
+                        .and_then(|s| {
+                            let t = s.osc_title();
+                            if t.is_empty() { None } else { Some(t.to_string()) }
+                        })
+                        .unwrap_or_else(|| "shell".to_string())
+                }
+                Mode::Native { conn, .. } => match conn {
+                    ConnState::Waiting => "(no client)".to_string(),
+                    ConnState::Connected => "(connecting…)".to_string(),
+                    ConnState::Streaming => "mnml".to_string(),
+                },
+            };
+            if tab.label != new_label {
+                tab.label = new_label;
             }
-            Mode::Native { conn, .. } => match conn {
-                ConnState::Waiting => "(no client)".to_string(),
-                ConnState::Connected => "(connecting…)".to_string(),
-                ConnState::Streaming => "mnml".to_string(),
-            },
-        };
-        gpu.set_strip_label(&strip_label_owned);
-        match &mut self.mode {
+        }
+        gpu.set_strip_label(&self.tabs[self.active].label);
+        match &mut self.tabs[self.active].mode {
             Mode::Shell { session } => {
                 let Some(s) = session.as_mut() else {
                     return;
@@ -997,7 +1030,7 @@ impl App {
     /// shell mode with the alt-screen active hosts one. Only the shell
     /// prompt view uses the configured value.
     fn apply_inset_from_cfg(&mut self, cfg: &Config) {
-        let native = matches!(self.mode, Mode::Native { .. });
+        let native = matches!(&self.tabs[self.active].mode, Mode::Native { .. });
         let tui_active = native || self.altscreen_active;
         let new_inset = cfg.active_inset(tui_active);
         let Some(gpu) = self.gpu.as_mut() else {
@@ -1006,7 +1039,7 @@ impl App {
         let Some((cols, rows)) = gpu.set_inset_px(new_inset) else {
             return;
         };
-        match &mut self.mode {
+        match &mut self.tabs[self.active].mode {
             Mode::Native { server, conn, .. } => {
                 server.send_resize(cols, rows);
                 if *conn != ConnState::Streaming {
@@ -1071,7 +1104,7 @@ impl App {
     }
 
     fn shutdown_gracefully(&mut self) {
-        match &mut self.mode {
+        match &mut self.tabs[self.active].mode {
             Mode::Shell { session } => {
                 // Drop the ShellSession — its Drop hardkills the child.
                 *session = None;
@@ -1202,13 +1235,20 @@ fn main() {
 
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
+    // Start with one tab holding the initial Mode. Multi-tab keybinds
+    // append to this Vec in a follow-up commit.
+    let initial_tab = Tab {
+        mode,
+        label: String::new(),
+    };
     let mut app = App {
         window: None,
         gpu: None,
         mods: ModifiersState::empty(),
         cursor_cell: (0, 0),
         buttons_down: 0,
-        mode,
+        tabs: vec![initial_tab],
+        active: 0,
         inset_px,
         cfg,
         altscreen_active: false,
