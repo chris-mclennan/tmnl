@@ -602,59 +602,7 @@ impl Gpu {
     }
 
     fn apply_frame(&mut self, f: &Frame) {
-        // Clear the previous cursor's overlay bits first — runs may not cover
-        // that cell, so we have to do it explicitly.
-        if let Some(old) = self.last_cursor
-            && let Some(c) = self.grid.cells.get_mut(old)
-        {
-            c.attrs &= !(ATTR_CURSOR_BLOCK | ATTR_CURSOR_UNDERLINE | ATTR_CURSOR_BAR);
-        }
-
-        let grid_cols = self.grid.cols;
-        let grid_rows = self.grid.rows;
-        let grid_max = (grid_cols * grid_rows) as usize;
-        let frame_cols = f.cols as u32;
-        // Diff runs are encoded against the sender's (cols, rows). If we
-        // resized faster than the sender, clip per-row.
-        for run in &f.runs {
-            let start = run.start as usize;
-            for (i, wc) in run.cells.iter().enumerate() {
-                let abs = start + i;
-                // Translate sender-grid index → our grid index.
-                let r = (abs as u32) / frame_cols;
-                let c = (abs as u32) % frame_cols;
-                if r >= grid_rows || c >= grid_cols {
-                    continue;
-                }
-                let dst = (r * grid_cols + c) as usize;
-                if dst >= grid_max {
-                    continue;
-                }
-                let ch = char::from_u32(wc.ch).unwrap_or(' ');
-                self.grid.cells[dst] = grid::Cell {
-                    ch,
-                    fg: unpack_rgba(wc.fg),
-                    bg: unpack_rgba(wc.bg),
-                    attrs: wc.attrs,
-                };
-            }
-        }
-
-        if f.cursor_visible != 0
-            && (f.cursor_col as u32) < grid_cols
-            && (f.cursor_row as u32) < grid_rows
-        {
-            let i = (f.cursor_row as u32 * grid_cols + f.cursor_col as u32) as usize;
-            let bit = match f.cursor_shape {
-                1 => ATTR_CURSOR_UNDERLINE,
-                2 => ATTR_CURSOR_BAR,
-                _ => ATTR_CURSOR_BLOCK,
-            };
-            self.grid.cells[i].attrs |= bit;
-            self.last_cursor = Some(i);
-        } else {
-            self.last_cursor = None;
-        }
+        apply_frame_to_grid(&mut self.grid, &mut self.last_cursor, f);
     }
 
     fn render(&mut self) {
@@ -1251,6 +1199,66 @@ impl Gpu {
     }
 }
 
+/// Apply a `Frame` (diff runs + cursor metadata) to an arbitrary
+/// `Grid` + `last_cursor` slot. Pulled out of `Gpu::apply_frame` so
+/// background Native tabs can keep their off-screen `grid_snapshot`
+/// up to date even when their tab isn't the active one. On switch,
+/// the snapshot is then already current and the user sees the
+/// latest state immediately (instead of the stale snapshot from
+/// when this tab was last active).
+fn apply_frame_to_grid(grid: &mut grid::Grid, last_cursor: &mut Option<usize>, f: &Frame) {
+    // Clear the previous cursor's overlay bits first — runs may not
+    // cover that cell, so we have to do it explicitly.
+    if let Some(old) = *last_cursor
+        && let Some(c) = grid.cells.get_mut(old)
+    {
+        c.attrs &= !(ATTR_CURSOR_BLOCK | ATTR_CURSOR_UNDERLINE | ATTR_CURSOR_BAR);
+    }
+
+    let grid_cols = grid.cols;
+    let grid_rows = grid.rows;
+    let grid_max = (grid_cols * grid_rows) as usize;
+    let frame_cols = f.cols as u32;
+    for run in &f.runs {
+        let start = run.start as usize;
+        for (i, wc) in run.cells.iter().enumerate() {
+            let abs = start + i;
+            let r = (abs as u32) / frame_cols;
+            let c = (abs as u32) % frame_cols;
+            if r >= grid_rows || c >= grid_cols {
+                continue;
+            }
+            let dst = (r * grid_cols + c) as usize;
+            if dst >= grid_max {
+                continue;
+            }
+            let ch = char::from_u32(wc.ch).unwrap_or(' ');
+            grid.cells[dst] = grid::Cell {
+                ch,
+                fg: unpack_rgba(wc.fg),
+                bg: unpack_rgba(wc.bg),
+                attrs: wc.attrs,
+            };
+        }
+    }
+
+    if f.cursor_visible != 0
+        && (f.cursor_col as u32) < grid_cols
+        && (f.cursor_row as u32) < grid_rows
+    {
+        let i = (f.cursor_row as u32 * grid_cols + f.cursor_col as u32) as usize;
+        let bit = match f.cursor_shape {
+            1 => ATTR_CURSOR_UNDERLINE,
+            2 => ATTR_CURSOR_BAR,
+            _ => ATTR_CURSOR_BLOCK,
+        };
+        grid.cells[i].attrs |= bit;
+        *last_cursor = Some(i);
+    } else {
+        *last_cursor = None;
+    }
+}
+
 fn translate_key(k: &Key, mods: ModifiersState) -> Option<KeyCode> {
     match k {
         Key::Named(n) => match n {
@@ -1601,45 +1609,77 @@ impl App {
             }
             // Background Native tabs: drain server events here so
             // conn state + client_title stay current even when the
-            // tab isn't focused. Frames are dropped (the snapshot is
-            // refreshed at switch time when the client sends a fresh
-            // full frame after the resize); poll the launcher to
-            // keep child-crash detection live.
-            if i != active_idx
-                && let Mode::Native {
+            // tab isn't focused. Frames are applied to the tab's
+            // grid_snapshot (an off-screen Grid) so the snapshot
+            // tracks live state — on switch, the user sees fresh
+            // content instantly instead of the snapshot from when
+            // this tab was last active.
+            if i != active_idx {
+                // Capture the tab's snapshot dims for any fresh
+                // allocation. Borrow split: we'll need `&mut
+                // tab.grid_snapshot` and `&mut tab.mode` separately.
+                let (snap_cols, snap_rows) = tab
+                    .grid_snapshot
+                    .as_ref()
+                    .map(|g| (g.cols, g.rows))
+                    .unwrap_or((0, 0));
+                if let Mode::Native {
                     server,
                     conn,
                     client_title,
                     launcher,
                 } = &mut tab.mode
-            {
-                while let Ok(ev) = server.events.try_recv() {
-                    match ev {
-                        ServerEvent::ClientConnected => {
-                            *conn = ConnState::Connected;
-                            *client_title = None;
-                        }
-                        ServerEvent::ClientDisconnected => {
-                            *conn = ConnState::Waiting;
-                            *client_title = None;
-                        }
-                        ServerEvent::Title(s) => {
-                            *client_title = Some(s);
+                {
+                    while let Ok(ev) = server.events.try_recv() {
+                        match ev {
+                            ServerEvent::ClientConnected => {
+                                *conn = ConnState::Connected;
+                                *client_title = None;
+                            }
+                            ServerEvent::ClientDisconnected => {
+                                *conn = ConnState::Waiting;
+                                *client_title = None;
+                            }
+                            ServerEvent::Title(s) => {
+                                *client_title = Some(s);
+                            }
                         }
                     }
-                }
-                while server.frame_rx.try_recv().is_ok() {
-                    // Frame dropped — we don't have an off-screen
-                    // grid to apply to. The next switch_tab triggers
-                    // a fresh full frame.
-                    if matches!(conn, ConnState::Connected) {
-                        *conn = ConnState::Streaming;
+                    let mut got_frame = false;
+                    while let Ok(f) = server.frame_rx.try_recv() {
+                        got_frame = true;
+                        if matches!(conn, ConnState::Connected) {
+                            *conn = ConnState::Streaming;
+                        }
+                        // Lazy-allocate the snapshot if this tab
+                        // hasn't had one set yet (just-spawned bg
+                        // tab). Use the sender's dims so the diff
+                        // applies cleanly without per-row clipping.
+                        if tab.grid_snapshot.is_none() {
+                            let cols = if snap_cols > 0 {
+                                snap_cols
+                            } else {
+                                f.cols as u32
+                            };
+                            let rows = if snap_rows > 0 {
+                                snap_rows
+                            } else {
+                                f.rows as u32
+                            };
+                            tab.grid_snapshot = Some(grid::Grid::new(cols, rows, CLEAR_BG));
+                            tab.last_cursor_snapshot = None;
+                        }
+                        if let Some(snap) = tab.grid_snapshot.as_mut() {
+                            apply_frame_to_grid(snap, &mut tab.last_cursor_snapshot, &f);
+                        }
                     }
-                }
-                if let Some(l) = launcher.as_mut() {
-                    // Keep poll lightweight — no respawn logic for
-                    // background tabs (that's the active-tab path).
-                    let _ = l.poll();
+                    let _ = got_frame;
+                    if let Some(l) = launcher.as_mut() {
+                        // Keep poll lightweight — no respawn logic
+                        // for background tabs (that's the active-tab
+                        // path).
+                        let _ = l.poll();
+                    }
                 }
             }
         }
