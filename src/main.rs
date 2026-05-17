@@ -103,6 +103,13 @@ struct Tab {
     /// waiting for user input). Cleared when the user switches to
     /// this tab. Rendered as a `●` prefix in the chip.
     attention: bool,
+    /// Sticky cache of the most recent detected spinner line and
+    /// when we last saw it. Keeps the chip label stable for a short
+    /// window after the spinner glyph cycles off-screen (Claude
+    /// typically pauses for a few hundred ms between "Wandering…"
+    /// and "Pondering…" — without stickiness the chip flips back
+    /// to the static OSC title and flickers).
+    last_status: Option<(String, std::time::Instant)>,
 }
 
 struct App {
@@ -993,6 +1000,7 @@ impl App {
                     mode: Mode::Shell { session: Some(s) },
                     label: "shell".to_string(),
                     attention: false,
+                    last_status: None,
                 };
                 self.tabs.push(tab);
                 self.active = self.tabs.len() - 1;
@@ -1103,15 +1111,35 @@ impl App {
         for (i, tab) in self.tabs.iter_mut().enumerate() {
             let new_label: String = match &tab.mode {
                 Mode::Shell { session } => {
-                    // Read the OSC title (set by `\033]0;<title>\007` from any
-                    // process running in the shell — claude / vim / etc. all
-                    // do this). Fall back to "shell" when nothing's been set.
-                    session
+                    // Prefer the live status line if visible — Claude
+                    // Code's `✽ Wandering…` spinner pattern cycles each
+                    // frame so the tab label updates in sync with what
+                    // the user sees inside the tab. Sticky for
+                    // `STATUS_STICKY_MS` after the spinner cycles off
+                    // so brief gaps between "Wandering…" /
+                    // "Pondering…" don't flicker back to the OSC
+                    // title. Stickiness is cleared immediately on
+                    // OSC 1337 attention (Claude signaling it's truly
+                    // done) — handled below.
+                    const STATUS_STICKY_MS: u128 = 2000;
+                    let now = std::time::Instant::now();
+                    let live = session
                         .as_ref()
-                        .and_then(|s| {
-                            let t = s.osc_title();
-                            if t.is_empty() { None } else { Some(t.to_string()) }
-                        })
+                        .and_then(|s| s.detect_status_line());
+                    if let Some(s) = live.clone() {
+                        tab.last_status = Some((s, now));
+                    }
+                    let sticky = tab
+                        .last_status
+                        .as_ref()
+                        .filter(|(_, when)| now.duration_since(*when).as_millis() < STATUS_STICKY_MS)
+                        .map(|(t, _)| t.clone());
+                    let osc = session.as_ref().and_then(|s| {
+                        let t = s.osc_title();
+                        if t.is_empty() { None } else { Some(t.to_string()) }
+                    });
+                    sticky
+                        .or(osc)
                         .unwrap_or_else(|| "shell".to_string())
                 }
                 Mode::Native { conn, .. } => match conn {
@@ -1128,8 +1156,13 @@ impl App {
             // unfocused intervals). On the active tab we keep it
             // cleared; on background tabs we OR it into Tab.attention
             // so the chip badge sticks until the user actually focuses.
+            // OSC 1337 also signals "Claude finished" so we drop the
+            // sticky status cache — next tick the OSC title takes over.
             if let Mode::Shell { session: Some(s) } = &tab.mode {
                 let new_attn = s.take_attention();
+                if new_attn {
+                    tab.last_status = None;
+                }
                 if i == active_idx {
                     tab.attention = false;
                 } else if new_attn {
@@ -1531,6 +1564,7 @@ fn main() {
         mode,
         label: String::new(),
         attention: false,
+        last_status: None,
     };
     let mut app = App {
         window: None,
