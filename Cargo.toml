@@ -1,0 +1,29 @@
+[package]
+name = "tmnl"
+version = "0.0.1"
+edition = "2024"
+
+[dependencies]
+winit = "0.30"
+wgpu = "23"
+pollster = "0.4"
+env_logger = "0.11"
+log = "0.4"
+fontdue = "0.9"
+bytemuck = { version = "1", features = ["derive"] }
+tmnl-protocol = { path = "../tmnl-protocol" }
+# Shell mode — host a real pty + parse its output into cells. Versions match
+# what mnml's pty_pane uses so we share one source-of-truth in the workspace.
+vt100 = "0.15"
+portable-pty = "0.8"
+# Native macOS menu bar (tmnl / Shell / Edit / View / Window / Help).
+# Same crate version as mixr-rs so we share one source-of-truth.
+muda = "0.16"
+# Config persistence — `~/.config/tmnl/config.toml`.
+toml = { version = "0.8", default-features = false, features = ["parse", "display"] }
+serde = { version = "1", features = ["derive"] }
+dirs = "5"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
