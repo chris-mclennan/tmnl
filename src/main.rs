@@ -252,8 +252,9 @@ impl Gpu {
     }
 
     /// Pixel-x where multi-chip rendering starts (clear of the macOS
-    /// traffic-light buttons + a small guard).
-    const CHIP_START_X_PX: f32 = 120.0;
+    /// traffic-light buttons + a comfortable guard so the first chip
+    /// doesn't visually touch the rightmost button).
+    const CHIP_START_X_PX: f32 = 170.0;
     /// Inner padding around the chip label (one cell-width on each
     /// side so the chip reads as a pill rather than just colored
     /// text).
@@ -1037,27 +1038,35 @@ impl App {
         self.refresh_active_tab();
     }
 
-    /// Repaint the active tab's view onto the shared grid. Until
-    /// commit 3/3 lands per-tab `Grid` storage, switching tabs
-    /// triggers the appropriate redraw path so the new tab's
-    /// content materializes:
-    ///   - Shell: bump bytes_seen so apply_to_grid re-runs on next tick.
-    ///   - Native (Streaming): server hasn't re-sent a frame, so the
-    ///     grid still shows the OLD tab's content until the next frame
-    ///     arrives. Acceptable for now — multi-Native is rare.
+    /// Repaint the newly-active tab's view onto the shared grid.
+    /// Each tab's underlying state (the vt100 parser for shells, the
+    /// Server's last-known frame for Native) is still intact — we
+    /// just need to paint it onto the shared `Gpu.grid` so the new
+    /// tab's content materializes immediately on switch.
+    ///   - Shell: clear gpu.grid + apply_to_grid from the shell's
+    ///     parser. The shell session keeps its full vt100 state
+    ///     even while it's a background tab, so this restores the
+    ///     prompt + scrollback faithfully.
     ///   - Native (Waiting/Connected): repaint idle banner.
+    ///   - Native (Streaming): grid stays empty until the next frame
+    ///     arrives from the client (commit 3/3 will buffer the last
+    ///     frame per-tab).
     fn refresh_active_tab(&mut self) {
         let Some(gpu) = self.gpu.as_mut() else { return };
-        match &self.tabs[self.active].mode {
+        match &mut self.tabs[self.active].mode {
             Mode::Shell { session } => {
-                if let Some(s) = session {
-                    // Clear gpu.grid so the new shell's apply_to_grid
-                    // doesn't overlay onto the old tab's cells.
+                if let Some(s) = session.as_mut() {
                     gpu.grid.clear();
-                    // apply_to_grid is called from tick when dirty();
-                    // poke the bytes_seen tracker so the next tick
-                    // re-applies regardless of incremental staleness.
-                    let _ = s; // currently no public force-redraw hook
+                    let (cc, cr, vis) = s.apply_to_grid(&mut gpu.grid);
+                    gpu.last_cursor = None;
+                    if vis
+                        && (cc as u32) < gpu.grid.cols
+                        && (cr as u32) < gpu.grid.rows
+                    {
+                        let i = (cr as u32 * gpu.grid.cols + cc as u32) as usize;
+                        gpu.grid.cells[i].attrs |= ATTR_CURSOR_BLOCK;
+                        gpu.last_cursor = Some(i);
+                    }
                 }
             }
             Mode::Native { conn, server, .. } => {
@@ -1104,11 +1113,31 @@ impl App {
                 tab.label = new_label;
             }
         }
+        // Disambiguate duplicate labels with " (N)" — only when the
+        // same exact string appears more than once. Chrome / VS Code
+        // pattern: don't number eagerly, but number every occurrence
+        // (including the first) once there's a collision.
+        let mut counts: std::collections::HashMap<&str, usize> =
+            std::collections::HashMap::new();
+        for t in &self.tabs {
+            *counts.entry(t.label.as_str()).or_insert(0) += 1;
+        }
+        let mut seen: std::collections::HashMap<&str, usize> =
+            std::collections::HashMap::new();
         let chips: Vec<(String, bool)> = self
             .tabs
             .iter()
             .enumerate()
-            .map(|(i, t)| (t.label.clone(), i == self.active))
+            .map(|(i, t)| {
+                let label = if counts.get(t.label.as_str()).copied().unwrap_or(0) > 1 {
+                    let n = seen.entry(t.label.as_str()).or_insert(0);
+                    *n += 1;
+                    format!("{} ({})", t.label, n)
+                } else {
+                    t.label.clone()
+                };
+                (label, i == self.active)
+            })
             .collect();
         gpu.set_strip_chips(&chips);
         match &mut self.tabs[self.active].mode {
