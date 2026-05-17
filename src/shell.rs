@@ -41,7 +41,19 @@ pub struct ShellSession {
     /// by anything running in the shell. Matches Terminal.app / iTerm2
     /// / Kitty convention.
     shell_name: String,
+    /// Cached foreground-process name (e.g. `vim`, `htop`, `less`) —
+    /// refreshed at most every `FG_POLL_INTERVAL` to keep the `ps`
+    /// invocation cheap. `None` ⇒ no foreground process distinct from
+    /// the shell. Used by the tab-label fallback chain between OSC
+    /// title and shell_name.
+    fg_proc_cache: Option<String>,
+    last_fg_poll: Option<std::time::Instant>,
 }
+
+/// How often to poll `ps` for the shell's foreground process. Shorter
+/// → more responsive label updates; longer → fewer fork+exec spikes
+/// when many shell tabs are open.
+const FG_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 
 impl ShellSession {
     pub fn spawn(
@@ -138,6 +150,8 @@ impl ShellSession {
             default_fg,
             attention_requested,
             shell_name,
+            fg_proc_cache: None,
+            last_fg_poll: None,
         })
     }
 
@@ -148,6 +162,65 @@ impl ShellSession {
         &self.shell_name
     }
 
+    /// Foreground process name running in this shell (e.g. `vim`,
+    /// `htop`, `less`). Polls `ps` at most every `FG_POLL_INTERVAL` —
+    /// the result is cached on `self` so per-tick calls are cheap.
+    /// Returns `None` when the only process is the shell itself.
+    pub fn fg_proc_name(&mut self) -> Option<&str> {
+        let now = std::time::Instant::now();
+        let due = self
+            .last_fg_poll
+            .map(|t| now.duration_since(t) >= FG_POLL_INTERVAL)
+            .unwrap_or(true);
+        if due {
+            self.last_fg_poll = Some(now);
+            if let Some(shell_pid) = self.child.process_id() {
+                self.fg_proc_cache = poll_child_proc(shell_pid, &self.shell_name);
+            }
+        }
+        self.fg_proc_cache.as_deref()
+    }
+}
+
+/// Run `ps -ax -o ppid=,comm=` once and return the first child of
+/// `parent_pid` whose comm differs from the shell's own name. The
+/// match is approximate — for most cases (one foreground program at a
+/// time) it's accurate; multi-child backgrounds picks the first row,
+/// which is usually-but-not-always the foreground. Acceptable for a
+/// label hint.
+fn poll_child_proc(parent_pid: u32, shell_name: &str) -> Option<String> {
+    let out = std::process::Command::new("ps")
+        .args(["-ax", "-o", "ppid=,comm="])
+        .output()
+        .ok()?;
+    let s = std::str::from_utf8(&out.stdout).ok()?;
+    let parent_str = parent_pid.to_string();
+    for line in s.lines() {
+        let mut parts = line.split_whitespace();
+        let ppid = parts.next()?;
+        if ppid != parent_str {
+            continue;
+        }
+        let comm = parts.collect::<Vec<_>>().join(" ");
+        // Strip absolute path + leading `-` (login-shell marker).
+        let base = std::path::Path::new(&comm)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&comm)
+            .trim_start_matches('-')
+            .to_string();
+        // Skip the shell process itself — we want a distinct child.
+        if base == shell_name {
+            continue;
+        }
+        if !base.is_empty() {
+            return Some(base);
+        }
+    }
+    None
+}
+
+impl ShellSession {
     /// Read + clear the OSC 1337 attention flag. Returns `true` if
     /// the shell emitted an attention-request since the last call —
     /// app uses this to badge background tabs with a notification

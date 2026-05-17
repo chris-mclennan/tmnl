@@ -1319,7 +1319,7 @@ impl App {
         // both updates skip the write when nothing changed.
         let active_idx = self.active;
         for (i, tab) in self.tabs.iter_mut().enumerate() {
-            let new_label: String = match &tab.mode {
+            let new_label: String = match &mut tab.mode {
                 Mode::Shell { session } => {
                     // Prefer the live status line if visible — Claude
                     // Code's `✽ Wandering…` spinner pattern cycles each
@@ -1352,7 +1352,14 @@ impl App {
                             Some(t.to_string())
                         }
                     });
-                    sticky.or(osc).unwrap_or_else(|| {
+                    // Fallback chain: sticky status > OSC title >
+                    // foreground process name > shell name. The fg
+                    // name surfaces when something like `vim` / `htop`
+                    // / `less` is running but doesn't set an OSC title.
+                    let fg = session
+                        .as_mut()
+                        .and_then(|s| s.fg_proc_name().map(|n| n.to_string()));
+                    sticky.or(osc).or(fg).unwrap_or_else(|| {
                         session
                             .as_ref()
                             .map(|s| s.shell_name().to_string())
