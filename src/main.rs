@@ -41,7 +41,7 @@ const FONT_PX: f32 = 14.0;
 /// background, and the cell pipeline draws on top with no overlap
 /// (offset by `inset_px + MACOS_TAB_STRIP_PX`).
 #[cfg(target_os = "macos")]
-const MACOS_TAB_STRIP_PX: f32 = 56.0;
+const MACOS_TAB_STRIP_PX: f32 = 72.0;
 #[cfg(not(target_os = "macos"))]
 const MACOS_TAB_STRIP_PX: f32 = 0.0;
 // Frame background — fills (a) the top pad reserved for the macOS
@@ -333,10 +333,18 @@ impl Gpu {
     /// land inside the tab strip. Uses fractional / negative `cell_pos`
     /// values so the existing cell pipeline draws each glyph (and its
     /// per-cell bg) at pixel-precise locations regardless of inset.
+    /// Layout per chip (consistent active / inactive, single / multi):
+    ///
+    ///   ` <attn?> <label> · × `
+    ///
     /// Active chip: bg = `ACTIVE_CHIP_BG` (lightened) + BOLD fg.
     /// Inactive chip: bg = STRIP_BG, fg = DIM_FG.
-    /// Inactive + attention: leading `● ` in red, label in DIM_FG.
-    /// After the last chip: a `+` new-tab button (own click rect).
+    /// Attention chip (inactive only): a leading `● ` in red.
+    /// The `×` close glyph is muted (no red shout) and sits one cell
+    /// away from the label so it doesn't crowd the text. Always present
+    /// — click is a no-op on single-tab (close_tab_at refuses), but the
+    /// visual stays consistent across active / inactive and single /
+    /// multi-tab. After the last chip: a `+` new-tab button.
     fn strip_chip_instances(&mut self) -> Vec<pipeline::Instance> {
         use crate::atlas::style_from_attrs;
         self.strip_chip_rects.clear();
@@ -356,55 +364,16 @@ impl Gpu {
         // Attention dot color — red, matches OSC 1337 "needs attention"
         // urgency level.
         const ATTENTION_FG: [f32; 4] = [0.95, 0.32, 0.32, 1.0];
+        // Muted close glyph color — dimmer than dim_fg so the `×` reads
+        // as chrome rather than a callout. Brighter on the active chip
+        // (TEXT_FG-dimmed) so it's discoverable but not loud.
+        const CLOSE_FG_INACTIVE: [f32; 4] = [0.40, 0.42, 0.48, 1.0];
+        const CLOSE_FG_ACTIVE: [f32; 4] = [0.70, 0.72, 0.78, 1.0];
         const ATTR_BOLD: u32 = 1;
 
-        // Single chip: centered (Safari-style window title). Multi:
-        // N chips stacked left-aligned after the traffic-light buttons.
-        if self.strip_chips.len() == 1 {
-            let label = self.strip_chips[0].0.clone();
-            if label.is_empty() {
-                return Vec::new();
-            }
-            let label_w_px = label.chars().count() as f32 * cell_w;
-            let viewport_w = self.config.width as f32;
-            let centered_x = (viewport_w - label_w_px) * 0.5;
-            let label_x_px = if centered_x >= Self::CHIP_START_X_PX {
-                centered_x
-            } else {
-                Self::CHIP_START_X_PX
-            };
-            let base_x = (label_x_px - self.inset_px) / cell_w;
-            // Single chip — click anywhere on it is still a no-op (only
-            // one tab), but record the rect so middle-click → close still
-            // works (`close_tab_at` exits when there's just one tab).
-            self.strip_chip_rects
-                .push((label_x_px, label_x_px + label_w_px, 0));
-            let mut out = Vec::with_capacity(label.chars().count());
-            for (i, ch) in label.chars().enumerate() {
-                let g = self
-                    .atlas
-                    .glyph(ch, style_from_attrs(ATTR_BOLD), &self.queue);
-                out.push(pipeline::Instance {
-                    cell_pos: [base_x + i as f32, base_y],
-                    fg: TEXT_FG,
-                    bg: STRIP_BG,
-                    uv_min: g.uv_min,
-                    uv_max: g.uv_max,
-                    glyph_offset: g.offset,
-                    glyph_size: g.size,
-                    attrs: ATTR_BOLD,
-                    _pad: 0,
-                });
-            }
-            // Pad past the chip + register the `+` new-tab button.
-            let plus_x_px = label_x_px + label_w_px + 2.0 * cell_w;
-            self.push_plus_button(&mut out, plus_x_px, base_y);
-            return out;
-        }
-
-        // Multi-chip: pad each label with `CHIP_PAD_CELLS` on each side
-        // (rendered as space glyphs with the chip's bg), separated by
-        // `CHIP_GAP_CELLS` (no glyphs, just empty viewport pixels).
+        // Always left-align starting from CHIP_START_X_PX — no Safari-style
+        // centering for the single-tab case (it caused a jarring shift left
+        // when the user opened a second tab).
         let start_x_px = Self::CHIP_START_X_PX;
         let base_x = (start_x_px - self.inset_px) / cell_w;
         let mut col_offset = 0.0_f32;
@@ -413,6 +382,26 @@ impl Gpu {
         let chips: Vec<(String, bool, bool)> = self.strip_chips.clone();
         let space_g = self.atlas.glyph(' ', style_from_attrs(0), &self.queue);
         let mut out: Vec<pipeline::Instance> = Vec::new();
+
+        let push_pad = |out: &mut Vec<pipeline::Instance>,
+                        col_offset: &mut f32,
+                        bg: [f32; 4],
+                        fg: [f32; 4],
+                        space_g: &crate::atlas::AtlasGlyph| {
+            out.push(pipeline::Instance {
+                cell_pos: [base_x + *col_offset, base_y],
+                fg,
+                bg,
+                uv_min: space_g.uv_min,
+                uv_max: space_g.uv_max,
+                glyph_offset: space_g.offset,
+                glyph_size: space_g.size,
+                attrs: 0,
+                _pad: 0,
+            });
+            *col_offset += 1.0;
+        };
+
         for (i, (label, active, attention)) in chips.iter().enumerate() {
             let chip_x0_px = start_x_px + col_offset * cell_w;
             let (fg, bg, attrs) = if *active {
@@ -422,18 +411,7 @@ impl Gpu {
             };
             // Left pad.
             for _ in 0..Self::CHIP_PAD_CELLS as usize {
-                out.push(pipeline::Instance {
-                    cell_pos: [base_x + col_offset, base_y],
-                    fg,
-                    bg,
-                    uv_min: space_g.uv_min,
-                    uv_max: space_g.uv_max,
-                    glyph_offset: space_g.offset,
-                    glyph_size: space_g.size,
-                    attrs: 0,
-                    _pad: 0,
-                });
-                col_offset += 1.0;
+                push_pad(&mut out, &mut col_offset, bg, fg, &space_g);
             }
             // Attention dot — only on inactive chips (active tab clears
             // the flag on focus). Red `●` + a trailing space.
@@ -451,18 +429,7 @@ impl Gpu {
                     _pad: 0,
                 });
                 col_offset += 1.0;
-                out.push(pipeline::Instance {
-                    cell_pos: [base_x + col_offset, base_y],
-                    fg,
-                    bg,
-                    uv_min: space_g.uv_min,
-                    uv_max: space_g.uv_max,
-                    glyph_offset: space_g.offset,
-                    glyph_size: space_g.size,
-                    attrs: 0,
-                    _pad: 0,
-                });
-                col_offset += 1.0;
+                push_pad(&mut out, &mut col_offset, bg, fg, &space_g);
             }
             // Label glyphs.
             for ch in label.chars() {
@@ -480,54 +447,43 @@ impl Gpu {
                 });
                 col_offset += 1.0;
             }
-            // `⊗` close badge for non-active chips. Painted between the
-            // label and the right pad so a click on the glyph is
-            // distinct from a click on the label (the chip-rect hit
-            // test still covers the close cell — close_rect is checked
-            // first in the mouse dispatcher).
-            let mut close_x_px: Option<f32> = None;
-            if !*active {
-                let close_g = self.atlas.glyph('⊗', style_from_attrs(0), &self.queue);
-                let x0 = start_x_px + col_offset * cell_w;
-                out.push(pipeline::Instance {
-                    cell_pos: [base_x + col_offset, base_y],
-                    // Dim red so the badge reads as "close" without
-                    // shouting — same chrome convention NvChad uses
-                    // for the per-tab close glyph.
-                    fg: [0.85, 0.40, 0.40, 1.0],
-                    bg,
-                    uv_min: close_g.uv_min,
-                    uv_max: close_g.uv_max,
-                    glyph_offset: close_g.offset,
-                    glyph_size: close_g.size,
-                    attrs: 0,
-                    _pad: 0,
-                });
-                close_x_px = Some(x0);
-                col_offset += 1.0;
-            }
+            // One-cell gap between label and the `×` close glyph — the
+            // close used to sit flush against the label and crowded it.
+            push_pad(&mut out, &mut col_offset, bg, fg, &space_g);
+            // `×` close glyph — painted on every chip (single and
+            // multi-tab, active and inactive). Muted on inactive,
+            // slightly brighter on active.
+            let close_fg = if *active {
+                CLOSE_FG_ACTIVE
+            } else {
+                CLOSE_FG_INACTIVE
+            };
+            let close_g = self
+                .atlas
+                .glyph('\u{00D7}', style_from_attrs(0), &self.queue);
+            let close_x_px = start_x_px + col_offset * cell_w;
+            out.push(pipeline::Instance {
+                cell_pos: [base_x + col_offset, base_y],
+                fg: close_fg,
+                bg,
+                uv_min: close_g.uv_min,
+                uv_max: close_g.uv_max,
+                glyph_offset: close_g.offset,
+                glyph_size: close_g.size,
+                attrs: 0,
+                _pad: 0,
+            });
+            col_offset += 1.0;
             // Right pad.
             for _ in 0..Self::CHIP_PAD_CELLS as usize {
-                out.push(pipeline::Instance {
-                    cell_pos: [base_x + col_offset, base_y],
-                    fg,
-                    bg,
-                    uv_min: space_g.uv_min,
-                    uv_max: space_g.uv_max,
-                    glyph_offset: space_g.offset,
-                    glyph_size: space_g.size,
-                    attrs: 0,
-                    _pad: 0,
-                });
-                col_offset += 1.0;
+                push_pad(&mut out, &mut col_offset, bg, fg, &space_g);
             }
             // Record the chip's pixel-x extent BEFORE moving past the
             // gap so the click region matches the painted chip exactly.
             let chip_x1_px = start_x_px + col_offset * cell_w;
             self.strip_chip_rects.push((chip_x0_px, chip_x1_px, i));
-            if let Some(cx) = close_x_px {
-                self.strip_chip_close_rects.push((cx, cx + cell_w, i));
-            }
+            self.strip_chip_close_rects
+                .push((close_x_px, close_x_px + cell_w, i));
             // Inter-chip gap.
             col_offset += Self::CHIP_GAP_CELLS;
         }
