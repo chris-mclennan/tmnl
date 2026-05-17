@@ -180,12 +180,15 @@ struct Gpu {
     /// to route strip-region mouse clicks (left → switch_to_tab,
     /// middle → close_tab_at).
     strip_chip_rects: Vec<(f32, f32, usize)>,
-    /// Tab chips painted in the strip. `(label, is_active)` per tab,
+    /// Pixel-x extent `(x0, x1)` of the trailing `+` new-tab button.
+    /// Painted only when chips are visible. Click → `new_shell_tab`.
+    strip_new_tab_rect: Option<(f32, f32)>,
+    /// Tab chips painted in the strip. `(label, is_active, attention)` per tab,
     /// in display order. App rewrites this each tick. Empty Vec ⇒
     /// strip is bg only. Length 1 ⇒ single label, centered (Safari-
     /// style "window title"). Length > 1 ⇒ N chips left-aligned
     /// after the traffic-light buttons.
-    strip_chips: Vec<(String, bool)>,
+    strip_chips: Vec<(String, bool, bool)>,
 }
 
 impl Gpu {
@@ -263,19 +266,21 @@ impl Gpu {
             strip_pipeline,
             strip_chips: Vec::new(),
             strip_chip_rects: Vec::new(),
+            strip_new_tab_rect: None,
         }
     }
 
     /// Set the chip list rendered in the tab strip. App calls this
-    /// each tick with one entry per open tab (`(label, is_active)`).
-    /// Skips the write when contents haven't changed.
-    fn set_strip_chips(&mut self, chips: &[(String, bool)]) {
+    /// each tick with one entry per open tab
+    /// (`(label, is_active, attention)`). Skips the write when
+    /// contents haven't changed.
+    fn set_strip_chips(&mut self, chips: &[(String, bool, bool)]) {
         if self.strip_chips.len() != chips.len()
             || self
                 .strip_chips
                 .iter()
                 .zip(chips)
-                .any(|((a, b), (c, d))| a != c || b != d)
+                .any(|((a, b, c), (d, e, f))| a != d || b != e || c != f)
         {
             self.strip_chips = chips.to_vec();
         }
@@ -296,11 +301,14 @@ impl Gpu {
     /// land inside the tab strip. Uses fractional / negative `cell_pos`
     /// values so the existing cell pipeline draws each glyph (and its
     /// per-cell bg) at pixel-precise locations regardless of inset.
-    /// Active chip: bg = `STRIP_BG` lightened, fg = TEXT_FG.
+    /// Active chip: bg = `ACTIVE_CHIP_BG` (lightened) + BOLD fg.
     /// Inactive chip: bg = STRIP_BG, fg = DIM_FG.
+    /// Inactive + attention: leading `● ` in red, label in DIM_FG.
+    /// After the last chip: a `+` new-tab button (own click rect).
     fn strip_chip_instances(&mut self) -> Vec<pipeline::Instance> {
         use crate::atlas::style_from_attrs;
         self.strip_chip_rects.clear();
+        self.strip_new_tab_rect = None;
         if self.strip_chips.is_empty() || MACOS_TAB_STRIP_PX <= 0.0 {
             return Vec::new();
         }
@@ -309,6 +317,13 @@ impl Gpu {
         let label_y_px = ((MACOS_TAB_STRIP_PX - cell_h) * 0.5).max(0.0);
         let inset_y_total = self.inset_px + MACOS_TAB_STRIP_PX;
         let base_y = (label_y_px - inset_y_total) / cell_h;
+        // Active chip's bg — a lightened version of STRIP_BG so the
+        // active tab stands out as a pill. Roughly `STRIP_BG + 0.06`.
+        const ACTIVE_CHIP_BG: [f32; 4] = [0.21, 0.24, 0.28, 1.0];
+        // Attention dot color — red, matches OSC 1337 "needs attention"
+        // urgency level.
+        const ATTENTION_FG: [f32; 4] = [0.95, 0.32, 0.32, 1.0];
+        const ATTR_BOLD: u32 = 1;
 
         // Single chip: centered (Safari-style window title). Multi:
         // N chips stacked left-aligned after the traffic-light buttons.
@@ -333,7 +348,9 @@ impl Gpu {
                 .push((label_x_px, label_x_px + label_w_px, 0));
             let mut out = Vec::with_capacity(label.chars().count());
             for (i, ch) in label.chars().enumerate() {
-                let g = self.atlas.glyph(ch, style_from_attrs(0), &self.queue);
+                let g = self
+                    .atlas
+                    .glyph(ch, style_from_attrs(ATTR_BOLD), &self.queue);
                 out.push(pipeline::Instance {
                     cell_pos: [base_x + i as f32, base_y],
                     fg: TEXT_FG,
@@ -342,10 +359,13 @@ impl Gpu {
                     uv_max: g.uv_max,
                     glyph_offset: g.offset,
                     glyph_size: g.size,
-                    attrs: 0,
+                    attrs: ATTR_BOLD,
                     _pad: 0,
                 });
             }
+            // Pad past the chip + register the `+` new-tab button.
+            let plus_x_px = label_x_px + label_w_px + 2.0 * cell_w;
+            self.push_plus_button(&mut out, plus_x_px, base_y);
             return out;
         }
 
@@ -355,20 +375,17 @@ impl Gpu {
         let start_x_px = Self::CHIP_START_X_PX;
         let base_x = (start_x_px - self.inset_px) / cell_w;
         let mut col_offset = 0.0_f32;
-        // Active chip's bg — a lightened version of STRIP_BG so the
-        // active tab stands out as a pill. Roughly `STRIP_BG + 0.06`.
-        const ACTIVE_CHIP_BG: [f32; 4] = [0.21, 0.24, 0.28, 1.0];
         // Snapshot chips so we don't borrow self.strip_chips through
         // the loop (atlas.glyph wants &mut self.atlas concurrently).
-        let chips: Vec<(String, bool)> = self.strip_chips.clone();
+        let chips: Vec<(String, bool, bool)> = self.strip_chips.clone();
         let space_g = self.atlas.glyph(' ', style_from_attrs(0), &self.queue);
         let mut out: Vec<pipeline::Instance> = Vec::new();
-        for (i, (label, active)) in chips.iter().enumerate() {
+        for (i, (label, active, attention)) in chips.iter().enumerate() {
             let chip_x0_px = start_x_px + col_offset * cell_w;
-            let (fg, bg) = if *active {
-                (TEXT_FG, ACTIVE_CHIP_BG)
+            let (fg, bg, attrs) = if *active {
+                (TEXT_FG, ACTIVE_CHIP_BG, ATTR_BOLD)
             } else {
-                (DIM_FG, STRIP_BG)
+                (DIM_FG, STRIP_BG, 0)
             };
             // Left pad.
             for _ in 0..Self::CHIP_PAD_CELLS as usize {
@@ -385,9 +402,38 @@ impl Gpu {
                 });
                 col_offset += 1.0;
             }
+            // Attention dot — only on inactive chips (active tab clears
+            // the flag on focus). Red `●` + a trailing space.
+            if *attention && !*active {
+                let dot_g = self.atlas.glyph('●', style_from_attrs(0), &self.queue);
+                out.push(pipeline::Instance {
+                    cell_pos: [base_x + col_offset, base_y],
+                    fg: ATTENTION_FG,
+                    bg,
+                    uv_min: dot_g.uv_min,
+                    uv_max: dot_g.uv_max,
+                    glyph_offset: dot_g.offset,
+                    glyph_size: dot_g.size,
+                    attrs: 0,
+                    _pad: 0,
+                });
+                col_offset += 1.0;
+                out.push(pipeline::Instance {
+                    cell_pos: [base_x + col_offset, base_y],
+                    fg,
+                    bg,
+                    uv_min: space_g.uv_min,
+                    uv_max: space_g.uv_max,
+                    glyph_offset: space_g.offset,
+                    glyph_size: space_g.size,
+                    attrs: 0,
+                    _pad: 0,
+                });
+                col_offset += 1.0;
+            }
             // Label glyphs.
             for ch in label.chars() {
-                let g = self.atlas.glyph(ch, style_from_attrs(0), &self.queue);
+                let g = self.atlas.glyph(ch, style_from_attrs(attrs), &self.queue);
                 out.push(pipeline::Instance {
                     cell_pos: [base_x + col_offset, base_y],
                     fg,
@@ -396,7 +442,7 @@ impl Gpu {
                     uv_max: g.uv_max,
                     glyph_offset: g.offset,
                     glyph_size: g.size,
-                    attrs: 0,
+                    attrs,
                     _pad: 0,
                 });
                 col_offset += 1.0;
@@ -423,7 +469,40 @@ impl Gpu {
             // Inter-chip gap.
             col_offset += Self::CHIP_GAP_CELLS;
         }
+        // `+` new-tab button after the gap past the last chip.
+        let plus_x_px = start_x_px + col_offset * cell_w;
+        self.push_plus_button(&mut out, plus_x_px, base_y);
         out
+    }
+
+    /// Paint the trailing `+` new-tab button at `plus_x_px` and record
+    /// its pixel-x extent on `strip_new_tab_rect`. The chrome is a
+    /// single glyph (`+`) padded left/right with two spaces so the
+    /// click target is comfortably-sized.
+    fn push_plus_button(&mut self, out: &mut Vec<pipeline::Instance>, plus_x_px: f32, base_y: f32) {
+        use crate::atlas::style_from_attrs;
+        // Slightly lifted bg so the button reads as chrome rather than
+        // strip filler. Same shade as the active chip.
+        const PLUS_BG: [f32; 4] = [0.18, 0.20, 0.24, 1.0];
+        let cell_w = self.atlas.cell_w;
+        let plus_x = (plus_x_px - self.inset_px) / cell_w;
+        let space_g = self.atlas.glyph(' ', style_from_attrs(0), &self.queue);
+        let plus_g = self.atlas.glyph('+', style_from_attrs(0), &self.queue);
+        // 3-cell button: [space, +, space]
+        for (i, g) in [&space_g, &plus_g, &space_g].iter().enumerate() {
+            out.push(pipeline::Instance {
+                cell_pos: [plus_x + i as f32, base_y],
+                fg: TEXT_FG,
+                bg: PLUS_BG,
+                uv_min: g.uv_min,
+                uv_max: g.uv_max,
+                glyph_offset: g.offset,
+                glyph_size: g.size,
+                attrs: 0,
+                _pad: 0,
+            });
+        }
+        self.strip_new_tab_rect = Some((plus_x_px, plus_x_px + 3.0 * cell_w));
     }
 
     fn resize(&mut self, w: u32, h: u32) -> Option<(u16, u16)> {
@@ -886,6 +965,16 @@ impl ApplicationHandler for App {
                     let in_chrome = py < (gpu.inset_px + MACOS_TAB_STRIP_PX) as f64;
                     if in_chrome {
                         if pressed {
+                            // `+` new-tab button sits past the last chip;
+                            // check it first since its rect is disjoint.
+                            let on_plus = gpu
+                                .strip_new_tab_rect
+                                .map(|(x0, x1)| px >= x0 as f64 && px < x1 as f64)
+                                .unwrap_or(false);
+                            if on_plus && button == MouseButton::Left {
+                                self.new_shell_tab();
+                                return;
+                            }
                             let hit = gpu
                                 .strip_chip_rects
                                 .iter()
@@ -1309,24 +1398,22 @@ impl App {
             *counts.entry(t.label.as_str()).or_insert(0) += 1;
         }
         let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
-        let chips: Vec<(String, bool)> = self
+        let chips: Vec<(String, bool, bool)> = self
             .tabs
             .iter()
             .enumerate()
             .map(|(i, t)| {
-                let mut label = if counts.get(t.label.as_str()).copied().unwrap_or(0) > 1 {
+                let label = if counts.get(t.label.as_str()).copied().unwrap_or(0) > 1 {
                     let n = seen.entry(t.label.as_str()).or_insert(0);
                     *n += 1;
                     format!("{} ({})", t.label, n)
                 } else {
                     t.label.clone()
                 };
-                // Attention dot for inactive tabs whose process flipped
-                // OSC 1337 since the last focus. Cleared on switch-to.
-                if t.attention && i != self.active {
-                    label = format!("● {label}");
-                }
-                (label, i == self.active)
+                // Attention dot is painted by the chip renderer (red `●`).
+                // Cleared on switch-to.
+                let attention = t.attention && i != self.active;
+                (label, i == self.active, attention)
             })
             .collect();
         gpu.set_strip_chips(&chips);
