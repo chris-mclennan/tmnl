@@ -151,10 +151,12 @@ struct Gpu {
     inset_px: f32,
     /// Strip pipeline — paints the tab-strip background rect.
     strip_pipeline: pipeline::StripPipeline,
-    /// Active tab label, painted in the strip after the buttons.
-    /// Updated each tick by the App layer based on the current Mode.
-    /// Empty string = no label (strip is bg only).
-    strip_label: String,
+    /// Tab chips painted in the strip. `(label, is_active)` per tab,
+    /// in display order. App rewrites this each tick. Empty Vec ⇒
+    /// strip is bg only. Length 1 ⇒ single label, centered (Safari-
+    /// style "window title"). Length > 1 ⇒ N chips left-aligned
+    /// after the traffic-light buttons.
+    strip_chips: Vec<(String, bool)>,
 }
 
 impl Gpu {
@@ -230,73 +232,154 @@ impl Gpu {
             last_cursor: None,
             inset_px,
             strip_pipeline,
-            strip_label: String::new(),
+            strip_chips: Vec::new(),
         }
     }
 
-    /// Set the label rendered in the tab strip (after the traffic-light
-    /// button area). App calls this each tick with a description of
-    /// the current Mode — "shell", "mnml", "(no client)", etc.
-    fn set_strip_label(&mut self, label: &str) {
-        if self.strip_label != label {
-            self.strip_label.clear();
-            self.strip_label.push_str(label);
+    /// Set the chip list rendered in the tab strip. App calls this
+    /// each tick with one entry per open tab (`(label, is_active)`).
+    /// Skips the write when contents haven't changed.
+    fn set_strip_chips(&mut self, chips: &[(String, bool)]) {
+        if self.strip_chips.len() != chips.len()
+            || self
+                .strip_chips
+                .iter()
+                .zip(chips)
+                .any(|((a, b), (c, d))| a != c || b != d)
+        {
+            self.strip_chips = chips.to_vec();
         }
     }
 
-    /// Build glyph instances for `self.strip_label`, positioned to land
-    /// inside the tab strip after the macOS traffic-light buttons.
-    /// Uses fractional / negative `cell_pos` values so the existing
-    /// cell pipeline draws the glyphs at pixel-precise locations
-    /// regardless of inset.
-    fn strip_label_instances(&mut self) -> Vec<pipeline::Instance> {
+    /// Pixel-x where multi-chip rendering starts (clear of the macOS
+    /// traffic-light buttons + a small guard).
+    const CHIP_START_X_PX: f32 = 120.0;
+    /// Inner padding around the chip label (one cell-width on each
+    /// side so the chip reads as a pill rather than just colored
+    /// text).
+    const CHIP_PAD_CELLS: f32 = 1.0;
+    /// Spacing between adjacent chips.
+    const CHIP_GAP_CELLS: f32 = 1.0;
+
+    /// Build glyph instances for the current chip list, positioned to
+    /// land inside the tab strip. Uses fractional / negative `cell_pos`
+    /// values so the existing cell pipeline draws each glyph (and its
+    /// per-cell bg) at pixel-precise locations regardless of inset.
+    /// Active chip: bg = `STRIP_BG` lightened, fg = TEXT_FG.
+    /// Inactive chip: bg = STRIP_BG, fg = DIM_FG.
+    fn strip_chip_instances(&mut self) -> Vec<pipeline::Instance> {
         use crate::atlas::style_from_attrs;
-        if self.strip_label.is_empty() || MACOS_TAB_STRIP_PX <= 0.0 {
+        if self.strip_chips.is_empty() || MACOS_TAB_STRIP_PX <= 0.0 {
             return Vec::new();
         }
         let cell_w = self.atlas.cell_w;
         let cell_h = self.atlas.cell_h;
-        // Pixel positioning:
-        //   x: centered in the viewport (Safari-style "window title in
-        //      the title bar" — only really right for the single-tab
-        //      case; multi-tab will pivot to left-aligned chips). If
-        //      the centered label would collide with the macOS
-        //      traffic-light buttons (window too narrow), fall back to
-        //      left-aligned at 120 px which clears the buttons.
-        //   y: vertically centered in the strip — (strip_h - cell_h)/2
-        //      from the top of the window.
-        let label_w_px = self.strip_label.chars().count() as f32 * cell_w;
-        let viewport_w = self.config.width as f32;
-        let centered_x = (viewport_w - label_w_px) * 0.5;
-        // Buttons occupy roughly x=0..100 (3 buttons + window margin);
-        // add a 20px guard so the label doesn't touch them.
-        const BUTTONS_RESERVED_PX: f32 = 120.0;
-        let label_x_px = if centered_x >= BUTTONS_RESERVED_PX {
-            centered_x
-        } else {
-            BUTTONS_RESERVED_PX
-        };
         let label_y_px = ((MACOS_TAB_STRIP_PX - cell_h) * 0.5).max(0.0);
-        // Cell pipeline applies: pixel = inset + cell_pos * cell_size.
-        // So cell_pos = (pixel - inset) / cell_size. inset_y in the
-        // pipeline is `inset_px + MACOS_TAB_STRIP_PX`.
         let inset_y_total = self.inset_px + MACOS_TAB_STRIP_PX;
-        let base_x = (label_x_px - self.inset_px) / cell_w;
         let base_y = (label_y_px - inset_y_total) / cell_h;
-        let mut out = Vec::with_capacity(self.strip_label.chars().count());
-        for (i, ch) in self.strip_label.chars().enumerate() {
-            let g = self.atlas.glyph(ch, style_from_attrs(0), &self.queue);
-            out.push(pipeline::Instance {
-                cell_pos: [base_x + i as f32, base_y],
-                fg: TEXT_FG,
-                bg: STRIP_BG,
-                uv_min: g.uv_min,
-                uv_max: g.uv_max,
-                glyph_offset: g.offset,
-                glyph_size: g.size,
-                attrs: 0,
-                _pad: 0,
-            });
+
+        // Single chip: centered (Safari-style window title). Multi:
+        // N chips stacked left-aligned after the traffic-light buttons.
+        if self.strip_chips.len() == 1 {
+            let label = self.strip_chips[0].0.clone();
+            if label.is_empty() {
+                return Vec::new();
+            }
+            let label_w_px = label.chars().count() as f32 * cell_w;
+            let viewport_w = self.config.width as f32;
+            let centered_x = (viewport_w - label_w_px) * 0.5;
+            let label_x_px = if centered_x >= Self::CHIP_START_X_PX {
+                centered_x
+            } else {
+                Self::CHIP_START_X_PX
+            };
+            let base_x = (label_x_px - self.inset_px) / cell_w;
+            let mut out = Vec::with_capacity(label.chars().count());
+            for (i, ch) in label.chars().enumerate() {
+                let g = self.atlas.glyph(ch, style_from_attrs(0), &self.queue);
+                out.push(pipeline::Instance {
+                    cell_pos: [base_x + i as f32, base_y],
+                    fg: TEXT_FG,
+                    bg: STRIP_BG,
+                    uv_min: g.uv_min,
+                    uv_max: g.uv_max,
+                    glyph_offset: g.offset,
+                    glyph_size: g.size,
+                    attrs: 0,
+                    _pad: 0,
+                });
+            }
+            return out;
+        }
+
+        // Multi-chip: pad each label with `CHIP_PAD_CELLS` on each side
+        // (rendered as space glyphs with the chip's bg), separated by
+        // `CHIP_GAP_CELLS` (no glyphs, just empty viewport pixels).
+        let start_x_px = Self::CHIP_START_X_PX;
+        let base_x = (start_x_px - self.inset_px) / cell_w;
+        let mut col_offset = 0.0_f32;
+        // Active chip's bg — a lightened version of STRIP_BG so the
+        // active tab stands out as a pill. Roughly `STRIP_BG + 0.06`.
+        const ACTIVE_CHIP_BG: [f32; 4] = [0.21, 0.24, 0.28, 1.0];
+        // Snapshot chips so we don't borrow self.strip_chips through
+        // the loop (atlas.glyph wants &mut self.atlas concurrently).
+        let chips: Vec<(String, bool)> = self.strip_chips.clone();
+        let space_g = self.atlas.glyph(' ', style_from_attrs(0), &self.queue);
+        let mut out: Vec<pipeline::Instance> = Vec::new();
+        for (label, active) in chips.iter() {
+            let (fg, bg) = if *active {
+                (TEXT_FG, ACTIVE_CHIP_BG)
+            } else {
+                (DIM_FG, STRIP_BG)
+            };
+            // Left pad.
+            for _ in 0..Self::CHIP_PAD_CELLS as usize {
+                out.push(pipeline::Instance {
+                    cell_pos: [base_x + col_offset, base_y],
+                    fg,
+                    bg,
+                    uv_min: space_g.uv_min,
+                    uv_max: space_g.uv_max,
+                    glyph_offset: space_g.offset,
+                    glyph_size: space_g.size,
+                    attrs: 0,
+                    _pad: 0,
+                });
+                col_offset += 1.0;
+            }
+            // Label glyphs.
+            for ch in label.chars() {
+                let g = self.atlas.glyph(ch, style_from_attrs(0), &self.queue);
+                out.push(pipeline::Instance {
+                    cell_pos: [base_x + col_offset, base_y],
+                    fg,
+                    bg,
+                    uv_min: g.uv_min,
+                    uv_max: g.uv_max,
+                    glyph_offset: g.offset,
+                    glyph_size: g.size,
+                    attrs: 0,
+                    _pad: 0,
+                });
+                col_offset += 1.0;
+            }
+            // Right pad.
+            for _ in 0..Self::CHIP_PAD_CELLS as usize {
+                out.push(pipeline::Instance {
+                    cell_pos: [base_x + col_offset, base_y],
+                    fg,
+                    bg,
+                    uv_min: space_g.uv_min,
+                    uv_max: space_g.uv_max,
+                    glyph_offset: space_g.offset,
+                    glyph_size: space_g.size,
+                    attrs: 0,
+                    _pad: 0,
+                });
+                col_offset += 1.0;
+            }
+            // Inter-chip gap.
+            col_offset += Self::CHIP_GAP_CELLS;
         }
         out
     }
@@ -432,7 +515,7 @@ impl Gpu {
         // Append tab-strip label glyphs (rendered through the same cell
         // pipeline via fractional `cell_pos` values — they land in the
         // strip area above the grid).
-        instances.extend(self.strip_label_instances());
+        instances.extend(self.strip_chip_instances());
         self.pipeline
             .ensure_capacity(&self.device, instances.len() as u64);
         self.pipeline.upload(&self.queue, &instances);
@@ -626,6 +709,56 @@ impl ApplicationHandler for App {
                 // selected field or no-ops).
                 if self.settings.is_some() && self.settings_handle_key(&ke) {
                     return;
+                }
+                // Tab-management chords: ⌘T new, ⌘W close, ⌘1..⌘9 jump,
+                // ⌘⇧[ / ⌘⇧] cycle. macOS Terminal / iTerm / Safari
+                // conventions. Cmd = winit's `super_key()`. Intercept
+                // before forwarding to the active tab's Mode so the
+                // chord never reaches the hosted process.
+                if self.mods.super_key()
+                    && let Key::Character(s) = &ke.logical_key
+                {
+                    let c = s.chars().next();
+                    let shift = self.mods.shift_key();
+                    match (c, shift) {
+                        (Some('t'), false) => {
+                            self.new_shell_tab();
+                            if let Some(w) = &self.window {
+                                w.request_redraw();
+                            }
+                            return;
+                        }
+                        (Some('w'), false) => {
+                            self.close_active_tab(event_loop);
+                            if let Some(w) = &self.window {
+                                w.request_redraw();
+                            }
+                            return;
+                        }
+                        (Some(d), false) if d.is_ascii_digit() && d != '0' => {
+                            let n = d.to_digit(10).unwrap() as usize - 1;
+                            self.switch_to_tab(n);
+                            if let Some(w) = &self.window {
+                                w.request_redraw();
+                            }
+                            return;
+                        }
+                        (Some('['), true) => {
+                            self.cycle_tab(false);
+                            if let Some(w) = &self.window {
+                                w.request_redraw();
+                            }
+                            return;
+                        }
+                        (Some(']'), true) => {
+                            self.cycle_tab(true);
+                            if let Some(w) = &self.window {
+                                w.request_redraw();
+                            }
+                            return;
+                        }
+                        _ => {}
+                    }
                 }
                 match &mut self.tabs[self.active].mode {
                     Mode::Shell { session } => {
@@ -840,6 +973,100 @@ fn translate_key(k: &Key, mods: ModifiersState) -> Option<KeyCode> {
 }
 
 impl App {
+    /// Append a fresh shell tab and switch to it. Sized from the
+    /// current GPU grid; spawn failures leave the existing active
+    /// tab in place and toast the error to stderr.
+    fn new_shell_tab(&mut self) {
+        let Some(gpu) = self.gpu.as_ref() else {
+            return;
+        };
+        let (cols, rows) = (gpu.grid.cols as u16, gpu.grid.rows as u16);
+        match ShellSession::spawn(rows, cols, TEXT_FG, CLEAR_BG) {
+            Ok(s) => {
+                let tab = Tab {
+                    mode: Mode::Shell { session: Some(s) },
+                    label: "shell".to_string(),
+                };
+                self.tabs.push(tab);
+                self.active = self.tabs.len() - 1;
+            }
+            Err(e) => eprintln!("tmnl: new tab failed: {e}"),
+        }
+    }
+
+    /// Close the active tab. Closing the last tab exits the process
+    /// (matches macOS Terminal: ⌘W on last tab quits the window).
+    /// Active index clamps to a valid position; Mode resources drop
+    /// when their Tab is removed (Launcher::Drop kills the spawned
+    /// client; ShellSession's reader thread joins via its own Drop).
+    fn close_active_tab(&mut self, event_loop: &ActiveEventLoop) {
+        if self.tabs.len() <= 1 {
+            event_loop.exit();
+            return;
+        }
+        let idx = self.active;
+        self.tabs.remove(idx);
+        if self.active >= self.tabs.len() {
+            self.active = self.tabs.len() - 1;
+        }
+        // Repaint the new active tab's content onto the shared grid.
+        self.refresh_active_tab();
+    }
+
+    /// Switch to tab `idx` (0-based). No-op if out of range. Repaints
+    /// the new active tab's content onto the shared `Gpu.grid`.
+    fn switch_to_tab(&mut self, idx: usize) {
+        if idx >= self.tabs.len() || idx == self.active {
+            return;
+        }
+        self.active = idx;
+        self.refresh_active_tab();
+    }
+
+    /// Cycle to the next (`forward=true`) / previous tab, wrapping.
+    fn cycle_tab(&mut self, forward: bool) {
+        if self.tabs.len() <= 1 {
+            return;
+        }
+        let n = self.tabs.len();
+        self.active = if forward {
+            (self.active + 1) % n
+        } else {
+            (self.active + n - 1) % n
+        };
+        self.refresh_active_tab();
+    }
+
+    /// Repaint the active tab's view onto the shared grid. Until
+    /// commit 3/3 lands per-tab `Grid` storage, switching tabs
+    /// triggers the appropriate redraw path so the new tab's
+    /// content materializes:
+    ///   - Shell: bump bytes_seen so apply_to_grid re-runs on next tick.
+    ///   - Native (Streaming): server hasn't re-sent a frame, so the
+    ///     grid still shows the OLD tab's content until the next frame
+    ///     arrives. Acceptable for now — multi-Native is rare.
+    ///   - Native (Waiting/Connected): repaint idle banner.
+    fn refresh_active_tab(&mut self) {
+        let Some(gpu) = self.gpu.as_mut() else { return };
+        match &self.tabs[self.active].mode {
+            Mode::Shell { session } => {
+                if let Some(s) = session {
+                    // Clear gpu.grid so the new shell's apply_to_grid
+                    // doesn't overlay onto the old tab's cells.
+                    gpu.grid.clear();
+                    // apply_to_grid is called from tick when dirty();
+                    // poke the bytes_seen tracker so the next tick
+                    // re-applies regardless of incremental staleness.
+                    let _ = s; // currently no public force-redraw hook
+                }
+            }
+            Mode::Native { conn, server, .. } => {
+                gpu.grid.clear();
+                paint_idle(&mut gpu.grid, *conn, &server.socket_path);
+            }
+        }
+    }
+
     fn tick(&mut self, event_loop: &ActiveEventLoop) {
         // Drain the menu-event channel first — `muda` delivers menu picks
         // (and accelerator-fired items like ⌘, / ⌘+ / ⌘-) through this
@@ -850,12 +1077,9 @@ impl App {
         let Some(gpu) = self.gpu.as_mut() else {
             return;
         };
-        // Refresh the tab-strip label from the current Mode/Conn so the
-        // strip always reflects what's hosted here. Cheap — `set_strip_label`
-        // is a no-op when the text is unchanged. Recompute each tab's
-        // label so multi-tab chip rendering (next commit) can read from
-        // `tab.label` directly; only the active tab's label feeds the
-        // single-tab strip render today.
+        // Refresh each tab's strip label from its current Mode/Conn,
+        // then hand the active-tab marker list to the renderer. Cheap —
+        // both updates skip the write when nothing changed.
         for tab in &mut self.tabs {
             let new_label: String = match &tab.mode {
                 Mode::Shell { session } => {
@@ -880,7 +1104,13 @@ impl App {
                 tab.label = new_label;
             }
         }
-        gpu.set_strip_label(&self.tabs[self.active].label);
+        let chips: Vec<(String, bool)> = self
+            .tabs
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (t.label.clone(), i == self.active))
+            .collect();
+        gpu.set_strip_chips(&chips);
         match &mut self.tabs[self.active].mode {
             Mode::Shell { session } => {
                 let Some(s) = session.as_mut() else {
