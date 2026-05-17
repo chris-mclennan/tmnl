@@ -276,3 +276,124 @@ impl CellPipeline {
         queue.write_buffer(&self.instance_buf, 0, bytemuck::cast_slice(instances));
     }
 }
+
+// ─── Strip pipeline ──────────────────────────────────────────────
+//
+// Single colored quad rendered over the top `strip_h` pixels of the
+// viewport. Used to paint the tab-strip background — the row where
+// the traffic-light buttons + tab chips live. Decoupled from the
+// cell pipeline so the strip stays out of the per-cell instance
+// math and the grid coordinate system. Drawn BEFORE the cell pass
+// so empty cells above the body still show the strip color, not
+// `CLEAR_BG`.
+
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable, Default)]
+pub struct StripGlobals {
+    pub viewport: [f32; 2],
+    pub strip_h: f32,
+    pub _pad0: f32,
+    pub strip_color: [f32; 4],
+}
+
+pub struct StripPipeline {
+    pub pipeline: wgpu::RenderPipeline,
+    pub bind_group: wgpu::BindGroup,
+    pub globals_buf: wgpu::Buffer,
+}
+
+impl StripPipeline {
+    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("strip.wgsl"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("strip.wgsl").into()),
+        });
+
+        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("strip-bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+
+        let globals_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("strip-globals"),
+            size: std::mem::size_of::<StripGlobals>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("strip-bg"),
+            layout: &bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: globals_buf.as_entire_binding(),
+            }],
+        });
+
+        let pl_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("strip-pl"),
+            bind_group_layouts: &[&bgl],
+            push_constant_ranges: &[],
+        });
+
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("strip-pipeline"),
+            layout: Some(&pl_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
+        Self {
+            pipeline,
+            bind_group,
+            globals_buf,
+        }
+    }
+
+    pub fn write_globals(
+        &self,
+        queue: &wgpu::Queue,
+        viewport: [f32; 2],
+        strip_h: f32,
+        strip_color: [f32; 4],
+    ) {
+        let g = StripGlobals {
+            viewport,
+            strip_h,
+            _pad0: 0.0,
+            strip_color,
+        };
+        queue.write_buffer(&self.globals_buf, 0, bytemuck::bytes_of(&g));
+    }
+}

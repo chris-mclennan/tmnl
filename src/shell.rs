@@ -156,6 +156,17 @@ impl ShellSession {
         }
     }
 
+    /// Current OSC title (set by `\033]0;<title>\007` or `\033]2;…\007`
+    /// from any process running in the shell — claude / vim / etc. all
+    /// emit one). Empty string if nothing has set a title yet. tmnl's
+    /// App layer uses this to label the tab strip.
+    pub fn osc_title(&self) -> String {
+        match self.parser.lock() {
+            Ok(p) => p.screen().title().to_string(),
+            Err(_) => String::new(),
+        }
+    }
+
     /// Did new output arrive since the last `apply_to_grid`? Used to skip
     /// rebuilding instances when the shell's been idle.
     pub fn dirty(&self) -> bool {
