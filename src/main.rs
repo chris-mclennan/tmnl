@@ -39,11 +39,20 @@ const FONT_PX: f32 = 14.0;
 /// `with_titlebar_transparent + fullsize_content_view` lets our wgpu
 /// surface extend through this area; the `StripPipeline` paints the
 /// background, and the cell pipeline draws on top with no overlap
-/// (offset by `inset_px + MACOS_TAB_STRIP_PX`).
+/// (offset by `inset_px + gpu.strip_h`).
+/// Multi-tab chrome height — when there's more than one tab, the
+/// strip is tall enough to hold a row of chips plus generous padding.
 #[cfg(target_os = "macos")]
-const MACOS_TAB_STRIP_PX: f32 = 72.0;
+const MACOS_TAB_STRIP_PX_MULTI: f32 = 72.0;
 #[cfg(not(target_os = "macos"))]
-const MACOS_TAB_STRIP_PX: f32 = 0.0;
+const MACOS_TAB_STRIP_PX_MULTI: f32 = 0.0;
+/// Single-tab chrome height — minimal: just enough to keep the macOS
+/// traffic lights from overlapping the terminal content. Matches the
+/// pre-tabs look (no chip strip, just the title-bar inset).
+#[cfg(target_os = "macos")]
+const MACOS_TAB_STRIP_PX_SINGLE: f32 = 36.0;
+#[cfg(not(target_os = "macos"))]
+const MACOS_TAB_STRIP_PX_SINGLE: f32 = 0.0;
 // Frame background — fills (a) the top pad reserved for the macOS
 // traffic-light buttons, (b) the letterbox gutter at the bottom when
 // the window height isn't a clean row multiple, and (c) any sub-cell
@@ -220,6 +229,11 @@ struct Gpu {
     /// style "window title"). Length > 1 ⇒ N chips left-aligned
     /// after the traffic-light buttons.
     strip_chips: Vec<(String, bool, bool)>,
+    /// Current chrome height (px). Refreshed each tick — shrinks to
+    /// `MACOS_TAB_STRIP_PX_SINGLE` when only one tab is open and the
+    /// chip strip would be empty (gives the user the pre-tabs
+    /// look), grows to `MACOS_TAB_STRIP_PX_MULTI` when chips appear.
+    strip_h: f32,
 }
 
 impl Gpu {
@@ -277,7 +291,13 @@ impl Gpu {
 
         let atlas =
             Atlas::new(&device, &queue, FONT_PX * scale).expect("failed to build glyph atlas");
-        let (cols, rows) = grid_dims(size.width, size.height, &atlas, inset_px);
+        let (cols, rows) = grid_dims(
+            size.width,
+            size.height,
+            &atlas,
+            inset_px,
+            MACOS_TAB_STRIP_PX_SINGLE,
+        );
         let g = Grid::new(cols, rows, CLEAR_BG);
 
         let pipeline = CellPipeline::new(&device, format, &atlas, (cols * rows).max(1024) as u64);
@@ -299,6 +319,10 @@ impl Gpu {
             strip_chip_rects: Vec::new(),
             strip_chip_close_rects: Vec::new(),
             strip_new_tab_rect: None,
+            // Default to the minimal (single-tab) chrome height; App
+            // bumps to the taller multi-tab value once a second tab
+            // is added.
+            strip_h: MACOS_TAB_STRIP_PX_SINGLE,
         }
     }
 
@@ -350,13 +374,16 @@ impl Gpu {
         self.strip_chip_rects.clear();
         self.strip_chip_close_rects.clear();
         self.strip_new_tab_rect = None;
-        if self.strip_chips.is_empty() || MACOS_TAB_STRIP_PX <= 0.0 {
+        // Skip rendering chips when there's only one tab — the user
+        // sees just the bare title-bar inset (pre-tabs look). Also
+        // bail when strip is disabled (non-macOS).
+        if self.strip_chips.len() <= 1 || self.strip_h <= 0.0 {
             return Vec::new();
         }
         let cell_w = self.atlas.cell_w;
         let cell_h = self.atlas.cell_h;
-        let label_y_px = ((MACOS_TAB_STRIP_PX - cell_h) * 0.5).max(0.0);
-        let inset_y_total = self.inset_px + MACOS_TAB_STRIP_PX;
+        let label_y_px = ((self.strip_h - cell_h) * 0.5).max(0.0);
+        let inset_y_total = self.inset_px + self.strip_h;
         let base_y = (label_y_px - inset_y_total) / cell_h;
         // Active chip's bg — a lightened version of STRIP_BG so the
         // active tab stands out as a pill. Roughly `STRIP_BG + 0.06`.
@@ -530,7 +557,7 @@ impl Gpu {
         self.config.width = w;
         self.config.height = h;
         self.surface.configure(&self.device, &self.config);
-        let (cols, rows) = grid_dims(w, h, &self.atlas, self.inset_px);
+        let (cols, rows) = grid_dims(w, h, &self.atlas, self.inset_px, self.strip_h);
         if cols != self.grid.cols || rows != self.grid.rows {
             self.grid.resize(cols, rows);
             self.last_cursor = None;
@@ -548,7 +575,27 @@ impl Gpu {
         }
         self.inset_px = inset_px;
         let (w, h) = (self.config.width, self.config.height);
-        let (cols, rows) = grid_dims(w, h, &self.atlas, self.inset_px);
+        let (cols, rows) = grid_dims(w, h, &self.atlas, self.inset_px, self.strip_h);
+        if cols != self.grid.cols || rows != self.grid.rows {
+            self.grid.resize(cols, rows);
+            self.last_cursor = None;
+            return Some((cols as u16, rows as u16));
+        }
+        None
+    }
+
+    /// Update the strip-chrome height live. Returns the new grid dims
+    /// if they shifted so the caller can forward the resize to the
+    /// native client. The strip grows when chips appear (multi-tab)
+    /// and shrinks back to a bare title-bar inset when only one tab
+    /// is left — matching the pre-tabs look.
+    fn set_strip_h(&mut self, strip_h: f32) -> Option<(u16, u16)> {
+        if (self.strip_h - strip_h).abs() < f32::EPSILON {
+            return None;
+        }
+        self.strip_h = strip_h;
+        let (w, h) = (self.config.width, self.config.height);
+        let (cols, rows) = grid_dims(w, h, &self.atlas, self.inset_px, self.strip_h);
         if cols != self.grid.cols || rows != self.grid.rows {
             self.grid.resize(cols, rows);
             self.last_cursor = None;
@@ -578,7 +625,7 @@ impl Gpu {
             .create_view(&wgpu::TextureViewDescriptor::default());
 
         // Render the grid offset by exactly `inset_px` on left/right
-        // and `inset_px + MACOS_TAB_STRIP_PX` on top so the tab-strip
+        // and `inset_px + strip_h` on top so the tab-strip
         // chrome row sits above the grid. The strip pipeline paints
         // its background rect over the same `[0, 0]..[w, strip_h]`
         // area in the same render pass — the cell pipeline draws
@@ -589,12 +636,12 @@ impl Gpu {
             &self.queue,
             [self.config.width as f32, self.config.height as f32],
             [self.atlas.cell_w, self.atlas.cell_h],
-            [self.inset_px, self.inset_px + MACOS_TAB_STRIP_PX],
+            [self.inset_px, self.inset_px + self.strip_h],
         );
         self.strip_pipeline.write_globals(
             &self.queue,
             [self.config.width as f32, self.config.height as f32],
-            MACOS_TAB_STRIP_PX,
+            self.strip_h,
             STRIP_BG,
         );
         let mut instances = CellPipeline::build_instances(&self.grid, &mut self.atlas, &self.queue);
@@ -646,22 +693,23 @@ impl Gpu {
     }
 }
 
-fn grid_dims(w: u32, h: u32, atlas: &Atlas, inset_px: f32) -> (u32, u32) {
+fn grid_dims(w: u32, h: u32, atlas: &Atlas, inset_px: f32, strip: f32) -> (u32, u32) {
     // `inset_px == 0` → edge-to-edge horizontally; vertically we
-    // reserve `MACOS_TAB_STRIP_PX` for the tab-strip chrome. Ceil
-    // cols so the rightmost cells reach the window edge (the partial
-    // overflow is clipped by the wgpu surface — no clear-bg stripe
-    // at the right seam). Floor rows so the LAST cell row gets its
-    // full font-row height — any leftover sub-row pixels at the
-    // bottom become a small letterbox gutter painted in `CLEAR_BG`
-    // by the wgpu clear (industry standard: Apple Terminal, iTerm2,
-    // Alacritty, Kitty all do this). The alternative — ceiling rows
-    // + clipping the last partial row — leaves a few-pixel sliver
-    // of whatever the app drew on the bottom row (status bar /
-    // cmdline), which reads as visual noise.
+    // reserve `strip` pixels for the tab-strip chrome (caller passes
+    // the dynamic strip height: shrinks to the single-tab value when
+    // there's only one tab, grows when chips appear). Ceil cols so
+    // the rightmost cells reach the window edge (the partial overflow
+    // is clipped by the wgpu surface — no clear-bg stripe at the right
+    // seam). Floor rows so the LAST cell row gets its full font-row
+    // height — any leftover sub-row pixels at the bottom become a
+    // small letterbox gutter painted in `CLEAR_BG` by the wgpu clear
+    // (industry standard: Apple Terminal, iTerm2, Alacritty, Kitty all
+    // do this). The alternative — ceiling rows + clipping the last
+    // partial row — leaves a few-pixel sliver of whatever the app drew
+    // on the bottom row (status bar / cmdline), which reads as visual
+    // noise.
     // `inset_px > 0` → reserve `inset_px` pixels on every side
     // (and tab-strip on top); floor cols/rows so the cells fit inside.
-    let strip = MACOS_TAB_STRIP_PX;
     if inset_px <= 0.0 {
         let cols = (w as f32 / atlas.cell_w).ceil().max(1.0) as u32;
         let usable_h = (h as f32 - strip).max(atlas.cell_h);
@@ -895,7 +943,7 @@ impl ApplicationHandler for App {
                     // Drags that originated in the strip stay in chrome —
                     // don't forward them as terminal drag events. (Hit-test
                     // by Y: anything above the grid is chrome.)
-                    let in_chrome = position.y < (gpu.inset_px + MACOS_TAB_STRIP_PX) as f64;
+                    let in_chrome = position.y < (gpu.inset_px + gpu.strip_h) as f64;
                     if in_chrome {
                         // Drag-to-reorder: while a chip drag is armed
                         // and the cursor crosses into a different
@@ -967,7 +1015,7 @@ impl ApplicationHandler for App {
                 // strip clicks to the terminal (return early).
                 if let Some(gpu) = &self.gpu {
                     let (px, py) = self.cursor_px;
-                    let in_chrome = py < (gpu.inset_px + MACOS_TAB_STRIP_PX) as f64;
+                    let in_chrome = py < (gpu.inset_px + gpu.strip_h) as f64;
                     if in_chrome {
                         if pressed {
                             // `+` new-tab button sits past the last chip;
@@ -1051,7 +1099,7 @@ impl ApplicationHandler for App {
                 // which is surprising when the cursor is on a chip.
                 if let Some(gpu) = &self.gpu {
                     let (_, py) = self.cursor_px;
-                    if py < (gpu.inset_px + MACOS_TAB_STRIP_PX) as f64 {
+                    if py < (gpu.inset_px + gpu.strip_h) as f64 {
                         return;
                     }
                 }
@@ -1148,7 +1196,7 @@ impl Gpu {
     /// Clicks inside the inset margin saturate to (0, 0).
     fn pixel_to_cell(&self, px: f64, py: f64) -> (u16, u16) {
         let inset_x = self.inset_px as f64;
-        let inset_y = self.inset_px as f64 + MACOS_TAB_STRIP_PX as f64;
+        let inset_y = self.inset_px as f64 + self.strip_h as f64;
         let col = ((px - inset_x).max(0.0) / self.atlas.cell_w as f64).floor() as u16;
         let row = ((py - inset_y).max(0.0) / self.atlas.cell_h as f64).floor() as u16;
         (col, row)
@@ -1667,6 +1715,15 @@ impl App {
             })
             .collect();
         gpu.set_strip_chips(&chips);
+        // Single tab ⇒ shrink the chrome strip back to a bare
+        // title-bar inset (pre-tabs look — just enough for macOS
+        // traffic lights). Multi-tab ⇒ taller strip with chip space.
+        let target_strip = if self.tabs.len() > 1 {
+            MACOS_TAB_STRIP_PX_MULTI
+        } else {
+            MACOS_TAB_STRIP_PX_SINGLE
+        };
+        let strip_resize = gpu.set_strip_h(target_strip);
         match &mut self.tabs[self.active].mode {
             Mode::Shell { session } => {
                 let Some(s) = session.as_mut() else {
@@ -1687,6 +1744,9 @@ impl App {
                         s.resize(rows, cols);
                     }
                 }
+                if let Some((cols, rows)) = strip_resize {
+                    s.resize(rows, cols);
+                }
                 if s.dirty() {
                     let (cc, cr, vis) = s.apply_to_grid(&mut gpu.grid);
                     gpu.last_cursor = None; // Shell mode tracks cursor via apply_to_grid
@@ -1703,6 +1763,9 @@ impl App {
                 launcher,
                 client_title,
             } => {
+                if let Some((cols, rows)) = strip_resize {
+                    server.send_resize(cols, rows);
+                }
                 // Drain server events.
                 while let Ok(ev) = server.events.try_recv() {
                     match ev {
