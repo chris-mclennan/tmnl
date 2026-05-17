@@ -170,6 +170,11 @@ struct App {
     /// Combined with the process PID to keep tab sockets disjoint
     /// (`tmnl-<pid>-<nonce>.sock`).
     native_tab_nonce: u32,
+    /// Index of the tab currently being dragged. Set on a chip
+    /// left-press, cleared on left-release. While `Some`, a
+    /// `CursorMoved` event over a *different* chip swaps `tabs[src]`
+    /// and `tabs[dst]` and updates the index.
+    dragging_tab: Option<usize>,
 }
 
 #[derive(Clone)]
@@ -201,6 +206,11 @@ struct Gpu {
     /// to route strip-region mouse clicks (left → switch_to_tab,
     /// middle → close_tab_at).
     strip_chip_rects: Vec<(f32, f32, usize)>,
+    /// Pixel-x extents `(x0, x1, tab_idx)` of the trailing `⊗` close
+    /// badge on each non-active chip. Click → `close_tab_at`. Active
+    /// chip has no close badge (the user closes the active tab via
+    /// ⌘W or middle-click).
+    strip_chip_close_rects: Vec<(f32, f32, usize)>,
     /// Pixel-x extent `(x0, x1)` of the trailing `+` new-tab button.
     /// Painted only when chips are visible. Click → `new_shell_tab`.
     strip_new_tab_rect: Option<(f32, f32)>,
@@ -287,6 +297,7 @@ impl Gpu {
             strip_pipeline,
             strip_chips: Vec::new(),
             strip_chip_rects: Vec::new(),
+            strip_chip_close_rects: Vec::new(),
             strip_new_tab_rect: None,
         }
     }
@@ -329,6 +340,7 @@ impl Gpu {
     fn strip_chip_instances(&mut self) -> Vec<pipeline::Instance> {
         use crate::atlas::style_from_attrs;
         self.strip_chip_rects.clear();
+        self.strip_chip_close_rects.clear();
         self.strip_new_tab_rect = None;
         if self.strip_chips.is_empty() || MACOS_TAB_STRIP_PX <= 0.0 {
             return Vec::new();
@@ -468,6 +480,32 @@ impl Gpu {
                 });
                 col_offset += 1.0;
             }
+            // `⊗` close badge for non-active chips. Painted between the
+            // label and the right pad so a click on the glyph is
+            // distinct from a click on the label (the chip-rect hit
+            // test still covers the close cell — close_rect is checked
+            // first in the mouse dispatcher).
+            let mut close_x_px: Option<f32> = None;
+            if !*active {
+                let close_g = self.atlas.glyph('⊗', style_from_attrs(0), &self.queue);
+                let x0 = start_x_px + col_offset * cell_w;
+                out.push(pipeline::Instance {
+                    cell_pos: [base_x + col_offset, base_y],
+                    // Dim red so the badge reads as "close" without
+                    // shouting — same chrome convention NvChad uses
+                    // for the per-tab close glyph.
+                    fg: [0.85, 0.40, 0.40, 1.0],
+                    bg,
+                    uv_min: close_g.uv_min,
+                    uv_max: close_g.uv_max,
+                    glyph_offset: close_g.offset,
+                    glyph_size: close_g.size,
+                    attrs: 0,
+                    _pad: 0,
+                });
+                close_x_px = Some(x0);
+                col_offset += 1.0;
+            }
             // Right pad.
             for _ in 0..Self::CHIP_PAD_CELLS as usize {
                 out.push(pipeline::Instance {
@@ -487,6 +525,9 @@ impl Gpu {
             // gap so the click region matches the painted chip exactly.
             let chip_x1_px = start_x_px + col_offset * cell_w;
             self.strip_chip_rects.push((chip_x0_px, chip_x1_px, i));
+            if let Some(cx) = close_x_px {
+                self.strip_chip_close_rects.push((cx, cx + cell_w, i));
+            }
             // Inter-chip gap.
             col_offset += Self::CHIP_GAP_CELLS;
         }
@@ -952,6 +993,38 @@ impl ApplicationHandler for App {
                     // by Y: anything above the grid is chrome.)
                     let in_chrome = position.y < (gpu.inset_px + MACOS_TAB_STRIP_PX) as f64;
                     if in_chrome {
+                        // Drag-to-reorder: while a chip drag is armed
+                        // and the cursor crosses into a different
+                        // chip's rect, swap the two tabs. Chip rects
+                        // get re-computed each render, so subsequent
+                        // moves keep dragging the same tab through
+                        // the strip.
+                        if let Some(src) = self.dragging_tab
+                            && self.buttons_down & (1u8 << BUTTON_LEFT) != 0
+                        {
+                            let dst = gpu
+                                .strip_chip_rects
+                                .iter()
+                                .find(|(x0, x1, _)| {
+                                    position.x >= *x0 as f64 && position.x < *x1 as f64
+                                })
+                                .map(|(_, _, idx)| *idx);
+                            if let Some(dst) = dst
+                                && dst != src
+                                && dst < self.tabs.len()
+                            {
+                                self.tabs.swap(src, dst);
+                                if self.active == src {
+                                    self.active = dst;
+                                } else if self.active == dst {
+                                    self.active = src;
+                                }
+                                self.dragging_tab = Some(dst);
+                                if let Some(w) = &self.window {
+                                    w.request_redraw();
+                                }
+                            }
+                        }
                         return;
                     }
                     if let Mode::Native { server, .. } = &self.tabs[self.active].mode
@@ -1007,6 +1080,21 @@ impl ApplicationHandler for App {
                                 }
                                 return;
                             }
+                            // Per-chip `⊗` close badge — left-click on
+                            // the badge closes that specific tab.
+                            // Tested BEFORE the chip rect so the close
+                            // cell isn't also treated as a switch click.
+                            let close_hit = gpu
+                                .strip_chip_close_rects
+                                .iter()
+                                .find(|(x0, x1, _)| px >= *x0 as f64 && px < *x1 as f64)
+                                .map(|(_, _, idx)| *idx);
+                            if let Some(idx) = close_hit
+                                && button == MouseButton::Left
+                            {
+                                self.close_tab_at(idx, event_loop);
+                                return;
+                            }
                             let hit = gpu
                                 .strip_chip_rects
                                 .iter()
@@ -1014,14 +1102,28 @@ impl ApplicationHandler for App {
                                 .map(|(_, _, idx)| *idx);
                             if let Some(idx) = hit {
                                 match button {
-                                    MouseButton::Left => self.switch_to_tab(idx),
+                                    MouseButton::Left => {
+                                        self.switch_to_tab(idx);
+                                        // Arm a potential drag — a
+                                        // subsequent CursorMoved over
+                                        // a different chip will swap.
+                                        self.dragging_tab = Some(self.active);
+                                    }
                                     MouseButton::Middle => self.close_tab_at(idx, event_loop),
                                     _ => {}
                                 }
                             }
+                        } else if button == MouseButton::Left {
+                            // Released — end any in-flight drag.
+                            self.dragging_tab = None;
                         }
                         return;
                     }
+                }
+                // Outside the strip — releasing the left button also
+                // ends a drag that started in chrome.
+                if !pressed && button == MouseButton::Left {
+                    self.dragging_tab = None;
                 }
                 if let Mode::Native { server, .. } = &self.tabs[self.active].mode {
                     let (col, row) = self.cursor_cell;
@@ -1497,6 +1599,49 @@ impl App {
             } else if i == active_idx {
                 tab.attention = false;
             }
+            // Background Native tabs: drain server events here so
+            // conn state + client_title stay current even when the
+            // tab isn't focused. Frames are dropped (the snapshot is
+            // refreshed at switch time when the client sends a fresh
+            // full frame after the resize); poll the launcher to
+            // keep child-crash detection live.
+            if i != active_idx
+                && let Mode::Native {
+                    server,
+                    conn,
+                    client_title,
+                    launcher,
+                } = &mut tab.mode
+            {
+                while let Ok(ev) = server.events.try_recv() {
+                    match ev {
+                        ServerEvent::ClientConnected => {
+                            *conn = ConnState::Connected;
+                            *client_title = None;
+                        }
+                        ServerEvent::ClientDisconnected => {
+                            *conn = ConnState::Waiting;
+                            *client_title = None;
+                        }
+                        ServerEvent::Title(s) => {
+                            *client_title = Some(s);
+                        }
+                    }
+                }
+                while server.frame_rx.try_recv().is_ok() {
+                    // Frame dropped — we don't have an off-screen
+                    // grid to apply to. The next switch_tab triggers
+                    // a fresh full frame.
+                    if matches!(conn, ConnState::Connected) {
+                        *conn = ConnState::Streaming;
+                    }
+                }
+                if let Some(l) = launcher.as_mut() {
+                    // Keep poll lightweight — no respawn logic for
+                    // background tabs (that's the active-tab path).
+                    let _ = l.poll();
+                }
+            }
         }
         // Disambiguate duplicate labels with " (N)" — only when the
         // same exact string appears more than once. Chrome / VS Code
@@ -1923,6 +2068,7 @@ fn main() {
         settings: None,
         editor_template,
         native_tab_nonce: 1,
+        dragging_tab: None,
     };
     event_loop.run_app(&mut app).unwrap();
     drop(app);
