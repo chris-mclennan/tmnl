@@ -148,8 +148,7 @@ pub struct Atlas {
 impl Atlas {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, px_size: f32) -> Result<Self, String> {
         let chains = discover_font_chains();
-        let mut fonts: [Vec<fontdue::Font>; 4] =
-            [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+        let mut fonts: [Vec<fontdue::Font>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
         for (style_ix, chain) in chains.iter().enumerate() {
             for spec in chain {
                 let Ok(bytes) = std::fs::read(&spec.path) else {

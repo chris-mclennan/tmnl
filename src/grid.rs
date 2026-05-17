@@ -45,10 +45,7 @@ impl Grid {
         // overlap region keeps the prior content; cells outside it are blank.
         let old_cols = self.cols;
         let old_rows = self.rows;
-        let old = std::mem::replace(
-            &mut self.cells,
-            vec![blank; (cols * rows) as usize],
-        );
+        let old = std::mem::replace(&mut self.cells, vec![blank; (cols * rows) as usize]);
         let copy_cols = cols.min(old_cols);
         let copy_rows = rows.min(old_rows);
         for r in 0..copy_rows {
