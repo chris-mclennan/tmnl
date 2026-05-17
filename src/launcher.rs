@@ -115,6 +115,26 @@ impl Launcher {
         let Some(mut child) = self.child.take() else {
             return;
         };
+        // Give the child a short grace period to exit on its own —
+        // tmnl's `Server` drops first (closing the UDS), which mnml's
+        // blit loop sees as EOF and reacts by saving session + exit.
+        // Only escalate to SIGKILL if the child hasn't exited within
+        // the budget. Without this, a fast SIGKILL races mnml's
+        // save_session_on_quit and can corrupt session.json mid-write.
+        let budget = std::time::Duration::from_millis(800);
+        let start = std::time::Instant::now();
+        let poll = std::time::Duration::from_millis(20);
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => return, // exited cleanly
+                Ok(None) => {}
+                Err(_) => break, // can't query — fall through to kill
+            }
+            if start.elapsed() >= budget {
+                break;
+            }
+            std::thread::sleep(poll);
+        }
         let _ = child.kill();
         let _ = child.wait();
     }
