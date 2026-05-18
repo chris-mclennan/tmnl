@@ -1350,13 +1350,26 @@ fn apply_frame_to_grid(grid: &mut grid::Grid, last_cursor: &mut Option<usize>, f
         && (f.cursor_row as u32) < grid_rows
     {
         let i = (f.cursor_row as u32 * grid_cols + f.cursor_col as u32) as usize;
-        let bit = match f.cursor_shape {
-            1 => ATTR_CURSOR_UNDERLINE,
-            2 => ATTR_CURSOR_BAR,
-            _ => ATTR_CURSOR_BLOCK,
+        // Suppress the cursor when it lands on a default-empty cell at (0, 0)
+        // — that's almost certainly an unset terminal-default position before
+        // the hosted app has positioned its real cursor (the white flash a
+        // user sees at the top-left while mnml is still starting up). Real
+        // cursors typically sit on rendered content.
+        let suppress = f.cursor_row == 0 && f.cursor_col == 0 && {
+            let c = &grid.cells[i];
+            c.ch == ' ' && c.attrs == 0
         };
-        grid.cells[i].attrs |= bit;
-        *last_cursor = Some(i);
+        if !suppress {
+            let bit = match f.cursor_shape {
+                1 => ATTR_CURSOR_UNDERLINE,
+                2 => ATTR_CURSOR_BAR,
+                _ => ATTR_CURSOR_BLOCK,
+            };
+            grid.cells[i].attrs |= bit;
+            *last_cursor = Some(i);
+        } else {
+            *last_cursor = None;
+        }
     } else {
         *last_cursor = None;
     }
