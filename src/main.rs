@@ -60,7 +60,7 @@ const MACOS_TAB_STRIP_PX_SINGLE: f32 = 0.0;
 /// doesn't sit right under the macOS traffic lights. The strip pipeline
 /// still paints CLEAR_BG so this band is invisible — pure padding.
 #[cfg(target_os = "macos")]
-const MACOS_TAB_STRIP_PX_SHELL: f32 = 44.0;
+const MACOS_TAB_STRIP_PX_SHELL: f32 = 42.0;
 #[cfg(not(target_os = "macos"))]
 const MACOS_TAB_STRIP_PX_SHELL: f32 = 0.0;
 // Frame background — fills (a) the top pad reserved for the macOS
