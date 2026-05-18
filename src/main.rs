@@ -52,7 +52,7 @@ const MACOS_TAB_STRIP_PX_MULTI: f32 = 0.0;
 /// region in `CLEAR_BG` instead of `STRIP_BG` when there are no chips,
 /// so it blends invisibly with the surrounding clear color).
 #[cfg(target_os = "macos")]
-const MACOS_TAB_STRIP_PX_SINGLE: f32 = 30.0;
+const MACOS_TAB_STRIP_PX_SINGLE: f32 = 24.0;
 #[cfg(not(target_os = "macos"))]
 const MACOS_TAB_STRIP_PX_SINGLE: f32 = 0.0;
 // Frame background — fills (a) the top pad reserved for the macOS
@@ -236,7 +236,15 @@ struct Gpu {
     /// chip strip would be empty (gives the user the pre-tabs
     /// look), grows to `MACOS_TAB_STRIP_PX_MULTI` when chips appear.
     strip_h: f32,
+    /// Font zoom multiplier applied to `FONT_PX` (1.0 = default).
+    /// ⌘+ / ⌘- step it; ⌘0 resets. Clamped to [`FONT_ZOOM_MIN`,
+    /// `FONT_ZOOM_MAX`]. Rebuilds the atlas + cell pipeline on change.
+    font_zoom: f32,
 }
+
+const FONT_ZOOM_MIN: f32 = 0.6;
+const FONT_ZOOM_MAX: f32 = 3.0;
+const FONT_ZOOM_STEP: f32 = 0.15;
 
 impl Gpu {
     async fn new(window: Arc<Window>, inset_px: f32) -> Self {
@@ -325,7 +333,44 @@ impl Gpu {
             // bumps to the taller multi-tab value once a second tab
             // is added.
             strip_h: MACOS_TAB_STRIP_PX_SINGLE,
+            font_zoom: 1.0,
         }
+    }
+
+    /// Rebuild the glyph atlas + cell pipeline at a new font-px multiplier.
+    /// Cap at `[FONT_ZOOM_MIN, FONT_ZOOM_MAX]`. Returns the new `(cols, rows)`
+    /// when the cell-grid dimensions change so callers can forward the resize
+    /// to the hosted shell / native client. No-op when the zoom is unchanged
+    /// after clamping.
+    fn set_font_zoom(&mut self, zoom: f32) -> Option<(u16, u16)> {
+        let target = zoom.clamp(FONT_ZOOM_MIN, FONT_ZOOM_MAX);
+        if (self.font_zoom - target).abs() < f32::EPSILON {
+            return None;
+        }
+        self.font_zoom = target;
+        let new_atlas = match Atlas::new(&self.device, &self.queue, FONT_PX * self.scale * target) {
+            Ok(a) => a,
+            Err(e) => {
+                log::warn!("font zoom: atlas rebuild failed ({e}); keeping previous size");
+                return None;
+            }
+        };
+        let (w, h) = (self.config.width, self.config.height);
+        let (cols, rows) = grid_dims(w, h, &new_atlas, self.inset_px, self.strip_h);
+        let new_pipeline = CellPipeline::new(
+            &self.device,
+            self.config.format,
+            &new_atlas,
+            (cols * rows).max(1024) as u64,
+        );
+        self.atlas = new_atlas;
+        self.pipeline = new_pipeline;
+        self.last_cursor = None;
+        if cols != self.grid.cols || rows != self.grid.rows {
+            self.grid.resize(cols, rows);
+            return Some((cols as u16, rows as u16));
+        }
+        None
     }
 
     /// Set the chip list rendered in the tab strip. App calls this
@@ -923,6 +968,31 @@ impl ApplicationHandler for App {
                             }
                             return;
                         }
+                        // Font zoom: ⌘+ / ⌘= zoom in (both share the
+                        // physical key — `=` unmodified, `+` with shift),
+                        // ⌘- zoom out, ⌘0 reset. macOS Terminal / iTerm /
+                        // browser convention.
+                        (Some('='), _) | (Some('+'), _) => {
+                            self.zoom_font(FONT_ZOOM_STEP);
+                            if let Some(w) = &self.window {
+                                w.request_redraw();
+                            }
+                            return;
+                        }
+                        (Some('-'), false) | (Some('_'), _) => {
+                            self.zoom_font(-FONT_ZOOM_STEP);
+                            if let Some(w) = &self.window {
+                                w.request_redraw();
+                            }
+                            return;
+                        }
+                        (Some('0'), false) => {
+                            self.reset_font_zoom();
+                            if let Some(w) = &self.window {
+                                w.request_redraw();
+                            }
+                            return;
+                        }
                         _ => {}
                     }
                 }
@@ -1465,6 +1535,46 @@ impl App {
     }
 
     /// Cycle to the next (`forward=true`) / previous tab, wrapping.
+    /// Rebuild the atlas at a new font-zoom level (relative step). After
+    /// resizing the grid the new cell dims are forwarded to the active
+    /// tab's session so the hosted shell / mnml repaints at the new
+    /// dimensions.
+    fn zoom_font(&mut self, delta: f32) {
+        let Some(gpu) = self.gpu.as_mut() else {
+            return;
+        };
+        let target = gpu.font_zoom + delta;
+        let resize = gpu.set_font_zoom(target);
+        self.forward_font_resize(resize);
+    }
+
+    /// Reset the font zoom to 1.0 (⌘0). Same resize plumbing as `zoom_font`.
+    fn reset_font_zoom(&mut self) {
+        let Some(gpu) = self.gpu.as_mut() else {
+            return;
+        };
+        let resize = gpu.set_font_zoom(1.0);
+        self.forward_font_resize(resize);
+    }
+
+    /// Pipe a grid resize (caused by a font-zoom change) to the active
+    /// tab's session — same shape as the inset / strip resize paths.
+    fn forward_font_resize(&mut self, resize: Option<(u16, u16)>) {
+        let Some((cols, rows)) = resize else {
+            return;
+        };
+        match &mut self.tabs[self.active].mode {
+            Mode::Shell { session } => {
+                if let Some(s) = session.as_mut() {
+                    s.resize(rows, cols);
+                }
+            }
+            Mode::Native { server, .. } => {
+                server.send_resize(cols, rows);
+            }
+        }
+    }
+
     fn cycle_tab(&mut self, forward: bool) {
         if self.tabs.len() <= 1 {
             return;
@@ -1855,11 +1965,20 @@ impl App {
             } else if id == menu.id_new_window {
                 log::info!("menu: New Window — placeholder, not wired yet");
             } else if id == menu.id_font_inc {
-                log::info!("menu: Increase Font Size — placeholder, not wired yet");
+                self.zoom_font(FONT_ZOOM_STEP);
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
             } else if id == menu.id_font_dec {
-                log::info!("menu: Decrease Font Size — placeholder, not wired yet");
+                self.zoom_font(-FONT_ZOOM_STEP);
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
             } else if id == menu.id_font_reset {
-                log::info!("menu: Reset Font Size — placeholder, not wired yet");
+                self.reset_font_zoom();
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
             } else if id == menu.id_toggle_fullscreen {
                 if let Some(w) = self.window.as_ref() {
                     let next = if w.fullscreen().is_some() {
