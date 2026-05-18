@@ -46,11 +46,14 @@ const FONT_PX: f32 = 14.0;
 const MACOS_TAB_STRIP_PX_MULTI: f32 = 72.0;
 #[cfg(not(target_os = "macos"))]
 const MACOS_TAB_STRIP_PX_MULTI: f32 = 0.0;
-/// Single-tab chrome height — zero. The grid runs all the way to the
-/// top of the window; the macOS traffic lights float on top of it
-/// (the title-bar-transparent + fullsize-content-view window style
-/// lets that happen). Matches the pre-tabs look — no visible chrome
-/// strip when there's nothing to put in it.
+/// Single-tab chrome height — a small breathing-room band above the
+/// grid so the first row of content isn't kissing the macOS traffic
+/// lights, but no visible chrome strip (the strip pipeline paints this
+/// region in `CLEAR_BG` instead of `STRIP_BG` when there are no chips,
+/// so it blends invisibly with the surrounding clear color).
+#[cfg(target_os = "macos")]
+const MACOS_TAB_STRIP_PX_SINGLE: f32 = 30.0;
+#[cfg(not(target_os = "macos"))]
 const MACOS_TAB_STRIP_PX_SINGLE: f32 = 0.0;
 // Frame background — fills (a) the top pad reserved for the macOS
 // traffic-light buttons, (b) the letterbox gutter at the bottom when
@@ -637,11 +640,21 @@ impl Gpu {
             [self.atlas.cell_w, self.atlas.cell_h],
             [self.inset_px, self.inset_px + self.strip_h],
         );
+        // Single-tab: paint the strip in CLEAR_BG so it blends with the
+        // surrounding clear color (no visible chrome band — but the grid
+        // still starts below the strip so content doesn't kiss the macOS
+        // traffic lights). Multi-tab: STRIP_BG separates the chip strip
+        // from the body.
+        let strip_color = if self.strip_chips.len() <= 1 {
+            CLEAR_BG
+        } else {
+            STRIP_BG
+        };
         self.strip_pipeline.write_globals(
             &self.queue,
             [self.config.width as f32, self.config.height as f32],
             self.strip_h,
-            STRIP_BG,
+            strip_color,
         );
         let mut instances = CellPipeline::build_instances(&self.grid, &mut self.atlas, &self.queue);
         // Append tab-strip label glyphs (rendered through the same cell
