@@ -46,12 +46,11 @@ const FONT_PX: f32 = 14.0;
 const MACOS_TAB_STRIP_PX_MULTI: f32 = 72.0;
 #[cfg(not(target_os = "macos"))]
 const MACOS_TAB_STRIP_PX_MULTI: f32 = 0.0;
-/// Single-tab chrome height — minimal: just enough to keep the macOS
-/// traffic lights from overlapping the terminal content. Matches the
-/// pre-tabs look (no chip strip, just the title-bar inset).
-#[cfg(target_os = "macos")]
-const MACOS_TAB_STRIP_PX_SINGLE: f32 = 36.0;
-#[cfg(not(target_os = "macos"))]
+/// Single-tab chrome height — zero. The grid runs all the way to the
+/// top of the window; the macOS traffic lights float on top of it
+/// (the title-bar-transparent + fullsize-content-view window style
+/// lets that happen). Matches the pre-tabs look — no visible chrome
+/// strip when there's nothing to put in it.
 const MACOS_TAB_STRIP_PX_SINGLE: f32 = 0.0;
 // Frame background — fills (a) the top pad reserved for the macOS
 // traffic-light buttons, (b) the letterbox gutter at the bottom when
