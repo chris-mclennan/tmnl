@@ -820,7 +820,7 @@ impl ApplicationHandler for App {
         }
         let mut attrs = Window::default_attributes()
             .with_title("tmnl")
-            .with_inner_size(winit::dpi::LogicalSize::new(960.0, 600.0));
+            .with_inner_size(winit::dpi::LogicalSize::new(1400.0, 900.0));
         // Ghostty / Warp style title bar: drop the "tmnl" text + the
         // chrome strip but keep the traffic-light buttons floating, and
         // let the surface extend behind where the titlebar was so the
