@@ -1641,8 +1641,14 @@ impl App {
                     let (cc, cr, vis) = s.apply_to_grid(&mut gpu.grid);
                     if vis && (cc as u32) < gpu.grid.cols && (cr as u32) < gpu.grid.rows {
                         let i = (cr as u32 * gpu.grid.cols + cc as u32) as usize;
-                        gpu.grid.cells[i].attrs |= ATTR_CURSOR_BLOCK;
-                        gpu.last_cursor = Some(i);
+                        let suppress = cc == 0 && cr == 0 && {
+                            let cell = &gpu.grid.cells[i];
+                            cell.ch == ' ' && cell.attrs == 0
+                        };
+                        if !suppress {
+                            gpu.grid.cells[i].attrs |= ATTR_CURSOR_BLOCK;
+                            gpu.last_cursor = Some(i);
+                        }
                     }
                 }
                 Mode::Native { conn, server, .. } => {
@@ -1902,8 +1908,20 @@ impl App {
                     gpu.last_cursor = None; // Shell mode tracks cursor via apply_to_grid
                     if vis && (cc as u32) < gpu.grid.cols && (cr as u32) < gpu.grid.rows {
                         let i = (cr as u32 * gpu.grid.cols + cc as u32) as usize;
-                        gpu.grid.cells[i].attrs |= ATTR_CURSOR_BLOCK;
-                        gpu.last_cursor = Some(i);
+                        // Suppress the cursor when it sits at (0, 0) on a
+                        // default-empty cell — that's vt100's "shell just
+                        // spawned, no output yet" state. Painting it would
+                        // flash a white block at the top-left before the
+                        // shell prompt appears. Real cursors sit on
+                        // rendered content.
+                        let suppress = cc == 0 && cr == 0 && {
+                            let cell = &gpu.grid.cells[i];
+                            cell.ch == ' ' && cell.attrs == 0
+                        };
+                        if !suppress {
+                            gpu.grid.cells[i].attrs |= ATTR_CURSOR_BLOCK;
+                            gpu.last_cursor = Some(i);
+                        }
                     }
                 }
             }
