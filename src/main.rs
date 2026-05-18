@@ -55,6 +55,14 @@ const MACOS_TAB_STRIP_PX_MULTI: f32 = 0.0;
 const MACOS_TAB_STRIP_PX_SINGLE: f32 = 24.0;
 #[cfg(not(target_os = "macos"))]
 const MACOS_TAB_STRIP_PX_SINGLE: f32 = 0.0;
+/// Single-tab strip height for *shell* mode (no TUI hosted, e.g. a bare
+/// `zsh` prompt). Larger than the TUI value so the prompt's first row
+/// doesn't sit right under the macOS traffic lights. The strip pipeline
+/// still paints CLEAR_BG so this band is invisible — pure padding.
+#[cfg(target_os = "macos")]
+const MACOS_TAB_STRIP_PX_SHELL: f32 = 48.0;
+#[cfg(not(target_os = "macos"))]
+const MACOS_TAB_STRIP_PX_SHELL: f32 = 0.0;
 // Frame background — fills (a) the top pad reserved for the macOS
 // traffic-light buttons, (b) the letterbox gutter at the bottom when
 // the window height isn't a clean row multiple, and (c) any sub-cell
@@ -866,7 +874,16 @@ impl ApplicationHandler for App {
                 let Some(gpu) = self.gpu.as_mut() else {
                     return;
                 };
-                let Some((cols, rows)) = gpu.resize(size.width, size.height) else {
+                let resize = gpu.resize(size.width, size.height);
+                // Always paint a frame after a resize — the surface was
+                // reconfigured (even if cols×rows stayed the same), so
+                // the framebuffer is fresh and would briefly show through
+                // as CLEAR_BG until the next event-driven render. Without
+                // this the window flickers during interactive resizes.
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+                let Some((cols, rows)) = resize else {
                     return;
                 };
                 // Resize every tab's background grid-snapshot to match
@@ -1837,13 +1854,24 @@ impl App {
             })
             .collect();
         gpu.set_strip_chips(&chips);
-        // Single tab ⇒ shrink the chrome strip back to a bare
-        // title-bar inset (pre-tabs look — just enough for macOS
-        // traffic lights). Multi-tab ⇒ taller strip with chip space.
-        let target_strip = if self.tabs.len() > 1 {
+        // Pick the strip height to match the current mode:
+        // * multi-tab → tall strip with chip space
+        // * single-tab + TUI (native or shell with altscreen)
+        //   → minimal band, just enough to clear the macOS
+        //     traffic lights (pre-tabs look)
+        // * single-tab + bare shell prompt → taller band so the
+        //   first prompt row isn't kissing the traffic lights
+        //   (the strip pipeline paints this in CLEAR_BG so it's
+        //   pure invisible padding).
+        let multi_tab = self.tabs.len() > 1;
+        let active_is_native = matches!(&self.tabs[self.active].mode, Mode::Native { .. });
+        let tui_active = active_is_native || self.altscreen_active;
+        let target_strip = if multi_tab {
             MACOS_TAB_STRIP_PX_MULTI
-        } else {
+        } else if tui_active {
             MACOS_TAB_STRIP_PX_SINGLE
+        } else {
+            MACOS_TAB_STRIP_PX_SHELL
         };
         let strip_resize = gpu.set_strip_h(target_strip);
         match &mut self.tabs[self.active].mode {
