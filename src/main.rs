@@ -1010,6 +1010,35 @@ impl ApplicationHandler for App {
                             }
                             return;
                         }
+                        // Mac-style editing chords → translate to Ctrl-equivalent
+                        // for the hosted Native client (mnml understands Ctrl+Z
+                        // as undo, Ctrl+C/V/X/A/S/F for clipboard/select-all/
+                        // save/find). Only fires for Native tabs — Shell tabs
+                        // are bare terminals where remapping Cmd would break
+                        // ⌘C-as-copy / ⌘V-as-paste in the surrounding OS.
+                        (Some(ch), _)
+                            if matches!(
+                                ch,
+                                'z' | 'x' | 'c' | 'v' | 'a' | 's' | 'f' | 'n'
+                            ) && matches!(
+                                &self.tabs[self.active].mode,
+                                Mode::Native { .. }
+                            ) =>
+                        {
+                            let translated_mods = pack_mods_cmd_to_ctrl(self.mods);
+                            if let Mode::Native { server, .. } =
+                                &mut self.tabs[self.active].mode
+                                && let Some(code) =
+                                    translate_key(&ke.logical_key, self.mods)
+                            {
+                                server.send_input(&InputEvent::Key(KeyInput {
+                                    code,
+                                    mods: translated_mods,
+                                    press: true,
+                                }));
+                            }
+                            return;
+                        }
                         _ => {}
                     }
                 }
@@ -1261,6 +1290,24 @@ impl ApplicationHandler for App {
             _ => {}
         }
     }
+}
+
+/// Same as [`pack_mods`] but swaps Super (Mac Cmd) for Ctrl — used when
+/// translating Mac-style editing chords (⌘Z / ⌘C / etc) into their Ctrl
+/// equivalents on the wire so the hosted Linux/cross-platform app sees
+/// what it expects.
+fn pack_mods_cmd_to_ctrl(m: ModifiersState) -> u8 {
+    let mut out = 0u8;
+    if m.shift_key() {
+        out |= MOD_SHIFT;
+    }
+    if m.control_key() || m.super_key() {
+        out |= MOD_CTRL;
+    }
+    if m.alt_key() {
+        out |= MOD_ALT;
+    }
+    out
 }
 
 fn pack_mods(m: ModifiersState) -> u8 {
