@@ -18,9 +18,11 @@ Steps:
    `cargo run --example fake_client -- /tmp/test-tmnl.sock`
    (foreground, so we see its output).
 4. Let them run for ~5s, then stop both.
-5. Report what flowed: did the client see `Hello` + `Resize` + `Input`s
-   from the server? Did the server's stderr show `Frame`s coming back
-   from the client?
+5. Report what flowed. `fake_server` is the **tmnl stub** — its stderr
+   should show `client connected`, `client hello`, and a per-step count
+   of `Frame`s received. `fake_client` is the **backing-app stub** — its
+   stderr should show `server hello`, the `resize`, and a final
+   `done after N frames`.
 
 If either side fails to connect, the most common cause is a stale socket
 file or a leftover process from a previous run — clean those up and
