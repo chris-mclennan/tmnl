@@ -23,18 +23,28 @@ tmnl/                 ← this crate (the app binary)
     strip.wgsl        ← chrome strip shader (tab chips, traffic-light gap)
     cell.wgsl         ← cell shader
     shell.rs          ← pty host + vt100 parser → Grid
+    osc133.rs         ← OSC 133 semantic-prompt parsing (shell mode)
+    fim.rs            ← local AI command-completion worker (fim-engine)
+    headless.rs       ← `--headless` text-dump mode (verification harness)
     server.rs         ← Unix-socket server for native mode
     launcher.rs       ← spawns the backing app for native mode
     menu.rs           ← native macOS menu bar (muda)
     settings_ui.rs    ← in-grid Settings modal
     config.rs         ← ~/.config/tmnl/config.toml persistence
+  docs/
+    sdk-guide.md      ← how to build a native-mode backing app
   examples/
-    fake_server.rs    ← stub of a backing app (sends frames, prints input)
-    fake_client.rs    ← stub of tmnl (sends input, prints frames)
+    fake_server.rs    ← tmnl stub: binds socket, sends input, prints frames
+    fake_client.rs    ← backing-app stub: connects, streams frames
+    hello_client.rs   ← minimal backing-app template (SDK quickstart)
   scripts/
     build-app.sh      ← bundles target/tmnl.app
     Info.plist
+  shell-integration/
+    tmnl.zsh          ← OSC 133 snippet for the user's ~/.zshrc
+  FEATURES.md         ← feature matrix + roadmap
 ../tmnl-protocol/     ← sibling crate, wire format types (path dep)
+../fim-engine/        ← sibling crate, local AI completion engine (path dep)
 ```
 
 ## Build & run
@@ -44,7 +54,42 @@ cargo run --bin tmnl              # dev — runs as a plain binary
 ./scripts/build-app.sh            # bundle target/tmnl.app (debug)
 ./scripts/build-app.sh release    # bundle release
 open target/tmnl.app              # launch the bundle
+cargo run --bin tmnl -- --headless  # no window; scripted stdin + grid dumps
 ```
+
+## Verifying shell-mode changes
+
+`--headless` runs a shell session with no GPU window, takes `type` /
+`key` / `wait` / `dump` / `fim` / `quit` commands on stdin, and prints
+the rendered cell `Grid` as text (`src/headless.rs`). This is how to
+verify shell-mode rendering without a window — use the `/smoke` skill, or:
+
+```bash
+printf 'type echo hi\nkey enter\nwait 500\ndump\nquit\n' | \
+  cargo run --bin tmnl -- --headless
+```
+
+The `fim` command exercises AI command completion end-to-end (source
+`shell-integration/tmnl.zsh` first so the OSC 133 anchor exists).
+
+## AI command completion
+
+Two shell-mode AI features, both via `fim-engine` (local qwen2.5-coder,
+offline) and a worker thread in `src/fim.rs` the App polls in `tick`.
+Both reconstruct the command line between the OSC 133 `B` anchor and the
+cursor, so both need the integration snippet installed — without an
+anchor they are silent no-ops.
+
+- **⌘I — continuation.** Completes the half-typed command. The command
+  line is the FIM prefix; the result renders as dim ghost text *at the
+  cursor*. Tab accepts (appends), any other key dismisses.
+- **⌘K — NL→command.** Treats the command line as a natural-language
+  description, wraps it in a shebang-shaped FIM prompt, and previews the
+  generated command as dim ghost text *on the row below*. Tab accepts
+  (erases the description, types the command).
+
+The `ghost` / `PendingReq` `erase` + `below` fields carry which mode a
+suggestion is: `erase=0,below=false` is ⌘I, `erase>0,below=true` is ⌘K.
 
 The `.app` bundle is needed for the native macOS menu bar + dock icon to
 behave correctly. Plain `cargo run` works for fast iteration but loses the
@@ -70,14 +115,27 @@ menu bar.
 ## Protocol smoke test
 
 ```bash
-# Terminal A — pretend to be the backing app
+# Terminal A — tmnl stub: binds the socket, sends scripted input
 cargo run --example fake_server -- /tmp/test-tmnl.sock
 
-# Terminal B — drive it with the stub client
+# Terminal B — backing-app stub: connects and streams frames
 cargo run --example fake_client -- /tmp/test-tmnl.sock
 ```
 
 Or use the `/fake-protocol` skill to start both in parallel.
+
+`examples/hello_client.rs` is the minimal, well-commented backing-app
+template — the starting point for anyone writing a native-mode client.
+See `docs/sdk-guide.md` for the protocol walkthrough.
+
+## Protocol roles (don't mix these up)
+
+The **server** binds the Unix socket; the **client** connects to it.
+
+- **tmnl is the server** — binds the socket, owns the window + GPU. Sends
+  `Hello`, `Resize`, `Input`. Receives `Frame`, `Title`.
+- **The backing app is the client** — connects to the socket. Sends
+  `Hello`, `Frame`, `Title`. Receives `Resize`, `Input`.
 
 ## Settings persistence
 
