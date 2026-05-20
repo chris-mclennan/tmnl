@@ -18,7 +18,7 @@ tmnl-protocol = { path = "../tmnl-protocol" }
 fim-engine = { path = "../fim-engine" }
 # Shell mode — host a real pty + parse its output into cells. Versions match
 # what mnml's pty_pane uses so we share one source-of-truth in the workspace.
-vt100 = "0.15"
+vt100 = "0.16"
 portable-pty = "0.8"
 # Native macOS menu bar (tmnl / Shell / Edit / View / Window / Help).
 # Same crate version as mixr-rs so we share one source-of-truth.
