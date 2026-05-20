@@ -192,6 +192,7 @@ fn run_fim(session: &mut ShellSession, grid: &mut Grid, fim: &mut Option<crate::
             println!("fim: prefix={prefix:?} suggestion={s:?}");
             let idx = cursor_row as usize * grid.cols as usize + cursor_col as usize;
             crate::draw_ghost(grid, idx, &s);
+            crate::draw_ghost(grid, idx + s.chars().count() + 2, "[tab]");
             dump_grid(grid, &format!("fim ghost overlay — prefix={prefix:?}"));
         }
         Err(e) => println!("fim: {e}"),
@@ -225,6 +226,7 @@ fn run_gen(session: &mut ShellSession, grid: &mut Grid, fim: &mut Option<crate::
             // the same placement as the App's ⌘K ghost.
             let idx = (cursor_row as usize + 1) * grid.cols as usize + anchor_col as usize;
             crate::draw_ghost(grid, idx, &s);
+            crate::draw_ghost(grid, idx + s.chars().count() + 2, "[tab]");
             dump_grid(grid, &format!("gen preview (row below) — desc={desc:?}"));
         }
         Err(e) => println!("gen: {e}"),
