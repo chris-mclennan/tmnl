@@ -4,6 +4,7 @@ mod fim;
 mod grid;
 mod headless;
 mod launcher;
+mod layout;
 mod menu;
 mod osc133;
 mod pipeline;
