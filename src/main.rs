@@ -956,6 +956,16 @@ impl ApplicationHandler for App {
                             }
                             return;
                         }
+                        (Some('w'), true) => {
+                            // ⌘⇧W — explicit "close the entire tmnl tab"
+                            // even on Native tabs, in case the user really
+                            // wants out (the bare ⌘W now stays inside mnml).
+                            self.close_active_tab(event_loop);
+                            if let Some(w) = &self.window {
+                                w.request_redraw();
+                            }
+                            return;
+                        }
                         (Some('w'), false) => {
                             // Native (mnml) tabs: forward ⌘W as ⌃W so the
                             // host process closes its active buffer/pane
@@ -991,6 +1001,29 @@ impl ApplicationHandler for App {
                             return;
                         }
                         (Some(d), false) if d.is_ascii_digit() && d != '0' => {
+                            // Native tabs: forward ⌘<N> as ⌥<N> so mnml's
+                            // `tab.goto_N` chord (Alt+1..9) switches mnml
+                            // tab pages instead of tmnl tabs. The user
+                            // can still switch tmnl tabs explicitly with
+                            // ⌘⇧[ / ⌘⇧] (cycle) or via the tab strip.
+                            // Shell tabs keep the original behavior
+                            // because they have no in-app tab pages.
+                            if matches!(
+                                &self.tabs[self.active].mode,
+                                Mode::Native { .. }
+                            ) {
+                                if let Mode::Native { server, .. } =
+                                    &mut self.tabs[self.active].mode
+                                    && let Some(code) = translate_key(&ke.logical_key, self.mods)
+                                {
+                                    server.send_input(&InputEvent::Key(KeyInput {
+                                        code,
+                                        mods: MOD_ALT,
+                                        press: true,
+                                    }));
+                                }
+                                return;
+                            }
                             let n = d.to_digit(10).unwrap() as usize - 1;
                             self.switch_to_tab(n);
                             if let Some(w) = &self.window {
@@ -1046,7 +1079,16 @@ impl ApplicationHandler for App {
                         (Some(ch), _)
                             if matches!(
                                 ch,
+                                // Editing / clipboard chords (existing).
                                 'z' | 'x' | 'c' | 'v' | 'a' | 's' | 'f' | 'n'
+                                // Navigation chords forwarded as ⌃-equivalents
+                                // so mnml's existing standard-mode bindings
+                                // light up under Mac muscle memory:
+                                //   ⌘P → ⌃P → file picker (also ⌘⇧P palette)
+                                //   ⌘B → ⌃B → toggle file tree
+                                //   ⌘G → ⌃G → goto line
+                                //   ⌘/ → ⌃/ → toggle line comment
+                                | 'p' | 'b' | 'g' | '/'
                             ) && matches!(
                                 &self.tabs[self.active].mode,
                                 Mode::Native { .. }
