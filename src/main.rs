@@ -1157,6 +1157,11 @@ impl ApplicationHandler for App {
                 match &mut self.tabs[self.active].mode {
                     Mode::Shell { session } => {
                         if let Some(s) = session.as_mut() {
+                            // Any keystroke cancels an in-flight AI
+                            // request — the command line is changing.
+                            if self.fim_pending.take().is_some() {
+                                self.fim_redraw = true;
+                            }
                             // An active ghost suggestion intercepts Tab
                             // (accept); any other key dismisses it, then
                             // is forwarded to the shell normally.
@@ -1951,6 +1956,9 @@ impl App {
                 continue; // stale — the command line changed since
             }
             let pending = self.fim_pending.take().unwrap();
+            // Refresh either way — clears the "generating…" placeholder
+            // whether the reply yields a suggestion or not.
+            self.fim_redraw = true;
             if let Ok(text) = result {
                 let line = text.lines().next().unwrap_or("").trim_end();
                 if !line.is_empty() {
@@ -1959,7 +1967,6 @@ impl App {
                         erase: pending.erase,
                         below: pending.below,
                     });
-                    self.fim_redraw = true;
                 }
             }
         }
@@ -2295,24 +2302,28 @@ impl App {
                 }
             }
         }
-        // Overlay the AI ghost suggestion (dim).
-        if let Some(g) = &self.ghost
-            && let Mode::Shell { session } = &self.tabs[self.active].mode
+        // Overlay the AI ghost suggestion, or a "generating…"
+        // placeholder while a request is in flight (dim).
+        if let Mode::Shell { session } = &self.tabs[self.active].mode
             && let Some(cur) = gpu.last_cursor
         {
             let cols = (gpu.grid.cols as usize).max(1);
-            let at = if g.below {
-                // Stage 2 — preview on the row below, aligned under the
-                // command-line input start column.
-                let anchor_col = session
-                    .as_ref()
-                    .and_then(|s| s.input_anchor())
-                    .map_or(0, |(_, c)| c as usize);
-                (cur / cols + 1) * cols + anchor_col
-            } else {
-                cur // Stage 1 — inline at the cursor.
-            };
-            draw_ghost(&mut gpu.grid, at, &g.text);
+            // Stage 2 (`below`) renders on the row below, aligned under
+            // the command-line input start; Stage 1 renders at the cursor.
+            let anchor_col = session
+                .as_ref()
+                .and_then(|s| s.input_anchor())
+                .map_or(0, |(_, c)| c as usize);
+            let below_at = (cur / cols + 1) * cols + anchor_col;
+            if let Some(g) = &self.ghost {
+                let at = if g.below { below_at } else { cur };
+                draw_ghost(&mut gpu.grid, at, &g.text);
+                // Accept hint, a couple of cells past the suggestion.
+                draw_ghost(&mut gpu.grid, at + g.text.chars().count() + 2, "[tab]");
+            } else if let Some(p) = &self.fim_pending {
+                let at = if p.below { below_at } else { cur };
+                draw_ghost(&mut gpu.grid, at, "generating…");
+            }
         }
         self.fim_redraw = false;
     }
