@@ -1177,17 +1177,31 @@ impl ApplicationHandler for App {
                         return;
                     }
                     if let Mode::Native { server, .. } = &self.tabs[self.active].mode
-                        && self.buttons_down != 0
                         && prev != self.cursor_cell
                     {
-                        let button = first_button(self.buttons_down);
-                        server.send_input(&InputEvent::Mouse(MouseInput {
-                            kind: MouseKind::Drag,
-                            button,
-                            col,
-                            row,
-                            mods: pack_mods(self.mods),
-                        }));
+                        // Button held → Drag; no button → Moved (bare
+                        // hover). The Native client needs Moved events
+                        // for hover tooltips / divider highlights — a
+                        // plain terminal only gets motion under ?1003h,
+                        // but a Native tab always wants them.
+                        if self.buttons_down != 0 {
+                            let button = first_button(self.buttons_down);
+                            server.send_input(&InputEvent::Mouse(MouseInput {
+                                kind: MouseKind::Drag,
+                                button,
+                                col,
+                                row,
+                                mods: pack_mods(self.mods),
+                            }));
+                        } else {
+                            server.send_input(&InputEvent::Mouse(MouseInput {
+                                kind: MouseKind::Moved,
+                                button: BUTTON_NONE,
+                                col,
+                                row,
+                                mods: pack_mods(self.mods),
+                            }));
+                        }
                     }
                 }
             }
