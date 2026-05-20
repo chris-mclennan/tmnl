@@ -1154,6 +1154,24 @@ impl ApplicationHandler for App {
                         return;
                     }
                 }
+                // Shift+PageUp / Shift+PageDown — scroll shell scrollback.
+                if self.mods.shift_key()
+                    && let Key::Named(nk) = &ke.logical_key
+                    && matches!(
+                        nk,
+                        winit::keyboard::NamedKey::PageUp | winit::keyboard::NamedKey::PageDown
+                    )
+                {
+                    let page = self
+                        .gpu
+                        .as_ref()
+                        .map_or(20, |g| g.grid.rows.saturating_sub(1) as i32);
+                    let up = matches!(nk, winit::keyboard::NamedKey::PageUp);
+                    if let Mode::Shell { session: Some(s) } = &mut self.tabs[self.active].mode {
+                        s.scroll(if up { page } else { -page });
+                    }
+                    return;
+                }
                 match &mut self.tabs[self.active].mode {
                     Mode::Shell { session } => {
                         if let Some(s) = session.as_mut() {
@@ -1188,6 +1206,7 @@ impl ApplicationHandler for App {
                             if !consumed
                                 && let Some(bytes) = winit_key_to_bytes(&ke.logical_key, self.mods)
                             {
+                                s.scroll_reset(); // typing snaps to the bottom
                                 s.write_bytes(&bytes);
                             }
                         }
@@ -1387,43 +1406,55 @@ impl ApplicationHandler for App {
                         return;
                     }
                 }
-                let Mode::Native { server, .. } = &self.tabs[self.active].mode else {
-                    return;
-                };
                 let (dx, dy) = match delta {
                     MouseScrollDelta::LineDelta(x, y) => (x, y),
                     MouseScrollDelta::PixelDelta(p) => (p.x as f32 / 24.0, p.y as f32 / 24.0),
                 };
                 let (col, row) = self.cursor_cell;
                 let mods = pack_mods(self.mods);
-                if dy.abs() >= dx.abs() {
-                    let kind = if dy > 0.0 {
-                        MouseKind::ScrollUp
-                    } else if dy < 0.0 {
-                        MouseKind::ScrollDown
-                    } else {
-                        return;
-                    };
-                    server.send_input(&InputEvent::Mouse(MouseInput {
-                        kind,
-                        button: BUTTON_NONE,
-                        col,
-                        row,
-                        mods,
-                    }));
-                } else {
-                    let kind = if dx > 0.0 {
-                        MouseKind::ScrollRight
-                    } else {
-                        MouseKind::ScrollLeft
-                    };
-                    server.send_input(&InputEvent::Mouse(MouseInput {
-                        kind,
-                        button: BUTTON_NONE,
-                        col,
-                        row,
-                        mods,
-                    }));
+                match &mut self.tabs[self.active].mode {
+                    // Shell mode — scroll vt100's scrollback. Skipped
+                    // while a full-screen TUI owns the alt-screen (it
+                    // manages its own view). Wheel up → into history.
+                    Mode::Shell { session: Some(s) } if !s.altscreen_active() => {
+                        let lines = (dy * 3.0).round() as i32;
+                        if lines != 0 {
+                            s.scroll(lines);
+                        }
+                    }
+                    // Native mode — forward the scroll to the backing app.
+                    Mode::Native { server, .. } => {
+                        if dy.abs() >= dx.abs() {
+                            let kind = if dy > 0.0 {
+                                MouseKind::ScrollUp
+                            } else if dy < 0.0 {
+                                MouseKind::ScrollDown
+                            } else {
+                                return;
+                            };
+                            server.send_input(&InputEvent::Mouse(MouseInput {
+                                kind,
+                                button: BUTTON_NONE,
+                                col,
+                                row,
+                                mods,
+                            }));
+                        } else {
+                            let kind = if dx > 0.0 {
+                                MouseKind::ScrollRight
+                            } else {
+                                MouseKind::ScrollLeft
+                            };
+                            server.send_input(&InputEvent::Mouse(MouseInput {
+                                kind,
+                                button: BUTTON_NONE,
+                                col,
+                                row,
+                                mods,
+                            }));
+                        }
+                    }
+                    _ => {}
                 }
             }
             WindowEvent::RedrawRequested => {
