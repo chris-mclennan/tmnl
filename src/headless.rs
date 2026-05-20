@@ -124,12 +124,13 @@ fn print_dump(session: &mut ShellSession, grid: &mut Grid) {
     let (cc, cr, vis) = session.apply_to_grid(grid);
     let header = format!(
         "size: {}x{}  cursor: ({cr},{cc}) visible={vis}\n\
-         integration: active={} running={}  scrollback={}",
+         integration: active={} running={}  scrollback={}  title={:?}",
         grid.cols,
         grid.rows,
         session.shell_integration_active(),
         session.command_running(),
         session.scrollback_offset(),
+        session.osc_title(),
     );
     dump_grid(grid, &header);
 }

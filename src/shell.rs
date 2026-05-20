@@ -20,8 +20,22 @@ const ATTR_DIM: u32 = 1 << 1;
 const ATTR_ITALIC: u32 = 1 << 2;
 const ATTR_UNDERLINE: u32 = 1 << 3;
 
+/// vt100 0.16 delivers the OSC window title through a [`vt100::Callbacks`]
+/// implementation rather than storing it on `Screen`. This sink keeps
+/// the latest title so `ShellSession::osc_title` can read it back.
+#[derive(Default)]
+struct TitleSink {
+    title: String,
+}
+
+impl vt100::Callbacks for TitleSink {
+    fn set_window_title(&mut self, _: &mut vt100::Screen, title: &[u8]) {
+        self.title = String::from_utf8_lossy(title).into_owned();
+    }
+}
+
 pub struct ShellSession {
-    parser: Arc<Mutex<vt100::Parser>>,
+    parser: Arc<Mutex<vt100::Parser<TitleSink>>>,
     writer: Box<dyn Write + Send>,
     master: Box<dyn MasterPty + Send>,
     reader: Option<JoinHandle<()>>,
@@ -102,7 +116,12 @@ impl ShellSession {
             .map_err(|e| format!("spawn {shell}: {e}"))?;
         drop(pair.slave);
 
-        let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, SCROLLBACK)));
+        let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
+            rows,
+            cols,
+            SCROLLBACK,
+            TitleSink::default(),
+        )));
         let exited = Arc::new(Mutex::new(false));
         let bytes_seen = Arc::new(AtomicU64::new(0));
 
@@ -343,7 +362,7 @@ impl ShellSession {
             pixel_height: 0,
         });
         if let Ok(mut p) = self.parser.lock() {
-            p.set_size(rows, cols);
+            p.screen_mut().set_size(rows, cols);
         }
     }
 
@@ -357,13 +376,10 @@ impl ShellSession {
     /// clamps to the available history.
     pub fn scroll(&mut self, lines: i32) {
         if let Ok(mut p) = self.parser.lock() {
-            // vt100 0.15's scrollback *view* is capped at one screenful
-            // — a larger offset underflows its `visible_rows`. Clamp to
-            // the row count until that's addressed upstream.
-            let max = p.screen().size().0 as i64;
             let cur = p.screen().scrollback() as i64;
-            let next = (cur + lines as i64).clamp(0, max) as usize;
-            p.set_scrollback(next);
+            let next = (cur + lines as i64).max(0) as usize;
+            // vt100 clamps to the available history internally.
+            p.screen_mut().set_scrollback(next);
         }
         self.scroll_dirty = true;
     }
@@ -371,7 +387,7 @@ impl ShellSession {
     /// Snap the scrollback view back to the live bottom.
     pub fn scroll_reset(&mut self) {
         if let Ok(mut p) = self.parser.lock() {
-            p.set_scrollback(0);
+            p.screen_mut().set_scrollback(0);
         }
         self.scroll_dirty = true;
     }
@@ -406,7 +422,7 @@ impl ShellSession {
     /// App layer uses this to label the tab strip.
     pub fn osc_title(&self) -> String {
         match self.parser.lock() {
-            Ok(p) => p.screen().title().to_string(),
+            Ok(p) => p.callbacks().title.clone(),
             Err(_) => String::new(),
         }
     }
@@ -443,7 +459,7 @@ impl ShellSession {
             let mut line = String::new();
             for col in 0..cols {
                 if let Some(c) = screen.cell(row, col) {
-                    line.push_str(&c.contents());
+                    line.push_str(c.contents());
                 }
             }
             let line_trimmed = line.trim_end();
