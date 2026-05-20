@@ -19,6 +19,8 @@
 //!               and dump the grid with the ghost suggestion overlaid
 //! gen           treat the command line as a description, generate a
 //!               shell command, preview it on the row below
+//! scroll <n>    scroll the scrollback view by <n> rows (+ into
+//!               history, - toward the bottom), then dump
 //! quit          stop (input EOF also stops)
 //! ```
 //!
@@ -79,6 +81,10 @@ pub fn run() {
             }
             "fim" => run_fim(&mut session, &mut grid, &mut fim),
             "gen" => run_gen(&mut session, &mut grid, &mut fim),
+            "scroll" => {
+                session.scroll(arg.parse().unwrap_or(0));
+                print_dump(&mut session, &mut grid);
+            }
             "quit" => break,
             other => eprintln!("tmnl --headless: unknown command '{other}'"),
         }
@@ -117,11 +123,13 @@ fn settle(session: &mut ShellSession, grid: &mut Grid) {
 fn print_dump(session: &mut ShellSession, grid: &mut Grid) {
     let (cc, cr, vis) = session.apply_to_grid(grid);
     let header = format!(
-        "size: {}x{}  cursor: ({cr},{cc}) visible={vis}\nintegration: active={} running={}",
+        "size: {}x{}  cursor: ({cr},{cc}) visible={vis}\n\
+         integration: active={} running={}  scrollback={}",
         grid.cols,
         grid.rows,
         session.shell_integration_active(),
         session.command_running(),
+        session.scrollback_offset(),
     );
     dump_grid(grid, &header);
 }

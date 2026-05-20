@@ -53,6 +53,9 @@ pub struct ShellSession {
     /// snippet is installed and whether a command is currently running.
     /// Updated by the reader thread; read by the render thread.
     integration: Arc<Mutex<osc133::State>>,
+    /// Set when the scrollback view changes (mouse wheel / keys) so the
+    /// next `apply_to_grid` re-renders even with no new pty output.
+    scroll_dirty: bool,
 }
 
 /// How often to poll `ps` for the shell's foreground process. Shorter
@@ -183,6 +186,7 @@ impl ShellSession {
             default_fg,
             attention_requested,
             integration,
+            scroll_dirty: false,
             shell_name,
             fg_proc_cache: None,
             last_fg_poll: None,
@@ -348,6 +352,38 @@ impl ShellSession {
         let _ = self.writer.flush();
     }
 
+    /// Scroll the terminal's scrollback view. Positive `lines` moves
+    /// back into history; negative moves toward the live bottom. vt100
+    /// clamps to the available history.
+    pub fn scroll(&mut self, lines: i32) {
+        if let Ok(mut p) = self.parser.lock() {
+            // vt100 0.15's scrollback *view* is capped at one screenful
+            // — a larger offset underflows its `visible_rows`. Clamp to
+            // the row count until that's addressed upstream.
+            let max = p.screen().size().0 as i64;
+            let cur = p.screen().scrollback() as i64;
+            let next = (cur + lines as i64).clamp(0, max) as usize;
+            p.set_scrollback(next);
+        }
+        self.scroll_dirty = true;
+    }
+
+    /// Snap the scrollback view back to the live bottom.
+    pub fn scroll_reset(&mut self) {
+        if let Ok(mut p) = self.parser.lock() {
+            p.set_scrollback(0);
+        }
+        self.scroll_dirty = true;
+    }
+
+    /// Current scrollback offset in rows — 0 means at the live bottom.
+    pub fn scrollback_offset(&self) -> usize {
+        self.parser
+            .lock()
+            .map(|p| p.screen().scrollback())
+            .unwrap_or(0)
+    }
+
     pub fn exited(&self) -> bool {
         *self.exited.lock().unwrap()
     }
@@ -451,7 +487,7 @@ impl ShellSession {
     /// Did new output arrive since the last `apply_to_grid`? Used to skip
     /// rebuilding instances when the shell's been idle.
     pub fn dirty(&self) -> bool {
-        self.bytes_seen.load(Ordering::Relaxed) != self.last_applied_bytes
+        self.bytes_seen.load(Ordering::Relaxed) != self.last_applied_bytes || self.scroll_dirty
     }
 
     /// Copy parsed cells into `grid`. Returns the cursor position +
@@ -497,6 +533,7 @@ impl ShellSession {
         let (cr, cc) = screen.cursor_position();
         let visible = !screen.hide_cursor();
         self.last_applied_bytes = self.bytes_seen.load(Ordering::Relaxed);
+        self.scroll_dirty = false;
         (cc, cr, visible)
     }
 }
