@@ -15,6 +15,8 @@
 //!               up down left right home end
 //! wait <ms>     sleep for <ms> milliseconds
 //! dump          settle pending output, then print the grid to stdout
+//! expect contains <text>   settle, then assert the grid contains <text>
+//! expect lacks <text>      …assert it does not
 //! fim           reconstruct the command line, run an AI completion,
 //!               and dump the grid with the ghost suggestion overlaid
 //! gen           treat the command line as a description, generate a
@@ -23,6 +25,9 @@
 //!               history, - toward the bottom), then dump
 //! quit          stop (input EOF also stops)
 //! ```
+//!
+//! A failed `expect` dumps the rendered grid and makes the process exit
+//! non-zero — so a piped script doubles as a pass/fail test.
 //!
 //! Grid size defaults to 80x24; override with `TMNL_COLS` / `TMNL_ROWS`.
 //!
@@ -59,6 +64,9 @@ pub fn run() {
     settle(&mut session, &mut grid);
     eprintln!("tmnl --headless: shell ready ({cols}x{rows})");
 
+    // Count of failed `expect` checks — the process exits non-zero when
+    // any failed, so a piped script works as a pass/fail test.
+    let mut failures: usize = 0;
     let stdin = std::io::stdin();
     for line in stdin.lock().lines() {
         let Ok(line) = line else { break };
@@ -79,6 +87,13 @@ pub fn run() {
                 settle(&mut session, &mut grid);
                 print_dump(&mut session, &mut grid);
             }
+            "expect" => {
+                settle(&mut session, &mut grid);
+                let _ = session.apply_to_grid(&mut grid);
+                if !run_expect(&grid, arg) {
+                    failures += 1;
+                }
+            }
             "fim" => run_fim(&mut session, &mut grid, &mut fim),
             "gen" => run_gen(&mut session, &mut grid, &mut fim),
             "scroll" => {
@@ -93,6 +108,33 @@ pub fn run() {
             break;
         }
     }
+    if failures > 0 {
+        eprintln!("tmnl --headless: {failures} expectation(s) FAILED");
+        std::process::exit(1);
+    }
+}
+
+/// Run an `expect contains|lacks <text>` check against the grid. Prints
+/// `ok` / `FAIL` and, on failure, dumps the rendered grid. Returns
+/// whether the check passed.
+fn run_expect(grid: &Grid, arg: &str) -> bool {
+    let (op, text) = arg.split_once(' ').unwrap_or((arg, ""));
+    let screen = grid_text(grid);
+    let pass = match op {
+        "contains" => screen.contains(text),
+        "lacks" => !screen.contains(text),
+        _ => {
+            eprintln!("tmnl --headless: expect <contains|lacks> <text>");
+            return false;
+        }
+    };
+    if pass {
+        println!("ok: expect {op} {text:?}");
+    } else {
+        println!("FAIL: expect {op} {text:?}");
+        dump_grid(grid, "expectation failed");
+    }
+    pass
 }
 
 fn env_dim(key: &str, default: u32) -> u32 {
@@ -135,6 +177,21 @@ fn print_dump(session: &mut ShellSession, grid: &mut Grid) {
     dump_grid(grid, &header);
 }
 
+/// Flatten the grid into a newline-joined string (rows right-trimmed) —
+/// the form `expect` substring-checks against and `dump_grid` prints.
+fn grid_text(grid: &Grid) -> String {
+    let mut out = String::with_capacity((grid.cols + 1) as usize * grid.rows as usize);
+    for row in 0..grid.rows {
+        let mut line = String::with_capacity(grid.cols as usize);
+        for col in 0..grid.cols {
+            line.push(grid.cells[(row * grid.cols + col) as usize].ch);
+        }
+        out.push_str(line.trim_end());
+        out.push('\n');
+    }
+    out
+}
+
 /// Print the grid to stdout as plain text under `header` — one line per
 /// row. Does not re-apply the shell screen, so an overlay already drawn
 /// onto `grid` (e.g. the AI ghost suggestion) survives into the dump.
@@ -144,13 +201,7 @@ fn dump_grid(grid: &Grid, header: &str) {
     let _ = writeln!(out, "=== tmnl headless dump ===");
     let _ = writeln!(out, "{header}");
     let _ = writeln!(out, "--- screen ---");
-    for row in 0..grid.rows {
-        let mut line = String::with_capacity(grid.cols as usize);
-        for col in 0..grid.cols {
-            line.push(grid.cells[(row * grid.cols + col) as usize].ch);
-        }
-        let _ = writeln!(out, "{}", line.trim_end());
-    }
+    let _ = write!(out, "{}", grid_text(grid));
     let _ = writeln!(out, "=== end dump ===");
     let _ = out.flush();
 }
