@@ -1,8 +1,11 @@
 mod atlas;
 mod config;
+mod fim;
 mod grid;
+mod headless;
 mod launcher;
 mod menu;
+mod osc133;
 mod pipeline;
 mod server;
 mod settings_ui;
@@ -118,9 +121,9 @@ enum Mode {
 struct Tab {
     /// Hosted process / connection state for this tab.
     mode: Mode,
-    /// Cached label for the strip — refreshed each tick from `mode`
-    /// + the shell's OSC title where applicable. `App::tick`
-    /// rewrites this; the renderer reads from `tabs[active].label`.
+    /// Cached label for the strip — refreshed each tick from `mode` and
+    /// the shell's OSC title where applicable. `App::tick` rewrites
+    /// this; the renderer reads from `tabs[active].label`.
     label: String,
     /// Set true when the hosted process emits an OSC 1337 attention
     /// signal (Claude Code does this when a turn finishes and it's
@@ -142,6 +145,28 @@ struct Tab {
     /// active (its grid is on the GPU, not here).
     grid_snapshot: Option<grid::Grid>,
     last_cursor_snapshot: Option<usize>,
+}
+
+/// An AI suggestion shown as dim ghost text. Created from a worker
+/// reply; cleared on accept or dismiss.
+struct Ghost {
+    /// The suggested text, rendered dim.
+    text: String,
+    /// Backspaces to send before `text` on accept. `0` appends at the
+    /// cursor (Stage 1 continuation); `>0` replaces the typed
+    /// description (Stage 2 NL→command).
+    erase: usize,
+    /// `true` for a Stage 2 NL→command preview — rendered on the row
+    /// below the prompt instead of inline at the cursor.
+    below: bool,
+}
+
+/// An in-flight completion request. The reply carrying `id` becomes a
+/// [`Ghost`] with `erase` / `below` copied across.
+struct PendingReq {
+    id: u64,
+    erase: usize,
+    below: bool,
 }
 
 struct App {
@@ -194,6 +219,21 @@ struct App {
     /// `CursorMoved` event over a *different* chip swaps `tabs[src]`
     /// and `tabs[dst]` and updates the index.
     dragging_tab: Option<usize>,
+    /// Local AI command-completion worker (`fim-engine`). Spawned
+    /// lazily on the first ⌘I trigger so the model only loads if the
+    /// feature is used.
+    fim: Option<fim::FimWorker>,
+    /// The in-flight completion request; a reply with any other id is
+    /// stale (the user typed since) and is dropped.
+    fim_pending: Option<PendingReq>,
+    /// Monotonic id source for completion requests.
+    fim_next_id: u64,
+    /// The active AI ghost suggestion — rendered dim, written to the
+    /// pty on accept (Tab).
+    ghost: Option<Ghost>,
+    /// Set when `ghost` changes; forces one shell-grid repaint so the
+    /// suggestion appears (or, when cleared, disappears).
+    fim_redraw: bool,
 }
 
 #[derive(Clone)]
@@ -977,10 +1017,7 @@ impl ApplicationHandler for App {
                             // Shell tabs keep the original close-tab
                             // behavior (no way to recover the shell
                             // otherwise).
-                            if matches!(
-                                &self.tabs[self.active].mode,
-                                Mode::Native { .. }
-                            ) {
+                            if matches!(&self.tabs[self.active].mode, Mode::Native { .. }) {
                                 let translated_mods = pack_mods_cmd_to_ctrl(self.mods);
                                 if let Mode::Native { server, .. } =
                                     &mut self.tabs[self.active].mode
@@ -1008,10 +1045,7 @@ impl ApplicationHandler for App {
                             // ⌘⇧[ / ⌘⇧] (cycle) or via the tab strip.
                             // Shell tabs keep the original behavior
                             // because they have no in-app tab pages.
-                            if matches!(
-                                &self.tabs[self.active].mode,
-                                Mode::Native { .. }
-                            ) {
+                            if matches!(&self.tabs[self.active].mode, Mode::Native { .. }) {
                                 if let Mode::Native { server, .. } =
                                     &mut self.tabs[self.active].mode
                                     && let Some(code) = translate_key(&ke.logical_key, self.mods)
@@ -1089,16 +1123,11 @@ impl ApplicationHandler for App {
                                 //   ⌘G → ⌃G → goto line
                                 //   ⌘/ → ⌃/ → toggle line comment
                                 | 'p' | 'b' | 'g' | '/'
-                            ) && matches!(
-                                &self.tabs[self.active].mode,
-                                Mode::Native { .. }
-                            ) =>
+                            ) && matches!(&self.tabs[self.active].mode, Mode::Native { .. }) =>
                         {
                             let translated_mods = pack_mods_cmd_to_ctrl(self.mods);
-                            if let Mode::Native { server, .. } =
-                                &mut self.tabs[self.active].mode
-                                && let Some(code) =
-                                    translate_key(&ke.logical_key, self.mods)
+                            if let Mode::Native { server, .. } = &mut self.tabs[self.active].mode
+                                && let Some(code) = translate_key(&ke.logical_key, self.mods)
                             {
                                 server.send_input(&InputEvent::Key(KeyInput {
                                     code,
@@ -1111,12 +1140,51 @@ impl ApplicationHandler for App {
                         _ => {}
                     }
                 }
+                // ⌘I — AI completion of the current command line.
+                // ⌘K — generate a command from a typed description.
+                if self.mods.super_key()
+                    && let Key::Character(s) = &ke.logical_key
+                {
+                    if s.eq_ignore_ascii_case("i") {
+                        self.trigger_ai_completion();
+                        return;
+                    }
+                    if s.eq_ignore_ascii_case("k") {
+                        self.trigger_ai_generate();
+                        return;
+                    }
+                }
                 match &mut self.tabs[self.active].mode {
                     Mode::Shell { session } => {
-                        if let Some(s) = session.as_mut()
-                            && let Some(bytes) = winit_key_to_bytes(&ke.logical_key, self.mods)
-                        {
-                            s.write_bytes(&bytes);
+                        if let Some(s) = session.as_mut() {
+                            // An active ghost suggestion intercepts Tab
+                            // (accept); any other key dismisses it, then
+                            // is forwarded to the shell normally.
+                            let mut consumed = false;
+                            if self.ghost.is_some() {
+                                if matches!(
+                                    &ke.logical_key,
+                                    Key::Named(winit::keyboard::NamedKey::Tab)
+                                ) {
+                                    if let Some(g) = self.ghost.take() {
+                                        // Stage 2 replaces the typed
+                                        // description; Stage 1 appends.
+                                        if g.erase > 0 {
+                                            s.write_bytes(&vec![0x7f; g.erase]);
+                                        }
+                                        s.write_bytes(g.text.as_bytes());
+                                    }
+                                    consumed = true;
+                                } else {
+                                    self.ghost = None;
+                                }
+                                self.fim_redraw = true;
+                            }
+                            if !consumed
+                                && let Some(bytes) = winit_key_to_bytes(&ke.logical_key, self.mods)
+                            {
+                                s.write_bytes(&bytes);
+                            }
                         }
                     }
                     Mode::Native { server, .. } => {
@@ -1789,12 +1857,121 @@ impl App {
         }
     }
 
+    /// Ensure the AI completion worker thread is running.
+    fn ensure_fim(&mut self) {
+        if self.fim.is_none() {
+            self.fim = Some(fim::FimWorker::spawn());
+        }
+    }
+
+    /// The text currently typed on the shell command line — `None`
+    /// unless we're in shell mode with an OSC 133 anchor.
+    fn command_line(&self) -> Option<String> {
+        let gpu = self.gpu.as_ref()?;
+        let cur = gpu.last_cursor?;
+        let cols = gpu.grid.cols.max(1);
+        let row = (cur as u32 / cols) as u16;
+        let col = (cur as u32 % cols) as u16;
+        match &self.tabs[self.active].mode {
+            Mode::Shell { session: Some(s) } => s.current_command_line(&gpu.grid, row, col),
+            _ => None,
+        }
+    }
+
+    /// ⌘I — request an AI continuation of the current command line.
+    /// No-op without an OSC 133 anchor (integration snippet not
+    /// installed).
+    fn trigger_ai_completion(&mut self) {
+        let Some(prefix) = self.command_line() else {
+            return;
+        };
+        if prefix.trim().is_empty() {
+            return;
+        }
+        self.ghost = None; // drop any stale suggestion
+        self.fim_redraw = true;
+        let id = self.fim_next_id;
+        self.fim_next_id += 1;
+        self.fim_pending = Some(PendingReq {
+            id,
+            erase: 0,
+            below: false,
+        });
+        self.ensure_fim();
+        if let Some(f) = &self.fim {
+            f.request(id, &prefix, "");
+        }
+    }
+
+    /// ⌘K — generate a shell command from the natural-language
+    /// description typed on the command line (Stage 2). The reply is
+    /// previewed on the row below; accepting it erases the description
+    /// and types the command.
+    fn trigger_ai_generate(&mut self) {
+        let Some(raw) = self.command_line() else {
+            return;
+        };
+        let desc = raw.trim();
+        if desc.is_empty() {
+            return;
+        }
+        self.ghost = None;
+        self.fim_redraw = true;
+        let id = self.fim_next_id;
+        self.fim_next_id += 1;
+        self.fim_pending = Some(PendingReq {
+            id,
+            erase: raw.chars().count(),
+            below: true,
+        });
+        // The shebang biases the code model toward a zsh one-liner.
+        let prompt = format!("#!/bin/zsh\n# {desc}\n");
+        self.ensure_fim();
+        if let Some(f) = &self.fim {
+            f.request(id, &prompt, "\n");
+        }
+    }
+
+    /// Drain AI completion replies; a reply matching the in-flight
+    /// request id becomes the ghost suggestion.
+    fn poll_fim(&mut self) {
+        let replies = match &self.fim {
+            Some(f) => f.poll(),
+            None => return,
+        };
+        for (id, result) in replies {
+            if id == fim::STATUS_ID {
+                match result {
+                    Ok(msg) => log::info!("fim: {msg}"),
+                    Err(e) => log::warn!("fim: {e}"),
+                }
+                continue;
+            }
+            if self.fim_pending.as_ref().map(|p| p.id) != Some(id) {
+                continue; // stale — the command line changed since
+            }
+            let pending = self.fim_pending.take().unwrap();
+            if let Ok(text) = result {
+                let line = text.lines().next().unwrap_or("").trim_end();
+                if !line.is_empty() {
+                    self.ghost = Some(Ghost {
+                        text: line.to_string(),
+                        erase: pending.erase,
+                        below: pending.below,
+                    });
+                    self.fim_redraw = true;
+                }
+            }
+        }
+    }
+
     fn tick(&mut self, event_loop: &ActiveEventLoop) {
         // Drain the menu-event channel first — `muda` delivers menu picks
         // (and accelerator-fired items like ⌘, / ⌘+ / ⌘-) through this
         // global channel. Acting on them before the per-frame work means
         // the next render reflects whatever the menu changed.
         self.drain_menu_events();
+        self.poll_fim();
 
         let Some(gpu) = self.gpu.as_mut() else {
             return;
@@ -2010,6 +2187,7 @@ impl App {
             MACOS_TAB_STRIP_PX_SHELL
         };
         let strip_resize = gpu.set_strip_h(target_strip);
+        let want_ghost_refresh = self.fim_redraw;
         match &mut self.tabs[self.active].mode {
             Mode::Shell { session } => {
                 let Some(s) = session.as_mut() else {
@@ -2033,7 +2211,7 @@ impl App {
                 if let Some((cols, rows)) = strip_resize {
                     s.resize(rows, cols);
                 }
-                if s.dirty() {
+                if s.dirty() || want_ghost_refresh {
                     let (cc, cr, vis) = s.apply_to_grid(&mut gpu.grid);
                     gpu.last_cursor = None; // Shell mode tracks cursor via apply_to_grid
                     if vis && (cc as u32) < gpu.grid.cols && (cr as u32) < gpu.grid.rows {
@@ -2117,6 +2295,26 @@ impl App {
                 }
             }
         }
+        // Overlay the AI ghost suggestion (dim).
+        if let Some(g) = &self.ghost
+            && let Mode::Shell { session } = &self.tabs[self.active].mode
+            && let Some(cur) = gpu.last_cursor
+        {
+            let cols = (gpu.grid.cols as usize).max(1);
+            let at = if g.below {
+                // Stage 2 — preview on the row below, aligned under the
+                // command-line input start column.
+                let anchor_col = session
+                    .as_ref()
+                    .and_then(|s| s.input_anchor())
+                    .map_or(0, |(_, c)| c as usize);
+                (cur / cols + 1) * cols + anchor_col
+            } else {
+                cur // Stage 1 — inline at the cursor.
+            };
+            draw_ghost(&mut gpu.grid, at, &g.text);
+        }
+        self.fim_redraw = false;
     }
 
     /// Pick up menu events fired since the last tick (selections + chord
@@ -2308,9 +2506,35 @@ fn resolve_inset(argv: &[String], cfg: &Config) -> f32 {
         .max(0.0)
 }
 
+/// Overlay `text` as dim "ghost" cells starting at grid cell `start` —
+/// the AI suggestion. Existing cell `attrs` are preserved, so the cursor
+/// still shows through on an inline suggestion. Stops at the grid edge.
+fn draw_ghost(grid: &mut grid::Grid, start: usize, text: &str) {
+    let total = grid.cells.len();
+    for (offset, ch) in text.chars().enumerate() {
+        let i = start + offset;
+        if i >= total {
+            break;
+        }
+        grid.cells[i] = grid::Cell {
+            ch,
+            fg: DIM_FG,
+            bg: grid.cells[i].bg,
+            attrs: grid.cells[i].attrs,
+        };
+    }
+}
+
 fn main() {
     env_logger::init();
     let argv: Vec<String> = std::env::args().skip(1).collect();
+    // Headless mode — no window, scripted stdin, text grid dumps (see
+    // `src/headless.rs`). Branches out before any winit / wgpu / AppKit
+    // setup so it runs fine with no display.
+    if argv.iter().any(|a| a == "--headless") {
+        headless::run();
+        return;
+    }
     // `--mnml` launches mnml in native/integrated mode (UDS blit channel,
     // wgpu renders, mnml drives input). Future siblings: `--mixr`, etc.
     let editor_mode = argv.iter().any(|a| a == "--mnml");
@@ -2435,6 +2659,11 @@ fn main() {
         editor_template,
         native_tab_nonce: 1,
         dragging_tab: None,
+        fim: None,
+        fim_pending: None,
+        fim_next_id: 0,
+        ghost: None,
+        fim_redraw: false,
     };
     event_loop.run_app(&mut app).unwrap();
     drop(app);

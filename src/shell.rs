@@ -11,6 +11,7 @@ use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system}
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use crate::grid::Grid;
+use crate::osc133;
 
 const SCROLLBACK: usize = 4000;
 
@@ -48,6 +49,10 @@ pub struct ShellSession {
     /// title and shell_name.
     fg_proc_cache: Option<String>,
     last_fg_poll: Option<std::time::Instant>,
+    /// Live OSC 133 shell-integration state — whether the integration
+    /// snippet is installed and whether a command is currently running.
+    /// Updated by the reader thread; read by the render thread.
+    integration: Arc<Mutex<osc133::State>>,
 }
 
 /// How often to poll `ps` for the shell's foreground process. Shorter
@@ -80,6 +85,9 @@ impl ShellSession {
             .to_string();
         let mut cmd = CommandBuilder::new(&shell);
         cmd.env("TERM", "xterm-256color");
+        // Identify ourselves the way Terminal.app / iTerm2 do, so shell
+        // integration snippets and other tools can detect tmnl.
+        cmd.env("TERM_PROGRAM", "tmnl");
         // Login shell so users' rc files load and the prompt is set up.
         cmd.arg("-l");
         if let Ok(home) = std::env::var("HOME") {
@@ -104,6 +112,8 @@ impl ShellSession {
         let r_bytes = Arc::clone(&bytes_seen);
         let attention_requested = Arc::new(AtomicBool::new(false));
         let r_attention = Arc::clone(&attention_requested);
+        let integration = Arc::new(Mutex::new(osc133::State::default()));
+        let r_integration = Arc::clone(&integration);
         let reader = thread::Builder::new()
             .name("tmnl-shell-reader".into())
             .spawn(move || {
@@ -111,6 +121,7 @@ impl ShellSession {
                 // Spans an OSC parse across read boundaries — if a chunk
                 // ends mid-sequence, carry the prefix forward.
                 let mut osc_carry: Vec<u8> = Vec::new();
+                let mut osc133_scanner = osc133::Scanner::new();
                 loop {
                     match reader_handle.read(&mut buf) {
                         Ok(0) | Err(_) => {
@@ -121,8 +132,30 @@ impl ShellSession {
                         }
                         Ok(n) => {
                             scan_osc_1337(&buf[..n], &mut osc_carry, &r_attention);
+                            let marks = osc133_scanner.scan(&buf[..n]);
+                            // Feed vt100 the chunk, split at each OSC 133
+                            // mark so the cursor can be sampled there.
+                            let mut events: Vec<(osc133::Mark, (u16, u16))> = Vec::new();
                             if let Ok(mut p) = r_parser.lock() {
-                                p.process(&buf[..n]);
+                                if marks.is_empty() {
+                                    p.process(&buf[..n]);
+                                } else {
+                                    let mut seg = 0;
+                                    for (off, mark) in marks {
+                                        let off = off.min(n);
+                                        p.process(&buf[seg..off]);
+                                        seg = off;
+                                        events.push((mark, p.screen().cursor_position()));
+                                    }
+                                    p.process(&buf[seg..n]);
+                                }
+                            }
+                            if !events.is_empty()
+                                && let Ok(mut st) = r_integration.lock()
+                            {
+                                for (mark, cursor) in events {
+                                    st.apply(mark, cursor);
+                                }
                             }
                             r_bytes.fetch_add(n as u64, Ordering::Relaxed);
                         }
@@ -149,6 +182,7 @@ impl ShellSession {
             default_bg,
             default_fg,
             attention_requested,
+            integration,
             shell_name,
             fg_proc_cache: None,
             last_fg_poll: None,
@@ -167,6 +201,13 @@ impl ShellSession {
     /// the result is cached on `self` so per-tick calls are cheap.
     /// Returns `None` when the only process is the shell itself.
     pub fn fg_proc_name(&mut self) -> Option<&str> {
+        // With OSC 133 integration installed the shell tells us exactly
+        // when a command is running. If it isn't, there is no foreground
+        // process distinct from the shell — skip the `ps` fork entirely.
+        if self.shell_integration_active() && !self.command_running() {
+            self.fg_proc_cache = None;
+            return None;
+        }
         let now = std::time::Instant::now();
         let due = self
             .last_fg_poll
@@ -179,6 +220,62 @@ impl ShellSession {
             }
         }
         self.fg_proc_cache.as_deref()
+    }
+
+    /// `true` when the OSC 133 integration snippet is installed in the
+    /// running shell — i.e. any semantic-prompt mark has been seen.
+    pub fn shell_integration_active(&self) -> bool {
+        self.integration.lock().map(|s| s.active()).unwrap_or(false)
+    }
+
+    /// `true` while a foreground command is running (between OSC 133 `C`
+    /// and `D`). Always `false` when the integration snippet isn't
+    /// installed — gate on `shell_integration_active` first.
+    pub fn command_running(&self) -> bool {
+        self.integration
+            .lock()
+            .map(|s| s.running())
+            .unwrap_or(false)
+    }
+
+    /// The text typed so far on the current command line, reconstructed
+    /// from `grid` between the OSC 133 `B` anchor and the cursor. `None`
+    /// when there's no anchor (integration snippet not installed, a
+    /// command is running, or the anchor is stale relative to the
+    /// cursor). For AI command completion this string is the prefix.
+    pub fn current_command_line(
+        &self,
+        grid: &Grid,
+        cursor_row: u16,
+        cursor_col: u16,
+    ) -> Option<String> {
+        let (ar, ac) = self.integration.lock().ok()?.input_anchor()?;
+        // The anchor must sit at or before the cursor for a valid span.
+        if (cursor_row, cursor_col) < (ar, ac) {
+            return None;
+        }
+        let mut s = String::new();
+        for row in ar..=cursor_row {
+            let start = if row == ar { ac } else { 0 };
+            let end = if row == cursor_row {
+                cursor_col
+            } else {
+                grid.cols as u16
+            };
+            for col in start..end {
+                let idx = row as u32 * grid.cols + col as u32;
+                if (idx as usize) < grid.cells.len() {
+                    s.push(grid.cells[idx as usize].ch);
+                }
+            }
+        }
+        Some(s)
+    }
+
+    /// The OSC 133 `B`-mark cursor position `(row, col)` — where the
+    /// current command line begins. `None` when there's no live prompt.
+    pub fn input_anchor(&self) -> Option<(u16, u16)> {
+        self.integration.lock().ok()?.input_anchor()
     }
 }
 
@@ -546,10 +643,10 @@ fn encode_named(n: NamedKey, _mods: ModifiersState) -> Option<Vec<u8>> {
 /// OSC format we recognize: `ESC ] 1337 ; <payload> (BEL | ESC \)`.
 /// Any payload triggers attention — we don't parse the iTerm2
 /// sub-grammar (`Notify=…`, `RequestAttention=…`, `StealFocus`).
-/// Claude Code uses `RequestAttention=…` when a turn finishes; vim
-/// + tmux occasionally emit other 1337 sequences (cursor color,
-/// etc.) and harmlessly trigger an attention blip — acceptable
-/// false-positive cost.
+/// Claude Code uses `RequestAttention=…` when a turn finishes; vim and
+/// tmux occasionally emit other 1337 sequences (cursor color, etc.) and
+/// harmlessly trigger an attention blip — an acceptable false-positive
+/// cost.
 fn scan_osc_1337(chunk: &[u8], carry: &mut Vec<u8>, attention: &std::sync::atomic::AtomicBool) {
     use std::sync::atomic::Ordering;
     const OSC_START: &[u8] = b"\x1b]1337;";
