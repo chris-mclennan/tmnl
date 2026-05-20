@@ -957,6 +957,33 @@ impl ApplicationHandler for App {
                             return;
                         }
                         (Some('w'), false) => {
+                            // Native (mnml) tabs: forward ⌘W as ⌃W so the
+                            // host process closes its active buffer/pane
+                            // rather than tmnl killing the whole tab.
+                            // mnml shows a confirmation prompt when it
+                            // would close the last buffer, so an
+                            // accidental ⌘W doesn't drop the user back
+                            // onto the welcome screen or the shell.
+                            // Shell tabs keep the original close-tab
+                            // behavior (no way to recover the shell
+                            // otherwise).
+                            if matches!(
+                                &self.tabs[self.active].mode,
+                                Mode::Native { .. }
+                            ) {
+                                let translated_mods = pack_mods_cmd_to_ctrl(self.mods);
+                                if let Mode::Native { server, .. } =
+                                    &mut self.tabs[self.active].mode
+                                    && let Some(code) = translate_key(&ke.logical_key, self.mods)
+                                {
+                                    server.send_input(&InputEvent::Key(KeyInput {
+                                        code,
+                                        mods: translated_mods,
+                                        press: true,
+                                    }));
+                                }
+                                return;
+                            }
                             self.close_active_tab(event_loop);
                             if let Some(w) = &self.window {
                                 w.request_redraw();
