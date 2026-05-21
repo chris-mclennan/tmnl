@@ -226,5 +226,65 @@ mod tests {
         assert_eq!(l.pane_at(area, 60, 5), Some(1));
         // The divider column (40) belongs to neither pane.
         assert_eq!(l.pane_at(area, 40, 5), None);
+        // Outside the whole area — nothing.
+        assert_eq!(l.pane_at(area, 200, 200), None);
+    }
+
+    #[test]
+    fn ratio_is_clamped_to_0_1() {
+        let area = Rect::new(0, 0, 81, 24);
+        // ratio > 1 → first takes all the usable extent, second is empty.
+        let hi = Layout::Split {
+            dir: SplitDir::Vertical,
+            ratio: 9.0,
+            first: Box::new(Layout::Leaf(0)),
+            second: Box::new(Layout::Leaf(1)),
+        };
+        let r = hi.leaf_rects(area);
+        assert_eq!(r[0].1.w, 80);
+        assert_eq!(r[1].1.w, 0);
+        // ratio < 0 → first is empty.
+        let lo = Layout::Split {
+            dir: SplitDir::Vertical,
+            ratio: -3.0,
+            first: Box::new(Layout::Leaf(0)),
+            second: Box::new(Layout::Leaf(1)),
+        };
+        let r = lo.leaf_rects(area);
+        assert_eq!(r[0].1.w, 0);
+        assert_eq!(r[1].1.w, 80);
+    }
+
+    #[test]
+    fn tiny_area_too_small_for_a_divider_degrades_gracefully() {
+        // 1-wide area: no room for the divider; both children collapse
+        // rather than panicking (saturating_sub guards the arithmetic).
+        let l = Layout::Split {
+            dir: SplitDir::Vertical,
+            ratio: 0.5,
+            first: Box::new(Layout::Leaf(0)),
+            second: Box::new(Layout::Leaf(1)),
+        };
+        let rects = l.leaf_rects(Rect::new(0, 0, 1, 10));
+        assert_eq!(rects.len(), 2);
+        assert_eq!(rects[0].1.w + rects[1].1.w, 0);
+    }
+
+    #[test]
+    fn deep_nesting_assigns_every_leaf() {
+        // A left-leaning chain of vertical splits — 4 leaves.
+        let mut tree = Layout::Leaf(3);
+        for id in (0..3).rev() {
+            tree = Layout::Split {
+                dir: SplitDir::Vertical,
+                ratio: 0.5,
+                first: Box::new(Layout::Leaf(id)),
+                second: Box::new(tree),
+            };
+        }
+        let rects = tree.leaf_rects(Rect::new(0, 0, 120, 40));
+        let ids: Vec<_> = rects.iter().map(|(id, _)| *id).collect();
+        assert_eq!(ids, vec![0, 1, 2, 3]);
+        assert_eq!(tree.leaf_ids(), vec![0, 1, 2, 3]);
     }
 }
