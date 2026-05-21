@@ -98,11 +98,12 @@ impl AppMenu {
             true,
             Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyN)),
         );
-        // Split-pane verbs. These carry plain string IDs (routed by
+        // Pane verbs. These carry plain string IDs (routed by
         // `drain_menu_events`) rather than stored `MenuId` fields —
         // `MenuId: PartialEq<&str>` makes the dispatch a direct compare.
         // The accelerators mirror the tmnl-level keyboard chords, so the
-        // menu doubles as a discoverable reference for them.
+        // menus double as a discoverable reference. Split + close live
+        // in the Shell menu; pane-focus navigation in the Window menu.
         let split_item = |id: &str, label: &str, mods: Modifiers, code: Code| {
             MenuItem::with_id(
                 MenuId::new(id),
@@ -127,12 +128,6 @@ impl AppMenu {
                 &PredefinedMenuItem::separator(),
                 &split_right,
                 &split_down,
-                &PredefinedMenuItem::separator(),
-                &focus_left,
-                &focus_right,
-                &focus_up,
-                &focus_down,
-                &PredefinedMenuItem::separator(),
                 &close_pane,
             ])
             .expect("build Shell menu");
@@ -195,10 +190,18 @@ impl AppMenu {
             ])
             .expect("build View menu");
 
-        // ── Window
+        // ── Window — macOS's home for navigation: pane-focus moves
+        //    live here, the split / close verbs stay under Shell.
         let window_menu = Submenu::new("Window", true);
         window_menu
-            .append_items(&[&PredefinedMenuItem::minimize(None)])
+            .append_items(&[
+                &PredefinedMenuItem::minimize(None),
+                &PredefinedMenuItem::separator(),
+                &focus_left,
+                &focus_right,
+                &focus_up,
+                &focus_down,
+            ])
             .expect("build Window menu");
 
         // ── Help
