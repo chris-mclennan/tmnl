@@ -2167,7 +2167,7 @@ impl App {
         // (and accelerator-fired items like ⌘, / ⌘+ / ⌘-) through this
         // global channel. Acting on them before the per-frame work means
         // the next render reflects whatever the menu changed.
-        self.drain_menu_events();
+        self.drain_menu_events(event_loop);
         self.poll_fim();
 
         if self.gpu.is_none() {
@@ -2420,7 +2420,7 @@ impl App {
     /// accelerators both land here). Drain into a Vec first so we can
     /// dispatch with `&mut self` afterwards (the menu borrow + a mutable
     /// self borrow would otherwise conflict).
-    fn drain_menu_events(&mut self) {
+    fn drain_menu_events(&mut self, event_loop: &ActiveEventLoop) {
         if self.app_menu.is_none() {
             return;
         }
@@ -2433,6 +2433,50 @@ impl App {
         .collect();
         let menu = self.app_menu.as_ref().unwrap().clone_ids();
         for id in ids {
+            // Split-pane items carry plain string IDs (see `menu.rs`).
+            if id == "split_right" {
+                self.split_active_pane(SplitDir::Vertical);
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+                continue;
+            } else if id == "split_down" {
+                self.split_active_pane(SplitDir::Horizontal);
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+                continue;
+            } else if id == "focus_left" {
+                self.focus_dir(FocusDir::Left);
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+                continue;
+            } else if id == "focus_right" {
+                self.focus_dir(FocusDir::Right);
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+                continue;
+            } else if id == "focus_up" {
+                self.focus_dir(FocusDir::Up);
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+                continue;
+            } else if id == "focus_down" {
+                self.focus_dir(FocusDir::Down);
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+                continue;
+            } else if id == "close_pane" {
+                self.close_focused_pane(event_loop);
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+                continue;
+            }
             if id == menu.id_settings {
                 self.open_settings();
             } else if id == menu.id_new_window {
