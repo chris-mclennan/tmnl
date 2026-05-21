@@ -167,6 +167,8 @@ fn reader_loop(
             Ok(Message::Resize(_)) => {}
             Ok(Message::Input(_)) => {}
             Ok(Message::Quit) => {}
+            // Server → client message; tmnl-as-server never receives one.
+            Ok(Message::Palette { .. }) => {}
             Ok(Message::Title(s)) => {
                 if event_tx.send(ServerEvent::Title(s)).is_err() {
                     log::warn!("event_tx.send(Title) failed; reader exiting");
