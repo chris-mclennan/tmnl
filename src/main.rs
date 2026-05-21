@@ -2255,10 +2255,13 @@ impl App {
                 } else if is_focused_active {
                     pane.attention = false;
                 }
-                // Background tabs' panes drain their server events +
-                // frames here so a switch back shows current state.
-                if i != active_idx {
-                    drain_background_pane(pane);
+                // Every pane except the active tab's focused one is
+                // ticked here: Native panes always drain their server
+                // events + frames; a *visible* shell pane (a split in
+                // the active tab) also refreshes its grid. The focused
+                // pane gets its full tick below.
+                if !is_focused_active {
+                    tick_secondary_pane(pane, i == active_idx);
                 }
             }
             tab.label = tab.panes[tab.focused].label.clone();
@@ -2906,52 +2909,67 @@ fn compute_pane_label(pane: &mut Pane) -> String {
     }
 }
 
-/// Drain a background pane's server events + frames so its grid tracks
-/// live state while off-screen — switching back to it is then instant.
-/// Shell panes need no draining here (the pty reader thread keeps
-/// vt100 current; the next tick's `apply_to_grid` after a focus switch
-/// refreshes the grid). Only Native panes pull from channels.
-fn drain_background_pane(pane: &mut Pane) {
+/// Tick a pane that isn't the active tab's focused pane. A Native pane
+/// always drains its server events + frames so its grid tracks live
+/// state — essential for a Native split pane, which would otherwise
+/// freeze on the idle banner. A shell pane only refreshes its grid
+/// when `visible` (a split in the active tab); an off-screen shell is
+/// left to refresh on focus (its pty reader thread keeps vt100
+/// current meanwhile). Never handles launcher restart/exit — that's
+/// the focused-pane path.
+fn tick_secondary_pane(pane: &mut Pane, visible: bool) {
     let Pane {
         kind,
         grid,
         last_cursor,
         ..
     } = pane;
-    let PaneKind::Native {
-        server,
-        conn,
-        client_title,
-        launcher,
-    } = kind
-    else {
-        return;
-    };
-    while let Ok(ev) = server.events.try_recv() {
-        match ev {
-            ServerEvent::ClientConnected => {
-                *conn = ConnState::Connected;
-                *client_title = None;
+    match kind {
+        PaneKind::Native {
+            server,
+            conn,
+            client_title,
+            launcher,
+        } => {
+            while let Ok(ev) = server.events.try_recv() {
+                match ev {
+                    ServerEvent::ClientConnected => {
+                        *conn = ConnState::Connected;
+                        *client_title = None;
+                        server.send_resize(grid.cols as u16, grid.rows as u16);
+                        paint_idle(grid, *conn, &server.socket_path);
+                    }
+                    ServerEvent::ClientDisconnected => {
+                        *conn = ConnState::Waiting;
+                        *client_title = None;
+                        paint_idle(grid, *conn, &server.socket_path);
+                    }
+                    ServerEvent::Title(s) => {
+                        *client_title = Some(s);
+                    }
+                }
             }
-            ServerEvent::ClientDisconnected => {
-                *conn = ConnState::Waiting;
-                *client_title = None;
+            while let Ok(f) = server.frame_rx.try_recv() {
+                if matches!(conn, ConnState::Connected) {
+                    *conn = ConnState::Streaming;
+                }
+                apply_frame_to_grid(grid, last_cursor, &f);
             }
-            ServerEvent::Title(s) => {
-                *client_title = Some(s);
+            if let Some(l) = launcher.as_mut() {
+                // Lightweight poll — no respawn logic for non-focused
+                // panes (that's the focused-pane path).
+                let _ = l.poll();
             }
         }
-    }
-    while let Ok(f) = server.frame_rx.try_recv() {
-        if matches!(conn, ConnState::Connected) {
-            *conn = ConnState::Streaming;
+        PaneKind::Shell { session } => {
+            if visible
+                && let Some(s) = session
+                && s.dirty()
+            {
+                s.apply_to_grid(grid);
+                *last_cursor = None; // only the focused pane draws a cursor
+            }
         }
-        apply_frame_to_grid(grid, last_cursor, &f);
-    }
-    if let Some(l) = launcher.as_mut() {
-        // Keep poll lightweight — no respawn logic for background
-        // panes (that's the focused-pane path).
-        let _ = l.poll();
     }
 }
 
