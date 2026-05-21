@@ -166,6 +166,90 @@ impl Layout {
             .find(|(_, r)| r.contains(cx, cy))
             .map(|(id, _)| id)
     }
+
+    /// Replace the `Leaf(target)` node with a `Split` of `target` and
+    /// `new_id` (`target` keeps the `first` slot). Returns `true` if
+    /// `target` was found.
+    pub fn split_leaf(&mut self, target: PaneId, dir: SplitDir, new_id: PaneId) -> bool {
+        match self {
+            Layout::Leaf(id) => {
+                if *id == target {
+                    *self = Layout::Split {
+                        dir,
+                        ratio: 0.5,
+                        first: Box::new(Layout::Leaf(target)),
+                        second: Box::new(Layout::Leaf(new_id)),
+                    };
+                    true
+                } else {
+                    false
+                }
+            }
+            Layout::Split { first, second, .. } => {
+                first.split_leaf(target, dir, new_id) || second.split_leaf(target, dir, new_id)
+            }
+        }
+    }
+
+    /// Remove `Leaf(target)`, collapsing its parent `Split` so the
+    /// sibling subtree takes the parent's slot. Returns `true` if the
+    /// target was removed. A `Leaf(target)` at the *root* can't be
+    /// removed (a tab always keeps ≥ 1 pane) — returns `false`.
+    pub fn remove_leaf(&mut self, target: PaneId) -> bool {
+        match self {
+            Layout::Leaf(_) => false,
+            Layout::Split { first, second, .. } => {
+                if matches!(**first, Layout::Leaf(id) if id == target) {
+                    let kept = std::mem::replace(second.as_mut(), Layout::Leaf(0));
+                    *self = kept;
+                    true
+                } else if matches!(**second, Layout::Leaf(id) if id == target) {
+                    let kept = std::mem::replace(first.as_mut(), Layout::Leaf(0));
+                    *self = kept;
+                    true
+                } else {
+                    first.remove_leaf(target) || second.remove_leaf(target)
+                }
+            }
+        }
+    }
+
+    /// The first leaf of `Leaf(target)`'s sibling subtree — the natural
+    /// pane to focus once `target` is closed. `None` if `target` is the
+    /// root leaf (no sibling).
+    pub fn sibling_leaf(&self, target: PaneId) -> Option<PaneId> {
+        match self {
+            Layout::Leaf(_) => None,
+            Layout::Split { first, second, .. } => {
+                if matches!(**first, Layout::Leaf(id) if id == target) {
+                    return second.leaf_ids().first().copied();
+                }
+                if matches!(**second, Layout::Leaf(id) if id == target) {
+                    return first.leaf_ids().first().copied();
+                }
+                first
+                    .sibling_leaf(target)
+                    .or_else(|| second.sibling_leaf(target))
+            }
+        }
+    }
+
+    /// Decrement every leaf id strictly greater than `removed` — call
+    /// after `panes.remove(removed)` so the tree still indexes the
+    /// (now shorter) `panes` Vec correctly.
+    pub fn shift_ids_after_removal(&mut self, removed: PaneId) {
+        match self {
+            Layout::Leaf(id) => {
+                if *id > removed {
+                    *id -= 1;
+                }
+            }
+            Layout::Split { first, second, .. } => {
+                first.shift_ids_after_removal(removed);
+                second.shift_ids_after_removal(removed);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -334,6 +418,65 @@ mod tests {
         // 81 wide → 40/40 with the divider as the 1-wide column at 40.
         let d = l.divider_lines(Rect::new(0, 0, 81, 24));
         assert_eq!(d, vec![(Rect::new(40, 0, 1, 24), SplitDir::Vertical)]);
+    }
+
+    #[test]
+    fn split_leaf_turns_a_leaf_into_a_split() {
+        let mut l = Layout::Leaf(0);
+        assert!(l.split_leaf(0, SplitDir::Vertical, 1));
+        assert_eq!(l.leaf_ids(), vec![0, 1]);
+        // Splitting a leaf that isn't in the tree is a no-op.
+        assert!(!l.split_leaf(9, SplitDir::Vertical, 2));
+        assert_eq!(l.leaf_ids(), vec![0, 1]);
+    }
+
+    #[test]
+    fn remove_leaf_collapses_to_the_sibling() {
+        // Split(0, Split(1, 2)) — removing 1 collapses the right side
+        // to just leaf 2.
+        let mut l = Layout::Split {
+            dir: SplitDir::Vertical,
+            ratio: 0.5,
+            first: Box::new(Layout::Leaf(0)),
+            second: Box::new(Layout::Split {
+                dir: SplitDir::Horizontal,
+                ratio: 0.5,
+                first: Box::new(Layout::Leaf(1)),
+                second: Box::new(Layout::Leaf(2)),
+            }),
+        };
+        assert!(l.remove_leaf(1));
+        assert_eq!(l.leaf_ids(), vec![0, 2]);
+        // The root leaf has no parent split to collapse — refused.
+        let mut root = Layout::Leaf(5);
+        assert!(!root.remove_leaf(5));
+    }
+
+    #[test]
+    fn sibling_leaf_finds_the_other_child() {
+        let l = Layout::Split {
+            dir: SplitDir::Vertical,
+            ratio: 0.5,
+            first: Box::new(Layout::Leaf(0)),
+            second: Box::new(Layout::Leaf(1)),
+        };
+        assert_eq!(l.sibling_leaf(0), Some(1));
+        assert_eq!(l.sibling_leaf(1), Some(0));
+        assert_eq!(Layout::Leaf(0).sibling_leaf(0), None);
+    }
+
+    #[test]
+    fn shift_ids_after_removal_renumbers_higher_leaves() {
+        // Pane 1 was removed from the Vec — leaf 2 shifts down to 1,
+        // leaf 0 is untouched.
+        let mut l = Layout::Split {
+            dir: SplitDir::Vertical,
+            ratio: 0.5,
+            first: Box::new(Layout::Leaf(0)),
+            second: Box::new(Layout::Leaf(2)),
+        };
+        l.shift_ids_after_removal(1);
+        assert_eq!(l.leaf_ids(), vec![0, 1]);
     }
 
     #[test]
