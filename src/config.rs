@@ -69,3 +69,50 @@ impl Config {
 pub fn config_path() -> Option<PathBuf> {
     Some(dirs::config_dir()?.join("tmnl").join("config.toml"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_inset_is_twenty() {
+        assert_eq!(Config::default().inset, 20.0);
+    }
+
+    #[test]
+    fn active_inset_is_zero_under_a_tui() {
+        // Native mode / alt-screen ⇒ edge-to-edge, no padding.
+        assert_eq!(Config { inset: 20.0 }.active_inset(true), 0.0);
+    }
+
+    #[test]
+    fn active_inset_uses_the_config_for_the_shell_prompt() {
+        assert_eq!(Config { inset: 14.0 }.active_inset(false), 14.0);
+    }
+
+    #[test]
+    fn active_inset_clamps_a_negative_config() {
+        // A bogus negative inset can't push content off-window.
+        assert_eq!(Config { inset: -5.0 }.active_inset(false), 0.0);
+    }
+
+    #[test]
+    fn toml_empty_string_falls_back_to_defaults() {
+        // `#[serde(default)]` ⇒ a missing field takes the default.
+        let c: Config = toml::from_str("").expect("empty toml parses");
+        assert_eq!(c.inset, 20.0);
+    }
+
+    #[test]
+    fn toml_parses_an_explicit_inset() {
+        let c: Config = toml::from_str("inset = 8.5").expect("toml parses");
+        assert_eq!(c.inset, 8.5);
+    }
+
+    #[test]
+    fn toml_round_trips_through_serialize() {
+        let text = toml::to_string_pretty(&Config { inset: 31.0 }).expect("serialize");
+        let back: Config = toml::from_str(&text).expect("re-parse");
+        assert_eq!(back.inset, 31.0);
+    }
+}
