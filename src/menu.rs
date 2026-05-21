@@ -98,8 +98,43 @@ impl AppMenu {
             true,
             Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyN)),
         );
+        // Split-pane verbs. These carry plain string IDs (routed by
+        // `drain_menu_events`) rather than stored `MenuId` fields —
+        // `MenuId: PartialEq<&str>` makes the dispatch a direct compare.
+        // The accelerators mirror the tmnl-level keyboard chords, so the
+        // menu doubles as a discoverable reference for them.
+        let split_item = |id: &str, label: &str, mods: Modifiers, code: Code| {
+            MenuItem::with_id(
+                MenuId::new(id),
+                label,
+                true,
+                Some(Accelerator::new(Some(mods), code)),
+            )
+        };
+        let sup = Modifiers::SUPER;
+        let sup_shift = Modifiers::SUPER | Modifiers::SHIFT;
+        let sup_alt = Modifiers::SUPER | Modifiers::ALT;
+        let split_right = split_item("split_right", "Split Right", sup, Code::KeyD);
+        let split_down = split_item("split_down", "Split Down", sup_shift, Code::KeyD);
+        let focus_left = split_item("focus_left", "Focus Pane Left", sup_alt, Code::ArrowLeft);
+        let focus_right = split_item("focus_right", "Focus Pane Right", sup_alt, Code::ArrowRight);
+        let focus_up = split_item("focus_up", "Focus Pane Up", sup_alt, Code::ArrowUp);
+        let focus_down = split_item("focus_down", "Focus Pane Down", sup_alt, Code::ArrowDown);
+        let close_pane = split_item("close_pane", "Close Pane", sup_shift, Code::KeyW);
         shell_menu
-            .append_items(&[&new_window])
+            .append_items(&[
+                &new_window,
+                &PredefinedMenuItem::separator(),
+                &split_right,
+                &split_down,
+                &PredefinedMenuItem::separator(),
+                &focus_left,
+                &focus_right,
+                &focus_up,
+                &focus_down,
+                &PredefinedMenuItem::separator(),
+                &close_pane,
+            ])
             .expect("build Shell menu");
 
         // ── Edit — predefined items hand off to AppKit so the OS
