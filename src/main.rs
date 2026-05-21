@@ -2682,9 +2682,7 @@ fn composite(tab: &Tab, window: &mut grid::Grid) {
             blit_pane(&pane.grid, *rect, window, *pane_id == tab.focused);
         }
     }
-    for (line, dir) in tab.layout.divider_lines(area) {
-        paint_divider(window, line, dir, focus_rect);
-    }
+    paint_dividers(window, &tab.layout.divider_lines(area), focus_rect);
 }
 
 /// Blit `src`'s cells into `window` at `rect`'s top-left, clipped to
@@ -2711,33 +2709,82 @@ fn blit_pane(src: &grid::Grid, rect: Rect, window: &mut grid::Grid, focused: boo
     }
 }
 
-/// Paint a divider strip with `│` / `─` glyphs. Cells whose 4-neighbour
-/// touches the focused pane's rect are tinted `ACCENT_FG`; the rest
-/// render dim so the divider reads as quiet chrome.
-fn paint_divider(window: &mut grid::Grid, line: Rect, dir: SplitDir, focus_rect: Option<Rect>) {
-    let glyph = match dir {
-        SplitDir::Vertical => '│',
-        SplitDir::Horizontal => '─',
-    };
-    for dy in 0..line.h {
-        for dx in 0..line.w {
-            let x = line.x + dx;
-            let y = line.y + dy;
-            if x >= window.cols || y >= window.rows {
+/// The box-drawing glyph for a divider cell with the given edge
+/// connectivity. A plain run is `│` / `─`; where dividers meet, the
+/// matching junction glyph (`├ ┤ ┬ ┴ ┼` / corners) makes the strokes
+/// physically join instead of leaving a half-cell gap.
+fn box_glyph(up: bool, down: bool, left: bool, right: bool) -> char {
+    match (up, down, left, right) {
+        (true, true, true, true) => '┼',
+        (true, true, false, true) => '├',
+        (true, true, true, false) => '┤',
+        (false, true, true, true) => '┬',
+        (true, false, true, true) => '┴',
+        (false, true, false, true) => '┌',
+        (false, true, true, false) => '┐',
+        (true, false, false, true) => '└',
+        (true, false, true, false) => '┘',
+        (false, false, true, true) | (false, false, true, false) | (false, false, false, true) => {
+            '─'
+        }
+        // up/down only, a single up or down, or an isolated cell.
+        _ => '│',
+    }
+}
+
+/// Paint every divider cell, choosing the box-drawing glyph that
+/// matches its connectivity so dividers join cleanly at T-junctions
+/// and crosses. Cells whose 8-neighbour touches the focused pane's
+/// rect tint `ACCENT_FG`; the rest render dim so the divider reads as
+/// quiet chrome. (The diagonal neighbours matter at a junction: that
+/// corner cell only touches the focused pane diagonally.)
+fn paint_dividers(window: &mut grid::Grid, lines: &[(Rect, SplitDir)], focus_rect: Option<Rect>) {
+    let (cols, rows) = (window.cols, window.rows);
+    if cols == 0 || rows == 0 {
+        return;
+    }
+    // Mark every divider cell so connectivity can be tested per-cell.
+    let mut is_div = vec![false; (cols * rows) as usize];
+    for (line, _) in lines {
+        for dy in 0..line.h {
+            for dx in 0..line.w {
+                let (x, y) = (line.x + dx, line.y + dy);
+                if x < cols && y < rows {
+                    is_div[(y * cols + x) as usize] = true;
+                }
+            }
+        }
+    }
+    let div_at = |x: u32, y: u32| x < cols && y < rows && is_div[(y * cols + x) as usize];
+    for y in 0..rows {
+        for x in 0..cols {
+            if !div_at(x, y) {
                 continue;
             }
+            let glyph = box_glyph(
+                y > 0 && div_at(x, y - 1),
+                div_at(x, y + 1),
+                x > 0 && div_at(x - 1, y),
+                div_at(x + 1, y),
+            );
             let touches_focus = focus_rect.is_some_and(|f| {
+                let (xm, xp) = (x.wrapping_sub(1), x + 1);
+                let (ym, yp) = (y.wrapping_sub(1), y + 1);
                 [
-                    (x.wrapping_sub(1), y),
-                    (x + 1, y),
-                    (x, y.wrapping_sub(1)),
-                    (x, y + 1),
+                    (xm, y),
+                    (xp, y),
+                    (x, ym),
+                    (x, yp),
+                    (xm, ym),
+                    (xp, ym),
+                    (xm, yp),
+                    (xp, yp),
                 ]
                 .iter()
                 .any(|&(nx, ny)| f.contains(nx, ny))
             });
             let fg = if touches_focus { ACCENT_FG } else { DIM_FG };
-            let i = (y * window.cols + x) as usize;
+            let i = (y * cols + x) as usize;
             window.cells[i] = grid::Cell {
                 ch: glyph,
                 fg,
@@ -3104,6 +3151,52 @@ mod tests {
         // An out-of-range focus ⇒ no focus rect ⇒ dim divider.
         composite(&two_pane_tab(9), &mut window);
         assert_eq!(window.cells[10].fg, DIM_FG);
+    }
+
+    #[test]
+    fn composite_divider_tints_junction_cells() {
+        // A T-layout: pane 0 fills the left; the right column splits
+        // into pane 1 (top) and pane 2 (bottom). Focusing pane 2, the
+        // corner where the vertical + horizontal dividers meet must
+        // tint too — it only touches pane 2 diagonally, so the 8-way
+        // neighbour check is what makes the tinted lines join up.
+        let tab = Tab {
+            layout: Layout::Split {
+                dir: SplitDir::Vertical,
+                ratio: 0.5,
+                first: Box::new(Layout::Leaf(0)),
+                second: Box::new(Layout::Split {
+                    dir: SplitDir::Horizontal,
+                    ratio: 0.5,
+                    first: Box::new(Layout::Leaf(1)),
+                    second: Box::new(Layout::Leaf(2)),
+                }),
+            },
+            panes: vec![
+                filled_pane(21, 9, 'A'),
+                filled_pane(21, 9, 'B'),
+                filled_pane(21, 9, 'C'),
+            ],
+            focused: 2,
+            label: String::new(),
+        };
+        let mut window = Grid::new(21, 9, CLEAR_BG);
+        composite(&tab, &mut window);
+        // V divider at column 10, H divider at row 4 — junction (10, 4).
+        let junction = &window.cells[4 * 21 + 10];
+        assert_eq!(
+            junction.ch, '├',
+            "junction draws a T-glyph so the strokes join"
+        );
+        assert_eq!(
+            junction.fg, ACCENT_FG,
+            "junction cell joins the tinted dividers"
+        );
+        // The V divider's top borders pane 1, not the focused pane 2.
+        assert_eq!(
+            window.cells[10].fg, DIM_FG,
+            "a divider not bordering focus stays dim"
+        );
     }
 
     #[test]
