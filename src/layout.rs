@@ -59,6 +59,36 @@ pub enum Layout {
     },
 }
 
+/// Divide `area` for a `Split` of direction `dir` + `ratio` into the
+/// `first` child rect, the `second` child rect, and the 1-cell-wide
+/// divider strip between them. The single source of the rect-splitting
+/// math — both [`Layout::leaf_rects`] and [`Layout::divider_lines`]
+/// route through here so they can never drift apart.
+fn split_rects(area: Rect, dir: SplitDir, ratio: f32) -> (Rect, Rect, Rect) {
+    let r = ratio.clamp(0.0, 1.0);
+    match dir {
+        SplitDir::Vertical => {
+            // One column for the divider.
+            let usable = area.w.saturating_sub(1);
+            let fw = ((usable as f32 * r).round() as u32).min(usable);
+            (
+                Rect::new(area.x, area.y, fw, area.h),
+                Rect::new(area.x + fw + 1, area.y, usable - fw, area.h),
+                Rect::new(area.x + fw, area.y, 1, area.h),
+            )
+        }
+        SplitDir::Horizontal => {
+            let usable = area.h.saturating_sub(1);
+            let fh = ((usable as f32 * r).round() as u32).min(usable);
+            (
+                Rect::new(area.x, area.y, area.w, fh),
+                Rect::new(area.x, area.y + fh + 1, area.w, usable - fh),
+                Rect::new(area.x, area.y + fh, area.w, 1),
+            )
+        }
+    }
+}
+
 impl Layout {
     /// Assign each leaf a sub-rectangle of `area`. A split reserves one
     /// cell for the divider between its children; the remaining extent
@@ -80,31 +110,34 @@ impl Layout {
                 first,
                 second,
             } => {
-                let r = ratio.clamp(0.0, 1.0);
-                let (a, b) = match dir {
-                    SplitDir::Vertical => {
-                        // One column for the divider.
-                        let usable = area.w.saturating_sub(1);
-                        let fw = (usable as f32 * r).round() as u32;
-                        let fw = fw.min(usable);
-                        (
-                            Rect::new(area.x, area.y, fw, area.h),
-                            Rect::new(area.x + fw + 1, area.y, usable - fw, area.h),
-                        )
-                    }
-                    SplitDir::Horizontal => {
-                        let usable = area.h.saturating_sub(1);
-                        let fh = (usable as f32 * r).round() as u32;
-                        let fh = fh.min(usable);
-                        (
-                            Rect::new(area.x, area.y, area.w, fh),
-                            Rect::new(area.x, area.y + fh + 1, area.w, usable - fh),
-                        )
-                    }
-                };
+                let (a, b, _div) = split_rects(area, *dir, *ratio);
                 first.collect(a, out);
                 second.collect(b, out);
             }
+        }
+    }
+
+    /// The 1-cell divider strip of every `Split` in the tree — the gaps
+    /// `leaf_rects` reserves between children. One `(Rect, SplitDir)`
+    /// per split node; the renderer paints `│` / `─` glyphs into them.
+    pub fn divider_lines(&self, area: Rect) -> Vec<(Rect, SplitDir)> {
+        let mut out = Vec::new();
+        self.collect_dividers(area, &mut out);
+        out
+    }
+
+    fn collect_dividers(&self, area: Rect, out: &mut Vec<(Rect, SplitDir)>) {
+        if let Layout::Split {
+            dir,
+            ratio,
+            first,
+            second,
+        } = self
+        {
+            let (a, b, div) = split_rects(area, *dir, *ratio);
+            out.push((div, *dir));
+            first.collect_dividers(a, out);
+            second.collect_dividers(b, out);
         }
     }
 
@@ -288,5 +321,48 @@ mod tests {
         let ids: Vec<_> = rects.iter().map(|(id, _)| *id).collect();
         assert_eq!(ids, vec![0, 1, 2, 3]);
         assert_eq!(tree.leaf_ids(), vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn divider_lines_one_vertical_split() {
+        let l = Layout::Split {
+            dir: SplitDir::Vertical,
+            ratio: 0.5,
+            first: Box::new(Layout::Leaf(0)),
+            second: Box::new(Layout::Leaf(1)),
+        };
+        // 81 wide → 40/40 with the divider as the 1-wide column at 40.
+        let d = l.divider_lines(Rect::new(0, 0, 81, 24));
+        assert_eq!(d, vec![(Rect::new(40, 0, 1, 24), SplitDir::Vertical)]);
+    }
+
+    #[test]
+    fn divider_lines_fill_every_gap_between_leaves() {
+        // Left pane + a right column split top/bottom.
+        let l = Layout::Split {
+            dir: SplitDir::Vertical,
+            ratio: 0.5,
+            first: Box::new(Layout::Leaf(0)),
+            second: Box::new(Layout::Split {
+                dir: SplitDir::Horizontal,
+                ratio: 0.5,
+                first: Box::new(Layout::Leaf(1)),
+                second: Box::new(Layout::Leaf(2)),
+            }),
+        };
+        let area = Rect::new(0, 0, 81, 25);
+        let leaves = l.leaf_rects(area);
+        let dividers = l.divider_lines(area);
+        // Two `Split` nodes ⇒ two divider strips.
+        assert_eq!(dividers.len(), 2);
+        // Every cell of `area` is covered exactly once — by either a
+        // leaf rect or a divider strip. No gaps, no overlaps.
+        for cy in 0..area.h {
+            for cx in 0..area.w {
+                let in_leaf = leaves.iter().filter(|(_, r)| r.contains(cx, cy)).count();
+                let in_div = dividers.iter().filter(|(r, _)| r.contains(cx, cy)).count();
+                assert_eq!(in_leaf + in_div, 1, "cell ({cx},{cy}) coverage");
+            }
+        }
     }
 }
