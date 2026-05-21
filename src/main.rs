@@ -26,6 +26,7 @@ use atlas::Atlas;
 use config::Config;
 use grid::Grid;
 use launcher::{Launcher, LauncherConfig, LauncherPoll};
+use layout::{Layout, PaneId, Rect};
 use menu::AppMenu;
 use pipeline::CellPipeline;
 use protocol::{
@@ -94,7 +95,9 @@ enum ConnState {
     Streaming,
 }
 
-enum Mode {
+/// The leaf payload of a pane — what `Tab.mode` used to hold before
+/// the splits refactor. Renamed from `Mode`; otherwise unchanged.
+enum PaneKind {
     /// tmnl runs $SHELL itself; vt100 parses output → Grid.
     Shell { session: Option<ShellSession> },
     /// tmnl launches mnml as a UDS client; blit cells stream into Grid.
@@ -109,27 +112,30 @@ enum Mode {
     },
 }
 
-/// One open tab in the tmnl window. Each tab is independent: its own
-/// `Mode` (Shell or Native) + its own current label. Multi-tab work
-/// builds up around this struct — the App holds a `Vec<Tab>` + an
-/// `active: usize` index; chip rendering walks `tabs` and highlights
-/// the active one; ⌘T / ⌘W / ⌘1..9 keybinds manipulate the Vec.
-///
-/// First step (this commit): App carries a `Vec<Tab>` with exactly
-/// one entry. Behaviorally identical to a single-Mode app. Future
-/// commits add per-tab `Grid` storage so background tabs preserve
-/// state, plus the keybinds and chip rendering.
-struct Tab {
-    /// Hosted process / connection state for this tab.
-    mode: Mode,
-    /// Cached label for the strip — refreshed each tick from `mode` and
-    /// the shell's OSC title where applicable. `App::tick` rewrites
-    /// this; the renderer reads from `tabs[active].label`.
+/// One pane — a leaf in a tab's split layout. Each pane owns its
+/// `Grid` permanently. Pre-splits, a single shared grid lived on
+/// `Gpu` and was swapped per-tab through a `grid_snapshot`; owning
+/// the grid means background panes keep their state for free and a
+/// switch back to them is instant. Phase 1 of the splits work
+/// (`docs/splits-plan.md`): a tab always has exactly one pane, so
+/// this is behaviorally identical to the pre-splits single-`Mode`
+/// tab.
+struct Pane {
+    /// Hosted process / connection state for this pane.
+    kind: PaneKind,
+    /// This pane's cell grid — the source of truth the compositor
+    /// blits into the window grid each frame.
+    grid: grid::Grid,
+    /// Index of the cell currently carrying a cursor overlay bit, so
+    /// the next frame can clear it before drawing the new one.
+    last_cursor: Option<usize>,
+    /// Cached strip label — refreshed each tick from `kind` (and the
+    /// shell's OSC title / spinner where applicable).
     label: String,
     /// Set true when the hosted process emits an OSC 1337 attention
     /// signal (Claude Code does this when a turn finishes and it's
-    /// waiting for user input). Cleared when the user switches to
-    /// this tab. Rendered as a `●` prefix in the chip.
+    /// waiting for user input). Cleared when the user focuses the
+    /// pane's tab. Rendered as a `●` prefix in the chip.
     attention: bool,
     /// Sticky cache of the most recent detected spinner line and
     /// when we last saw it. Keeps the chip label stable for a short
@@ -138,14 +144,33 @@ struct Tab {
     /// and "Pondering…" — without stickiness the chip flips back
     /// to the static OSC title and flickers).
     last_status: Option<(String, std::time::Instant)>,
-    /// Snapshot of this tab's `Grid` and cursor index, captured when
-    /// the tab is in the background. The live grid sits on `Gpu` for
-    /// the *active* tab; switching tabs swaps the current live grid
-    /// into the outgoing tab's snapshot and restores the incoming
-    /// tab's snapshot into the GPU. `None` ⇒ this tab is currently
-    /// active (its grid is on the GPU, not here).
-    grid_snapshot: Option<grid::Grid>,
-    last_cursor_snapshot: Option<usize>,
+}
+
+/// One open tab in the tmnl window. A tab is a split tree of panes
+/// (`layout`) over a flat `panes` Vec the tree indexes into, plus the
+/// `focused` pane that receives keyboard input. Phase 1 keeps every
+/// tab at exactly one pane (`Layout::Leaf(0)`); the split / focus /
+/// close verbs that grow the tree land in later phases
+/// (`docs/splits-plan.md`).
+struct Tab {
+    /// Binary split tree; leaves index into `panes`.
+    layout: Layout,
+    /// The tab's panes — leaves of `layout`. Always non-empty.
+    panes: Vec<Pane>,
+    /// The pane that receives keyboard input + draws a cursor.
+    focused: PaneId,
+    /// Cached strip label = the focused pane's label. `App::tick`
+    /// rewrites this; the chip renderer reads it.
+    label: String,
+}
+
+impl Tab {
+    fn focused_pane(&self) -> &Pane {
+        &self.panes[self.focused]
+    }
+    fn focused_pane_mut(&mut self) -> &mut Pane {
+        &mut self.panes[self.focused]
+    }
 }
 
 /// An AI suggestion shown as dim ghost text. Created from a worker
@@ -253,8 +278,10 @@ struct Gpu {
     scale: f32,
     atlas: Atlas,
     pipeline: CellPipeline,
+    /// The window-sized composite grid the GPU pipeline renders.
+    /// `composite()` rebuilds it each frame by blitting the active
+    /// tab's pane grids into it; the panes hold the source of truth.
     grid: Grid,
-    last_cursor: Option<usize>,
     /// Equal-width pixel margin reserved on every side of the grid.
     /// Resolved from `--inset` / `TMNL_INSET` / `DEFAULT_INSET_PX` at
     /// startup (in that order).
@@ -371,7 +398,6 @@ impl Gpu {
             atlas,
             pipeline,
             grid: g,
-            last_cursor: None,
             inset_px,
             strip_pipeline,
             strip_chips: Vec::new(),
@@ -414,7 +440,6 @@ impl Gpu {
         );
         self.atlas = new_atlas;
         self.pipeline = new_pipeline;
-        self.last_cursor = None;
         if cols != self.grid.cols || rows != self.grid.rows {
             self.grid.resize(cols, rows);
             return Some((cols as u16, rows as u16));
@@ -656,7 +681,6 @@ impl Gpu {
         let (cols, rows) = grid_dims(w, h, &self.atlas, self.inset_px, self.strip_h);
         if cols != self.grid.cols || rows != self.grid.rows {
             self.grid.resize(cols, rows);
-            self.last_cursor = None;
             return Some((cols as u16, rows as u16));
         }
         None
@@ -674,7 +698,6 @@ impl Gpu {
         let (cols, rows) = grid_dims(w, h, &self.atlas, self.inset_px, self.strip_h);
         if cols != self.grid.cols || rows != self.grid.rows {
             self.grid.resize(cols, rows);
-            self.last_cursor = None;
             return Some((cols as u16, rows as u16));
         }
         None
@@ -694,14 +717,9 @@ impl Gpu {
         let (cols, rows) = grid_dims(w, h, &self.atlas, self.inset_px, self.strip_h);
         if cols != self.grid.cols || rows != self.grid.rows {
             self.grid.resize(cols, rows);
-            self.last_cursor = None;
             return Some((cols as u16, rows as u16));
         }
         None
-    }
-
-    fn apply_frame(&mut self, f: &Frame) {
-        apply_frame_to_grid(&mut self.grid, &mut self.last_cursor, f);
     }
 
     fn render(&mut self) {
@@ -883,11 +901,20 @@ impl ApplicationHandler for App {
         if self.app_menu.is_none() {
             self.app_menu = Some(AppMenu::build_and_install());
         }
-        let mut gpu = pollster::block_on(Gpu::new(window.clone(), self.inset_px));
-        match &mut self.tabs[self.active].mode {
-            Mode::Shell { session } => {
-                let (cols, rows) = (gpu.grid.cols as u16, gpu.grid.rows as u16);
-                match ShellSession::spawn(rows, cols, TEXT_FG, CLEAR_BG) {
+        let gpu = pollster::block_on(Gpu::new(window.clone(), self.inset_px));
+        let (cols, rows) = (gpu.grid.cols, gpu.grid.rows);
+        // Panes were created before the GPU existed (placeholder grid
+        // size); bring every pane grid up to the real window dims.
+        for tab in &mut self.tabs {
+            for pane in &mut tab.panes {
+                pane.grid.resize(cols, rows);
+            }
+        }
+        let focused = self.tabs[self.active].focused;
+        let Pane { kind, grid, .. } = &mut self.tabs[self.active].panes[focused];
+        match kind {
+            PaneKind::Shell { session } => {
+                match ShellSession::spawn(rows as u16, cols as u16, TEXT_FG, CLEAR_BG) {
                     Ok(s) => *session = Some(s),
                     Err(e) => {
                         eprintln!("tmnl: failed to start shell: {e}");
@@ -896,8 +923,8 @@ impl ApplicationHandler for App {
                     }
                 }
             }
-            Mode::Native { server, conn, .. } => {
-                paint_idle(&mut gpu.grid, *conn, &server.socket_path);
+            PaneKind::Native { server, conn, .. } => {
+                paint_idle(grid, *conn, &server.socket_path);
             }
         }
         window.request_redraw();
@@ -912,10 +939,12 @@ impl ApplicationHandler for App {
                 event_loop.exit();
             }
             WindowEvent::Resized(size) => {
-                let Some(gpu) = self.gpu.as_mut() else {
-                    return;
+                let resize = {
+                    let Some(gpu) = self.gpu.as_mut() else {
+                        return;
+                    };
+                    gpu.resize(size.width, size.height)
                 };
-                let resize = gpu.resize(size.width, size.height);
                 // Always paint a frame after a resize — the surface was
                 // reconfigured (even if cols×rows stayed the same), so
                 // the framebuffer is fresh and would briefly show through
@@ -924,34 +953,11 @@ impl ApplicationHandler for App {
                 if let Some(w) = &self.window {
                     w.request_redraw();
                 }
-                let Some((cols, rows)) = resize else {
-                    return;
-                };
-                // Resize every tab's background grid-snapshot to match
-                // the new window size — otherwise switching to a tab
-                // whose snapshot was captured at the old dimensions
-                // would render a stale-size grid (mismatched cell
-                // count, wrong cursor positions). For shell tabs we
-                // ALSO resize the underlying pty so the program inside
-                // re-paints at the new size.
-                for (i, tab) in self.tabs.iter_mut().enumerate() {
-                    if i != self.active
-                        && let Some(snap) = tab.grid_snapshot.as_mut()
-                    {
-                        snap.resize(cols as u32, rows as u32);
-                    }
-                    if let Mode::Shell { session: Some(s) } = &mut tab.mode {
-                        s.resize(rows, cols);
-                    } else if let Mode::Native { server, conn, .. } = &mut tab.mode {
-                        if i == self.active {
-                            server.send_resize(cols, rows);
-                            if *conn != ConnState::Streaming {
-                                paint_idle(&mut gpu.grid, *conn, &server.socket_path);
-                            }
-                        } else {
-                            server.send_resize(cols, rows);
-                        }
-                    }
+                // Resize every pane's grid to match the new window size
+                // (Phase 1: one pane per tab, each filling the window)
+                // and forward the size to each pane's session.
+                if let Some((cols, rows)) = resize {
+                    self.resize_all_panes(cols, rows);
                 }
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
@@ -1018,10 +1024,13 @@ impl ApplicationHandler for App {
                             // Shell tabs keep the original close-tab
                             // behavior (no way to recover the shell
                             // otherwise).
-                            if matches!(&self.tabs[self.active].mode, Mode::Native { .. }) {
+                            if matches!(
+                                &self.tabs[self.active].focused_pane().kind,
+                                PaneKind::Native { .. }
+                            ) {
                                 let translated_mods = pack_mods_cmd_to_ctrl(self.mods);
-                                if let Mode::Native { server, .. } =
-                                    &mut self.tabs[self.active].mode
+                                if let PaneKind::Native { server, .. } =
+                                    &mut self.tabs[self.active].focused_pane_mut().kind
                                     && let Some(code) = translate_key(&ke.logical_key, self.mods)
                                 {
                                     server.send_input(&InputEvent::Key(KeyInput {
@@ -1046,9 +1055,12 @@ impl ApplicationHandler for App {
                             // ⌘⇧[ / ⌘⇧] (cycle) or via the tab strip.
                             // Shell tabs keep the original behavior
                             // because they have no in-app tab pages.
-                            if matches!(&self.tabs[self.active].mode, Mode::Native { .. }) {
-                                if let Mode::Native { server, .. } =
-                                    &mut self.tabs[self.active].mode
+                            if matches!(
+                                &self.tabs[self.active].focused_pane().kind,
+                                PaneKind::Native { .. }
+                            ) {
+                                if let PaneKind::Native { server, .. } =
+                                    &mut self.tabs[self.active].focused_pane_mut().kind
                                     && let Some(code) = translate_key(&ke.logical_key, self.mods)
                                 {
                                     server.send_input(&InputEvent::Key(KeyInput {
@@ -1124,10 +1136,14 @@ impl ApplicationHandler for App {
                                 //   ⌘G → ⌃G → goto line
                                 //   ⌘/ → ⌃/ → toggle line comment
                                 | 'p' | 'b' | 'g' | '/'
-                            ) && matches!(&self.tabs[self.active].mode, Mode::Native { .. }) =>
+                            ) && matches!(
+                                &self.tabs[self.active].focused_pane().kind,
+                                PaneKind::Native { .. }
+                            ) =>
                         {
                             let translated_mods = pack_mods_cmd_to_ctrl(self.mods);
-                            if let Mode::Native { server, .. } = &mut self.tabs[self.active].mode
+                            if let PaneKind::Native { server, .. } =
+                                &mut self.tabs[self.active].focused_pane_mut().kind
                                 && let Some(code) = translate_key(&ke.logical_key, self.mods)
                             {
                                 server.send_input(&InputEvent::Key(KeyInput {
@@ -1168,13 +1184,16 @@ impl ApplicationHandler for App {
                         .as_ref()
                         .map_or(20, |g| g.grid.rows.saturating_sub(1) as i32);
                     let up = matches!(nk, winit::keyboard::NamedKey::PageUp);
-                    if let Mode::Shell { session: Some(s) } = &mut self.tabs[self.active].mode {
+                    if let PaneKind::Shell { session: Some(s) } =
+                        &mut self.tabs[self.active].focused_pane_mut().kind
+                    {
                         s.scroll(if up { page } else { -page });
                     }
                     return;
                 }
-                match &mut self.tabs[self.active].mode {
-                    Mode::Shell { session } => {
+                let focused = self.tabs[self.active].focused;
+                match &mut self.tabs[self.active].panes[focused].kind {
+                    PaneKind::Shell { session } => {
                         if let Some(s) = session.as_mut() {
                             // Any keystroke cancels an in-flight AI
                             // request — the command line is changing.
@@ -1212,7 +1231,7 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
-                    Mode::Native { server, .. } => {
+                    PaneKind::Native { server, .. } => {
                         if let Some(code) = translate_key(&ke.logical_key, self.mods) {
                             let input = InputEvent::Key(KeyInput {
                                 code,
@@ -1269,7 +1288,8 @@ impl ApplicationHandler for App {
                         }
                         return;
                     }
-                    if let Mode::Native { server, .. } = &self.tabs[self.active].mode
+                    if let PaneKind::Native { server, .. } =
+                        &self.tabs[self.active].focused_pane().kind
                         && prev != self.cursor_cell
                     {
                         // Button held → Drag; no button → Moved (bare
@@ -1381,7 +1401,8 @@ impl ApplicationHandler for App {
                 if !pressed && button == MouseButton::Left {
                     self.dragging_tab = None;
                 }
-                if let Mode::Native { server, .. } = &self.tabs[self.active].mode {
+                if let PaneKind::Native { server, .. } = &self.tabs[self.active].focused_pane().kind
+                {
                     let (col, row) = self.cursor_cell;
                     server.send_input(&InputEvent::Mouse(MouseInput {
                         kind: if pressed {
@@ -1413,18 +1434,18 @@ impl ApplicationHandler for App {
                 };
                 let (col, row) = self.cursor_cell;
                 let mods = pack_mods(self.mods);
-                match &mut self.tabs[self.active].mode {
+                match &mut self.tabs[self.active].focused_pane_mut().kind {
                     // Shell mode — scroll vt100's scrollback. Skipped
                     // while a full-screen TUI owns the alt-screen (it
                     // manages its own view). Wheel up → into history.
-                    Mode::Shell { session: Some(s) } if !s.altscreen_active() => {
+                    PaneKind::Shell { session: Some(s) } if !s.altscreen_active() => {
                         let lines = (dy * 3.0).round() as i32;
                         if lines != 0 {
                             s.scroll(lines);
                         }
                     }
                     // Native mode — forward the scroll to the backing app.
-                    Mode::Native { server, .. } => {
+                    PaneKind::Native { server, .. } => {
                         if dy.abs() >= dx.abs() {
                             let kind = if dy > 0.0 {
                                 MouseKind::ScrollUp
@@ -1460,6 +1481,12 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 self.tick(event_loop);
+                // Composite the active tab's panes into the window grid
+                // the GPU renders. Phase 1: one pane per tab, so this is
+                // a full-window copy of the focused pane's grid.
+                if let Some(gpu) = self.gpu.as_mut() {
+                    composite(&self.tabs[self.active], &mut gpu.grid);
+                }
                 // Settings modal paints over the current grid right
                 // before GPU render. Because we overlay every frame,
                 // the underlying mnml/shell render keeps refreshing
@@ -1537,13 +1564,11 @@ impl Gpu {
     }
 }
 
-/// Apply a `Frame` (diff runs + cursor metadata) to an arbitrary
-/// `Grid` + `last_cursor` slot. Pulled out of `Gpu::apply_frame` so
-/// background Native tabs can keep their off-screen `grid_snapshot`
-/// up to date even when their tab isn't the active one. On switch,
-/// the snapshot is then already current and the user sees the
-/// latest state immediately (instead of the stale snapshot from
-/// when this tab was last active).
+/// Apply a `Frame` (diff runs + cursor metadata) to a `Grid` +
+/// `last_cursor` slot. A free function (not a `Gpu` method) so any
+/// pane's grid — foreground or background — can be updated through
+/// the same path; background Native panes drain frames here every
+/// tick so a switch back to them shows current state immediately.
 fn apply_frame_to_grid(grid: &mut grid::Grid, last_cursor: &mut Option<usize>, f: &Frame) {
     // Clear the previous cursor's overlay bits first — runs may not
     // cover that cell, so we have to do it explicitly.
@@ -1641,13 +1666,12 @@ fn translate_key(k: &Key, mods: ModifiersState) -> Option<KeyCode> {
 }
 
 impl App {
-    /// Append a fresh shell tab and switch to it. Sized from the
-    /// current GPU grid; spawn failures leave the existing active
-    /// tab in place and toast the error to stderr.
     /// Spawn a new Native (editor) tab — fresh socket, fresh Server,
     /// fresh Launcher pointing at the same `editor_template.command`
     /// the original tab used. No-op when shell mode is active
-    /// (`editor_template == None`).
+    /// (`editor_template == None` ⇒ falls back to a shell tab so ⌘T
+    /// still does something sensible). The new tab's pane owns its
+    /// own grid, sized to the current window.
     fn new_native_tab(&mut self) {
         let Some(tmpl) = self.editor_template.clone() else {
             // Fall back to a shell tab — gives ⌘T a sensible behavior
@@ -1655,8 +1679,9 @@ impl App {
             self.new_shell_tab();
             return;
         };
-        let Some(gpu) = self.gpu.as_mut() else {
-            return;
+        let (cols, rows) = match self.gpu.as_ref() {
+            Some(gpu) => (gpu.grid.cols, gpu.grid.rows),
+            None => return,
         };
         // Allocate a unique socket path for this tab.
         let socket_path = native_tab_socket_path(self.native_tab_nonce);
@@ -1685,52 +1710,55 @@ impl App {
                 None
             }
         };
-        // Save outgoing tab's grid + create a fresh blank for the new
-        // Native tab (mirrors new_shell_tab).
-        self.tabs[self.active].grid_snapshot = Some(gpu.grid.clone());
-        self.tabs[self.active].last_cursor_snapshot = gpu.last_cursor;
-        gpu.grid = grid::Grid::new(gpu.grid.cols, gpu.grid.rows, CLEAR_BG);
-        gpu.last_cursor = None;
-        let tab = Tab {
-            mode: Mode::Native {
+        let mut grid = grid::Grid::new(cols, rows, CLEAR_BG);
+        paint_idle(&mut grid, ConnState::Waiting, &socket_path);
+        let pane = Pane {
+            kind: PaneKind::Native {
                 server,
                 conn: ConnState::Waiting,
                 launcher,
                 client_title: None,
             },
+            grid,
+            last_cursor: None,
             label: "mnml".to_string(),
             attention: false,
             last_status: None,
-            grid_snapshot: None,
-            last_cursor_snapshot: None,
         };
-        self.tabs.push(tab);
+        self.tabs.push(Tab {
+            layout: Layout::Leaf(0),
+            panes: vec![pane],
+            focused: 0,
+            label: "mnml".to_string(),
+        });
         self.active = self.tabs.len() - 1;
     }
 
+    /// Append a fresh shell tab and switch to it. The new tab's pane
+    /// owns its own grid, sized to the current window; spawn failures
+    /// leave the existing active tab in place and toast to stderr.
     fn new_shell_tab(&mut self) {
-        let Some(gpu) = self.gpu.as_mut() else {
-            return;
+        let (cols, rows) = match self.gpu.as_ref() {
+            Some(gpu) => (gpu.grid.cols, gpu.grid.rows),
+            None => return,
         };
-        let (cols, rows) = (gpu.grid.cols as u16, gpu.grid.rows as u16);
-        match ShellSession::spawn(rows, cols, TEXT_FG, CLEAR_BG) {
+        match ShellSession::spawn(rows as u16, cols as u16, TEXT_FG, CLEAR_BG) {
             Ok(s) => {
-                // Save outgoing tab's grid into its snapshot, then
-                // create a fresh blank grid on the GPU for the new tab.
-                self.tabs[self.active].grid_snapshot = Some(gpu.grid.clone());
-                self.tabs[self.active].last_cursor_snapshot = gpu.last_cursor;
-                gpu.grid = grid::Grid::new(gpu.grid.cols, gpu.grid.rows, CLEAR_BG);
-                gpu.last_cursor = None;
-                let initial_label = s.shell_name().to_string();
-                let tab = Tab {
-                    mode: Mode::Shell { session: Some(s) },
-                    label: initial_label,
+                let label = s.shell_name().to_string();
+                let pane = Pane {
+                    kind: PaneKind::Shell { session: Some(s) },
+                    grid: grid::Grid::new(cols, rows, CLEAR_BG),
+                    last_cursor: None,
+                    label: label.clone(),
                     attention: false,
                     last_status: None,
-                    grid_snapshot: None,
-                    last_cursor_snapshot: None,
                 };
-                self.tabs.push(tab);
+                self.tabs.push(Tab {
+                    layout: Layout::Leaf(0),
+                    panes: vec![pane],
+                    focused: 0,
+                    label,
+                });
                 self.active = self.tabs.len() - 1;
             }
             Err(e) => eprintln!("tmnl: new tab failed: {e}"),
@@ -1760,13 +1788,11 @@ impl App {
         let was_active = idx == self.active;
         self.tabs.remove(idx);
         if was_active {
-            // Active tab closed — clamp + swap from prev_active=self.active
-            // (the now-stale slot, which `swap_active_tab` treats as a
-            // no-op for the outgoing save).
+            // Active tab closed — clamp the index to a valid slot.
             if self.active >= self.tabs.len() {
                 self.active = self.tabs.len() - 1;
             }
-            self.swap_active_tab(self.active);
+            self.on_tab_focused();
         } else if idx < self.active {
             // Closed a non-active tab to the left — shift active index
             // down so it still points at the same tab.
@@ -1775,22 +1801,18 @@ impl App {
         // If `idx > self.active`, the active index is unaffected.
     }
 
-    /// Switch to tab `idx` (0-based). No-op if out of range. Restores
-    /// the new tab's `grid_snapshot` to the GPU.
+    /// Switch to tab `idx` (0-based). No-op if out of range.
     fn switch_to_tab(&mut self, idx: usize) {
         if idx >= self.tabs.len() || idx == self.active {
             return;
         }
-        let prev = self.active;
         self.active = idx;
-        self.swap_active_tab(prev);
+        self.on_tab_focused();
     }
 
-    /// Cycle to the next (`forward=true`) / previous tab, wrapping.
     /// Rebuild the atlas at a new font-zoom level (relative step). After
-    /// resizing the grid the new cell dims are forwarded to the active
-    /// tab's session so the hosted shell / mnml repaints at the new
-    /// dimensions.
+    /// resizing the grid the new cell dims are forwarded to every pane's
+    /// session so the hosted shell / mnml repaints at the new dimensions.
     fn zoom_font(&mut self, delta: f32) {
         let Some(gpu) = self.gpu.as_mut() else {
             return;
@@ -1809,87 +1831,64 @@ impl App {
         self.forward_font_resize(resize);
     }
 
-    /// Pipe a grid resize (caused by a font-zoom change) to the active
-    /// tab's session — same shape as the inset / strip resize paths.
+    /// Pipe a grid resize (caused by a font-zoom change) out to every
+    /// pane — same shape as the window-resize / inset / strip paths.
     fn forward_font_resize(&mut self, resize: Option<(u16, u16)>) {
-        let Some((cols, rows)) = resize else {
-            return;
-        };
-        match &mut self.tabs[self.active].mode {
-            Mode::Shell { session } => {
-                if let Some(s) = session.as_mut() {
-                    s.resize(rows, cols);
-                }
-            }
-            Mode::Native { server, .. } => {
-                server.send_resize(cols, rows);
-            }
+        if let Some((cols, rows)) = resize {
+            self.resize_all_panes(cols, rows);
         }
     }
 
+    /// Cycle to the next (`forward=true`) / previous tab, wrapping.
     fn cycle_tab(&mut self, forward: bool) {
         if self.tabs.len() <= 1 {
             return;
         }
-        let prev = self.active;
         let n = self.tabs.len();
         self.active = if forward {
             (self.active + 1) % n
         } else {
             (self.active + n - 1) % n
         };
-        self.swap_active_tab(prev);
+        self.on_tab_focused();
     }
 
-    /// Swap grids: save the outgoing tab's current grid into its
-    /// snapshot, restore the incoming tab's snapshot onto the GPU.
-    /// Caller has already updated `self.active` to the NEW index;
-    /// this method needs the OLD index so it knows which tab to
-    /// save into. After the swap, the active tab's grid is on the
-    /// GPU; background tabs hold their grids in `grid_snapshot`.
-    ///
-    /// For Native tabs whose snapshot is still empty (no frame
-    /// received yet), repaint the idle banner so the chrome isn't
-    /// blank while the client reconnects.
-    fn swap_active_tab(&mut self, prev_active: usize) {
-        // Active tab can't be in "attention" state — the user is
-        // looking at it. Clear the badge as part of the switch.
-        self.tabs[self.active].attention = false;
-        let Some(gpu) = self.gpu.as_mut() else { return };
-        // Stash outgoing.
-        if prev_active < self.tabs.len() && prev_active != self.active {
-            self.tabs[prev_active].grid_snapshot = Some(gpu.grid.clone());
-            self.tabs[prev_active].last_cursor_snapshot = gpu.last_cursor;
+    /// Housekeeping when a tab becomes active. Pre-splits this swapped
+    /// grid snapshots between the GPU and the tabs; panes now own their
+    /// grids permanently (the compositor reads them in place), so the
+    /// only thing left is clearing the attention badge — the user is
+    /// now looking at this tab.
+    fn on_tab_focused(&mut self) {
+        for pane in &mut self.tabs[self.active].panes {
+            pane.attention = false;
         }
-        // Restore incoming.
-        if let Some(snap) = self.tabs[self.active].grid_snapshot.take() {
-            gpu.grid = snap;
-            gpu.last_cursor = self.tabs[self.active].last_cursor_snapshot.take();
-        } else {
-            // First focus on a tab that hasn't drawn yet — fall back
-            // to a blank grid + idle banner (Native) or
-            // apply_to_grid (Shell).
-            gpu.grid = grid::Grid::new(gpu.grid.cols, gpu.grid.rows, CLEAR_BG);
-            gpu.last_cursor = None;
-            match &mut self.tabs[self.active].mode {
-                Mode::Shell { session: Some(s) } => {
-                    let (cc, cr, vis) = s.apply_to_grid(&mut gpu.grid);
-                    if vis && (cc as u32) < gpu.grid.cols && (cr as u32) < gpu.grid.rows {
-                        let i = (cr as u32 * gpu.grid.cols + cc as u32) as usize;
-                        let suppress = cc == 0 && cr == 0 && {
-                            let cell = &gpu.grid.cells[i];
-                            cell.ch == ' ' && cell.attrs == 0
-                        };
-                        if !suppress {
-                            gpu.grid.cells[i].attrs |= ATTR_CURSOR_BLOCK;
-                            gpu.last_cursor = Some(i);
+    }
+
+    /// Resize every pane's grid to `(cols, rows)` and forward the new
+    /// size to each pane's session. Phase 1: every pane fills the whole
+    /// window, so all panes share the window-grid dimensions. Called
+    /// whenever the window grid is resized — window resize, font zoom,
+    /// strip-height change, inset change.
+    fn resize_all_panes(&mut self, cols: u16, rows: u16) {
+        for tab in self.tabs.iter_mut() {
+            for pane in tab.panes.iter_mut() {
+                pane.grid.resize(cols as u32, rows as u32);
+                let Pane { kind, grid, .. } = pane;
+                match kind {
+                    PaneKind::Shell { session } => {
+                        if let Some(s) = session {
+                            s.resize(rows, cols);
+                        }
+                    }
+                    PaneKind::Native { server, conn, .. } => {
+                        server.send_resize(cols, rows);
+                        // Re-center the idle banner for not-yet-streaming
+                        // panes so it isn't stranded off-center.
+                        if *conn != ConnState::Streaming {
+                            paint_idle(grid, *conn, &server.socket_path);
                         }
                     }
                 }
-                Mode::Native { conn, server, .. } => {
-                    paint_idle(&mut gpu.grid, *conn, &server.socket_path);
-                }
-                _ => {}
             }
         }
     }
@@ -1904,13 +1903,13 @@ impl App {
     /// The text currently typed on the shell command line — `None`
     /// unless we're in shell mode with an OSC 133 anchor.
     fn command_line(&self) -> Option<String> {
-        let gpu = self.gpu.as_ref()?;
-        let cur = gpu.last_cursor?;
-        let cols = gpu.grid.cols.max(1);
+        let pane = self.tabs[self.active].focused_pane();
+        let cur = pane.last_cursor?;
+        let cols = pane.grid.cols.max(1);
         let row = (cur as u32 / cols) as u16;
         let col = (cur as u32 % cols) as u16;
-        match &self.tabs[self.active].mode {
-            Mode::Shell { session: Some(s) } => s.current_command_line(&gpu.grid, row, col),
+        match &pane.kind {
+            PaneKind::Shell { session: Some(s) } => s.current_command_line(&pane.grid, row, col),
             _ => None,
         }
     }
@@ -2012,172 +2011,52 @@ impl App {
         self.drain_menu_events();
         self.poll_fim();
 
-        let Some(gpu) = self.gpu.as_mut() else {
+        if self.gpu.is_none() {
             return;
-        };
-        // Refresh each tab's strip label from its current Mode/Conn,
-        // then hand the active-tab marker list to the renderer. Cheap —
-        // both updates skip the write when nothing changed.
+        }
+
+        // Per-pane housekeeping: refresh each pane's strip label, drain
+        // its attention flag, and keep background panes' grids current
+        // (their server events + frames are applied off-screen so a
+        // switch back is instant). The active tab's focused pane is
+        // ticked separately below.
         let active_idx = self.active;
         for (i, tab) in self.tabs.iter_mut().enumerate() {
-            let new_label: String = match &mut tab.mode {
-                Mode::Shell { session } => {
-                    // Prefer the live status line if visible — Claude
-                    // Code's `✽ Wandering…` spinner pattern cycles each
-                    // frame so the tab label updates in sync with what
-                    // the user sees inside the tab. Sticky for
-                    // `STATUS_STICKY_MS` after the spinner cycles off
-                    // so brief gaps between "Wandering…" /
-                    // "Pondering…" don't flicker back to the OSC
-                    // title. Stickiness is cleared immediately on
-                    // OSC 1337 attention (Claude signaling it's truly
-                    // done) — handled below.
-                    const STATUS_STICKY_MS: u128 = 2000;
-                    let now = std::time::Instant::now();
-                    let live = session.as_ref().and_then(|s| s.detect_status_line());
-                    if let Some(s) = live.clone() {
-                        tab.last_status = Some((s, now));
-                    }
-                    let sticky = tab
-                        .last_status
-                        .as_ref()
-                        .filter(|(_, when)| {
-                            now.duration_since(*when).as_millis() < STATUS_STICKY_MS
-                        })
-                        .map(|(t, _)| t.clone());
-                    let osc = session.as_ref().and_then(|s| {
-                        let t = s.osc_title();
-                        if t.is_empty() {
-                            None
-                        } else {
-                            Some(t.to_string())
-                        }
-                    });
-                    // Fallback chain: sticky status > OSC title >
-                    // foreground process name > shell name. The fg
-                    // name surfaces when something like `vim` / `htop`
-                    // / `less` is running but doesn't set an OSC title.
-                    let fg = session
-                        .as_mut()
-                        .and_then(|s| s.fg_proc_name().map(|n| n.to_string()));
-                    sticky.or(osc).or(fg).unwrap_or_else(|| {
-                        session
-                            .as_ref()
-                            .map(|s| s.shell_name().to_string())
-                            .unwrap_or_else(|| "shell".to_string())
-                    })
+            let focused = tab.focused;
+            for (pi, pane) in tab.panes.iter_mut().enumerate() {
+                let new_label = compute_pane_label(pane);
+                if pane.label != new_label {
+                    pane.label = new_label;
                 }
-                Mode::Native {
-                    conn, client_title, ..
-                } => match conn {
-                    ConnState::Waiting => "(no client)".to_string(),
-                    ConnState::Connected => "(connecting…)".to_string(),
-                    // Client-supplied title (`Message::Title`, v3) takes
-                    // priority; falls back to "mnml" pre-handshake.
-                    ConnState::Streaming => {
-                        client_title.clone().unwrap_or_else(|| "mnml".to_string())
+                // Drain the shell session's attention flag (always — so
+                // it doesn't accumulate). The focused-active pane keeps
+                // it cleared; other panes OR it in so the chip badge
+                // sticks until the user actually focuses the tab. OSC
+                // 1337 also means "Claude finished", so drop the sticky
+                // status cache — next tick the OSC title takes over.
+                let is_focused_active = i == active_idx && pi == focused;
+                if let PaneKind::Shell { session: Some(s) } = &pane.kind {
+                    let new_attn = s.take_attention();
+                    if new_attn {
+                        pane.last_status = None;
                     }
-                },
-            };
-            if tab.label != new_label {
-                tab.label = new_label;
-            }
-            // Drain the shell session's attention flag (always — even
-            // for the active tab so the flag doesn't accumulate between
-            // unfocused intervals). On the active tab we keep it
-            // cleared; on background tabs we OR it into Tab.attention
-            // so the chip badge sticks until the user actually focuses.
-            // OSC 1337 also signals "Claude finished" so we drop the
-            // sticky status cache — next tick the OSC title takes over.
-            if let Mode::Shell { session: Some(s) } = &tab.mode {
-                let new_attn = s.take_attention();
-                if new_attn {
-                    tab.last_status = None;
+                    if is_focused_active {
+                        pane.attention = false;
+                    } else if new_attn {
+                        pane.attention = true;
+                    }
+                } else if is_focused_active {
+                    pane.attention = false;
                 }
-                if i == active_idx {
-                    tab.attention = false;
-                } else if new_attn {
-                    tab.attention = true;
-                }
-            } else if i == active_idx {
-                tab.attention = false;
-            }
-            // Background Native tabs: drain server events here so
-            // conn state + client_title stay current even when the
-            // tab isn't focused. Frames are applied to the tab's
-            // grid_snapshot (an off-screen Grid) so the snapshot
-            // tracks live state — on switch, the user sees fresh
-            // content instantly instead of the snapshot from when
-            // this tab was last active.
-            if i != active_idx {
-                // Capture the tab's snapshot dims for any fresh
-                // allocation. Borrow split: we'll need `&mut
-                // tab.grid_snapshot` and `&mut tab.mode` separately.
-                let (snap_cols, snap_rows) = tab
-                    .grid_snapshot
-                    .as_ref()
-                    .map(|g| (g.cols, g.rows))
-                    .unwrap_or((0, 0));
-                if let Mode::Native {
-                    server,
-                    conn,
-                    client_title,
-                    launcher,
-                } = &mut tab.mode
-                {
-                    while let Ok(ev) = server.events.try_recv() {
-                        match ev {
-                            ServerEvent::ClientConnected => {
-                                *conn = ConnState::Connected;
-                                *client_title = None;
-                            }
-                            ServerEvent::ClientDisconnected => {
-                                *conn = ConnState::Waiting;
-                                *client_title = None;
-                            }
-                            ServerEvent::Title(s) => {
-                                *client_title = Some(s);
-                            }
-                        }
-                    }
-                    let mut got_frame = false;
-                    while let Ok(f) = server.frame_rx.try_recv() {
-                        got_frame = true;
-                        if matches!(conn, ConnState::Connected) {
-                            *conn = ConnState::Streaming;
-                        }
-                        // Lazy-allocate the snapshot if this tab
-                        // hasn't had one set yet (just-spawned bg
-                        // tab). Use the sender's dims so the diff
-                        // applies cleanly without per-row clipping.
-                        if tab.grid_snapshot.is_none() {
-                            let cols = if snap_cols > 0 {
-                                snap_cols
-                            } else {
-                                f.cols as u32
-                            };
-                            let rows = if snap_rows > 0 {
-                                snap_rows
-                            } else {
-                                f.rows as u32
-                            };
-                            tab.grid_snapshot = Some(grid::Grid::new(cols, rows, CLEAR_BG));
-                            tab.last_cursor_snapshot = None;
-                        }
-                        if let Some(snap) = tab.grid_snapshot.as_mut() {
-                            apply_frame_to_grid(snap, &mut tab.last_cursor_snapshot, &f);
-                        }
-                    }
-                    let _ = got_frame;
-                    if let Some(l) = launcher.as_mut() {
-                        // Keep poll lightweight — no respawn logic
-                        // for background tabs (that's the active-tab
-                        // path).
-                        let _ = l.poll();
-                    }
+                // Background tabs' panes drain their server events +
+                // frames here so a switch back shows current state.
+                if i != active_idx {
+                    drain_background_pane(pane);
                 }
             }
+            tab.label = tab.panes[tab.focused].label.clone();
         }
+
         // Disambiguate duplicate labels with " (N)" — only when the
         // same exact string appears more than once. Chrome / VS Code
         // pattern: don't number eagerly, but number every occurrence
@@ -2201,22 +2080,23 @@ impl App {
                 };
                 // Attention dot is painted by the chip renderer (red `●`).
                 // Cleared on switch-to.
-                let attention = t.attention && i != self.active;
+                let attention = t.panes.iter().any(|p| p.attention) && i != self.active;
                 (label, i == self.active, attention)
             })
             .collect();
-        gpu.set_strip_chips(&chips);
+
         // Pick the strip height to match the current mode:
         // * multi-tab → tall strip with chip space
         // * single-tab + TUI (native or shell with altscreen)
-        //   → minimal band, just enough to clear the macOS
-        //     traffic lights (pre-tabs look)
-        // * single-tab + bare shell prompt → taller band so the
-        //   first prompt row isn't kissing the traffic lights
-        //   (the strip pipeline paints this in CLEAR_BG so it's
-        //   pure invisible padding).
+        //   → minimal band, just enough to clear the macOS traffic
+        //     lights (pre-tabs look)
+        // * single-tab + bare shell prompt → taller band so the first
+        //   prompt row isn't kissing the traffic lights.
         let multi_tab = self.tabs.len() > 1;
-        let active_is_native = matches!(&self.tabs[self.active].mode, Mode::Native { .. });
+        let active_is_native = matches!(
+            &self.tabs[self.active].focused_pane().kind,
+            PaneKind::Native { .. }
+        );
         let tui_active = active_is_native || self.altscreen_active;
         let target_strip = if multi_tab {
             MACOS_TAB_STRIP_PX_MULTI
@@ -2225,136 +2105,153 @@ impl App {
         } else {
             MACOS_TAB_STRIP_PX_SHELL
         };
-        let strip_resize = gpu.set_strip_h(target_strip);
-        let want_ghost_refresh = self.fim_redraw;
-        match &mut self.tabs[self.active].mode {
-            Mode::Shell { session } => {
-                let Some(s) = session.as_mut() else {
-                    return;
-                };
-                if s.exited() {
-                    event_loop.exit();
-                    return;
-                }
-                // Auto-switch the inset when a full-screen TUI takes
-                // over (xterm alt-screen). The TUI gets edge-to-edge;
-                // the shell prompt gets its padded view back on exit.
-                let altscreen = s.altscreen_active();
-                if altscreen != self.altscreen_active {
-                    self.altscreen_active = altscreen;
-                    let target_inset = self.cfg.active_inset(altscreen);
-                    if let Some((cols, rows)) = gpu.set_inset_px(target_inset) {
-                        s.resize(rows, cols);
-                    }
-                }
-                if let Some((cols, rows)) = strip_resize {
-                    s.resize(rows, cols);
-                }
-                if s.dirty() || want_ghost_refresh {
-                    let (cc, cr, vis) = s.apply_to_grid(&mut gpu.grid);
-                    gpu.last_cursor = None; // Shell mode tracks cursor via apply_to_grid
-                    if vis && (cc as u32) < gpu.grid.cols && (cr as u32) < gpu.grid.rows {
-                        let i = (cr as u32 * gpu.grid.cols + cc as u32) as usize;
-                        // Suppress the cursor when it sits at (0, 0) on a
-                        // default-empty cell — that's vt100's "shell just
-                        // spawned, no output yet" state. Painting it would
-                        // flash a white block at the top-left before the
-                        // shell prompt appears. Real cursors sit on
-                        // rendered content.
-                        let suppress = cc == 0 && cr == 0 && {
-                            let cell = &gpu.grid.cells[i];
-                            cell.ch == ' ' && cell.attrs == 0
-                        };
-                        if !suppress {
-                            gpu.grid.cells[i].attrs |= ATTR_CURSOR_BLOCK;
-                            gpu.last_cursor = Some(i);
-                        }
-                    }
-                }
+        let strip_resize = {
+            let gpu = self.gpu.as_mut().unwrap();
+            gpu.set_strip_chips(&chips);
+            gpu.set_strip_h(target_strip)
+        };
+        if let Some((cols, rows)) = strip_resize {
+            self.resize_all_panes(cols, rows);
+        }
+
+        // Shell mode only: auto-switch the inset when a full-screen TUI
+        // takes the alt-screen (edge-to-edge), and back on exit.
+        let altscreen = match &self.tabs[self.active].focused_pane().kind {
+            PaneKind::Shell { session: Some(s) } => Some(s.altscreen_active()),
+            _ => None,
+        };
+        if let Some(altscreen) = altscreen
+            && altscreen != self.altscreen_active
+        {
+            self.altscreen_active = altscreen;
+            let target_inset = self.cfg.active_inset(altscreen);
+            let inset_resize = self.gpu.as_mut().unwrap().set_inset_px(target_inset);
+            if let Some((cols, rows)) = inset_resize {
+                self.resize_all_panes(cols, rows);
             }
-            Mode::Native {
-                server,
-                conn,
-                launcher,
-                client_title,
-            } => {
-                if let Some((cols, rows)) = strip_resize {
-                    server.send_resize(cols, rows);
-                }
-                // Drain server events.
-                while let Ok(ev) = server.events.try_recv() {
-                    match ev {
-                        ServerEvent::ClientConnected => {
-                            *conn = ConnState::Connected;
-                            *client_title = None; // fresh connection, fresh title
-                            server.send_resize(gpu.grid.cols as u16, gpu.grid.rows as u16);
-                            paint_idle(&mut gpu.grid, *conn, &server.socket_path);
-                        }
-                        ServerEvent::ClientDisconnected => {
-                            *conn = ConnState::Waiting;
-                            *client_title = None;
-                            paint_idle(&mut gpu.grid, *conn, &server.socket_path);
-                        }
-                        ServerEvent::Title(s) => {
-                            *client_title = Some(s);
-                        }
+        }
+
+        // Tick the active tab's focused pane.
+        let want_ghost_refresh = self.fim_redraw;
+        let focused = self.tabs[self.active].focused;
+        {
+            let Pane {
+                kind,
+                grid,
+                last_cursor,
+                ..
+            } = &mut self.tabs[self.active].panes[focused];
+            match kind {
+                PaneKind::Shell { session } => {
+                    let Some(s) = session.as_mut() else {
+                        return;
+                    };
+                    if s.exited() {
+                        event_loop.exit();
+                        return;
                     }
-                }
-                // Drain frames — diffs are cumulative, so every frame must be
-                // applied in order. (The earlier "keep only the last" was the
-                // bug that left the full seq=0 frame stranded behind empty
-                // seq=1/seq=2 diffs.)
-                let mut applied = 0u32;
-                while let Ok(f) = server.frame_rx.try_recv() {
-                    if *conn != ConnState::Streaming {
-                        *conn = ConnState::Streaming;
-                    }
-                    gpu.apply_frame(&f);
-                    applied += 1;
-                }
-                if applied > 0 {
-                    log::debug!("[tick] applied {applied} frame(s)");
-                }
-                // Poll launcher.
-                if let Some(l) = launcher.as_mut() {
-                    match l.poll() {
-                        LauncherPoll::Running | LauncherPoll::Idle => {}
-                        LauncherPoll::Restart => {
-                            log::info!("launcher: restart requested (exit 75); respawning");
-                            if let Err(e) = l.spawn() {
-                                eprintln!("tmnl: failed to respawn child: {e}");
-                                event_loop.exit();
+                    if s.dirty() || want_ghost_refresh {
+                        let (cc, cr, vis) = s.apply_to_grid(grid);
+                        *last_cursor = None; // shell tracks the cursor via apply_to_grid
+                        if vis && (cc as u32) < grid.cols && (cr as u32) < grid.rows {
+                            let i = (cr as u32 * grid.cols + cc as u32) as usize;
+                            // Suppress the cursor at (0,0) on a default-empty
+                            // cell — vt100's "just spawned, no output" state.
+                            let suppress = cc == 0 && cr == 0 && {
+                                let cell = &grid.cells[i];
+                                cell.ch == ' ' && cell.attrs == 0
+                            };
+                            if !suppress {
+                                grid.cells[i].attrs |= ATTR_CURSOR_BLOCK;
+                                *last_cursor = Some(i);
                             }
                         }
-                        LauncherPoll::Exited(code) => {
-                            log::info!("launcher: child exited with code {code}; closing window");
-                            event_loop.exit();
+                    }
+                }
+                PaneKind::Native {
+                    server,
+                    conn,
+                    launcher,
+                    client_title,
+                } => {
+                    while let Ok(ev) = server.events.try_recv() {
+                        match ev {
+                            ServerEvent::ClientConnected => {
+                                *conn = ConnState::Connected;
+                                *client_title = None; // fresh connection, fresh title
+                                server.send_resize(grid.cols as u16, grid.rows as u16);
+                                paint_idle(grid, *conn, &server.socket_path);
+                            }
+                            ServerEvent::ClientDisconnected => {
+                                *conn = ConnState::Waiting;
+                                *client_title = None;
+                                paint_idle(grid, *conn, &server.socket_path);
+                            }
+                            ServerEvent::Title(s) => {
+                                *client_title = Some(s);
+                            }
+                        }
+                    }
+                    // Diffs are cumulative — apply every frame in order.
+                    let mut applied = 0u32;
+                    while let Ok(f) = server.frame_rx.try_recv() {
+                        if *conn != ConnState::Streaming {
+                            *conn = ConnState::Streaming;
+                        }
+                        apply_frame_to_grid(grid, last_cursor, &f);
+                        applied += 1;
+                    }
+                    if applied > 0 {
+                        log::debug!("[tick] applied {applied} frame(s)");
+                    }
+                    if let Some(l) = launcher.as_mut() {
+                        match l.poll() {
+                            LauncherPoll::Running | LauncherPoll::Idle => {}
+                            LauncherPoll::Restart => {
+                                log::info!("launcher: restart requested (exit 75); respawning");
+                                if let Err(e) = l.spawn() {
+                                    eprintln!("tmnl: failed to respawn child: {e}");
+                                    event_loop.exit();
+                                }
+                            }
+                            LauncherPoll::Exited(code) => {
+                                log::info!(
+                                    "launcher: child exited with code {code}; closing window"
+                                );
+                                event_loop.exit();
+                            }
                         }
                     }
                 }
             }
         }
+
         // Overlay the AI ghost suggestion, or a "generating…"
-        // placeholder while a request is in flight (dim).
-        if let Mode::Shell { session } = &self.tabs[self.active].mode
-            && let Some(cur) = gpu.last_cursor
+        // placeholder while a request is in flight (dim) — written into
+        // the pane grid so the compositor picks it up.
         {
-            let cols = (gpu.grid.cols as usize).max(1);
-            // Stage 2 (`below`) renders on the row below, aligned under
-            // the command-line input start; Stage 1 renders at the cursor.
-            let anchor_col = session
-                .as_ref()
-                .and_then(|s| s.input_anchor())
-                .map_or(0, |(_, c)| c as usize);
-            let below_at = (cur / cols + 1) * cols + anchor_col;
-            if let Some(g) = &self.ghost {
-                let at = if g.below { below_at } else { cur };
-                draw_ghost(&mut gpu.grid, at, &g.text);
-                // Accept hint, a couple of cells past the suggestion.
-                draw_ghost(&mut gpu.grid, at + g.text.chars().count() + 2, "[tab]");
-            } else if let Some(p) = &self.fim_pending {
-                let at = if p.below { below_at } else { cur };
-                draw_ghost(&mut gpu.grid, at, "generating…");
+            let pane = &mut self.tabs[self.active].panes[focused];
+            if let PaneKind::Shell { session } = &pane.kind
+                && let Some(cur) = pane.last_cursor
+            {
+                let cols = (pane.grid.cols as usize).max(1);
+                // Stage 2 (`below`) renders on the row below, aligned
+                // under the command-line input start; Stage 1 at the
+                // cursor.
+                let anchor_col = session
+                    .as_ref()
+                    .and_then(|s| s.input_anchor())
+                    .map_or(0, |(_, c)| c as usize);
+                let below_at = (cur / cols + 1) * cols + anchor_col;
+                if let Some(g) = &self.ghost {
+                    let at = if g.below { below_at } else { cur };
+                    draw_ghost(&mut pane.grid, at, &g.text);
+                    // Accept hint, a couple of cells past the suggestion.
+                    draw_ghost(&mut pane.grid, at + g.text.chars().count() + 2, "[tab]");
+                } else if let Some(p) = &self.fim_pending {
+                    let at = if p.below { below_at } else { cur };
+                    draw_ghost(&mut pane.grid, at, "generating…");
+                }
             }
         }
         self.fim_redraw = false;
@@ -2430,27 +2327,18 @@ impl App {
     /// shell mode with the alt-screen active hosts one. Only the shell
     /// prompt view uses the configured value.
     fn apply_inset_from_cfg(&mut self, cfg: &Config) {
-        let native = matches!(&self.tabs[self.active].mode, Mode::Native { .. });
+        let native = matches!(
+            &self.tabs[self.active].focused_pane().kind,
+            PaneKind::Native { .. }
+        );
         let tui_active = native || self.altscreen_active;
         let new_inset = cfg.active_inset(tui_active);
-        let Some(gpu) = self.gpu.as_mut() else {
-            return;
+        let resize = match self.gpu.as_mut() {
+            Some(gpu) => gpu.set_inset_px(new_inset),
+            None => return,
         };
-        let Some((cols, rows)) = gpu.set_inset_px(new_inset) else {
-            return;
-        };
-        match &mut self.tabs[self.active].mode {
-            Mode::Native { server, conn, .. } => {
-                server.send_resize(cols, rows);
-                if *conn != ConnState::Streaming {
-                    paint_idle(&mut gpu.grid, *conn, &server.socket_path);
-                }
-            }
-            Mode::Shell { session } => {
-                if let Some(s) = session.as_mut() {
-                    s.resize(rows, cols);
-                }
-            }
+        if let Some((cols, rows)) = resize {
+            self.resize_all_panes(cols, rows);
         }
     }
 
@@ -2504,12 +2392,12 @@ impl App {
     }
 
     fn shutdown_gracefully(&mut self) {
-        match &mut self.tabs[self.active].mode {
-            Mode::Shell { session } => {
+        match &mut self.tabs[self.active].focused_pane_mut().kind {
+            PaneKind::Shell { session } => {
                 // Drop the ShellSession — its Drop hardkills the child.
                 *session = None;
             }
-            Mode::Native {
+            PaneKind::Native {
                 server, launcher, ..
             } => {
                 server.send_quit();
@@ -2565,6 +2453,138 @@ fn draw_ghost(grid: &mut grid::Grid, start: usize, text: &str) {
             bg: grid.cells[i].bg,
             attrs: grid.cells[i].attrs,
         };
+    }
+}
+
+/// Composite a tab's panes into the window grid the GPU renders.
+/// Splits the window `Rect` per `tab.layout` into one sub-rect per
+/// leaf, then blits each pane's grid into its rect. Phase 1 of the
+/// splits work: a tab has exactly one leaf, so there is one rect that
+/// fills the window. Phase 2 adds N leaves + divider lines on top of
+/// the same recursion.
+fn composite(tab: &Tab, window: &mut grid::Grid) {
+    // Uncovered cells (divider gaps, mid-resize mismatch) read as
+    // background — clear first, then blit each leaf over the top.
+    window.clear();
+    let area = Rect::new(0, 0, window.cols, window.rows);
+    for (pane_id, rect) in tab.layout.leaf_rects(area) {
+        if let Some(pane) = tab.panes.get(pane_id) {
+            blit_pane(&pane.grid, rect, window);
+        }
+    }
+}
+
+/// Blit `src`'s cells into `window` at `rect`'s top-left, clipped to
+/// `rect`, to `src`'s own extent, and to the window's bounds.
+fn blit_pane(src: &grid::Grid, rect: Rect, window: &mut grid::Grid) {
+    let cols = rect.w.min(src.cols).min(window.cols.saturating_sub(rect.x)) as usize;
+    let rows = rect.h.min(src.rows).min(window.rows.saturating_sub(rect.y));
+    for r in 0..rows {
+        let s = (r * src.cols) as usize;
+        let d = ((rect.y + r) * window.cols + rect.x) as usize;
+        window.cells[d..d + cols].copy_from_slice(&src.cells[s..s + cols]);
+    }
+}
+
+/// Resolve a pane's strip label from its kind, OSC title, and cached
+/// spinner status.
+fn compute_pane_label(pane: &mut Pane) -> String {
+    match &mut pane.kind {
+        PaneKind::Shell { session } => {
+            // Prefer the live status line — Claude Code's `✽ Wandering…`
+            // spinner cycles each frame, so the label tracks what the
+            // user sees inside. Sticky for `STATUS_STICKY_MS` after the
+            // spinner cycles off so brief gaps don't flicker back to the
+            // OSC title.
+            const STATUS_STICKY_MS: u128 = 2000;
+            let now = std::time::Instant::now();
+            let live = session.as_ref().and_then(|s| s.detect_status_line());
+            if let Some(s) = live {
+                pane.last_status = Some((s, now));
+            }
+            let sticky = pane
+                .last_status
+                .as_ref()
+                .filter(|(_, when)| now.duration_since(*when).as_millis() < STATUS_STICKY_MS)
+                .map(|(t, _)| t.clone());
+            let osc = session.as_ref().and_then(|s| {
+                let t = s.osc_title();
+                if t.is_empty() {
+                    None
+                } else {
+                    Some(t.to_string())
+                }
+            });
+            // Fallback chain: sticky status > OSC title > foreground
+            // process name > shell name.
+            let fg = session
+                .as_mut()
+                .and_then(|s| s.fg_proc_name().map(|n| n.to_string()));
+            sticky.or(osc).or(fg).unwrap_or_else(|| {
+                session
+                    .as_ref()
+                    .map(|s| s.shell_name().to_string())
+                    .unwrap_or_else(|| "shell".to_string())
+            })
+        }
+        PaneKind::Native {
+            conn, client_title, ..
+        } => match conn {
+            ConnState::Waiting => "(no client)".to_string(),
+            ConnState::Connected => "(connecting…)".to_string(),
+            // Client-supplied title takes priority; falls back to
+            // "mnml" pre-handshake.
+            ConnState::Streaming => client_title.clone().unwrap_or_else(|| "mnml".to_string()),
+        },
+    }
+}
+
+/// Drain a background pane's server events + frames so its grid tracks
+/// live state while off-screen — switching back to it is then instant.
+/// Shell panes need no draining here (the pty reader thread keeps
+/// vt100 current; the next tick's `apply_to_grid` after a focus switch
+/// refreshes the grid). Only Native panes pull from channels.
+fn drain_background_pane(pane: &mut Pane) {
+    let Pane {
+        kind,
+        grid,
+        last_cursor,
+        ..
+    } = pane;
+    let PaneKind::Native {
+        server,
+        conn,
+        client_title,
+        launcher,
+    } = kind
+    else {
+        return;
+    };
+    while let Ok(ev) = server.events.try_recv() {
+        match ev {
+            ServerEvent::ClientConnected => {
+                *conn = ConnState::Connected;
+                *client_title = None;
+            }
+            ServerEvent::ClientDisconnected => {
+                *conn = ConnState::Waiting;
+                *client_title = None;
+            }
+            ServerEvent::Title(s) => {
+                *client_title = Some(s);
+            }
+        }
+    }
+    while let Ok(f) = server.frame_rx.try_recv() {
+        if matches!(conn, ConnState::Connected) {
+            *conn = ConnState::Streaming;
+        }
+        apply_frame_to_grid(grid, last_cursor, &f);
+    }
+    if let Some(l) = launcher.as_mut() {
+        // Keep poll lightweight — no respawn logic for background
+        // panes (that's the focused-pane path).
+        let _ = l.poll();
     }
 }
 
@@ -2662,7 +2682,7 @@ fn main() {
         } else {
             None
         };
-        Mode::Native {
+        PaneKind::Native {
             server,
             conn: ConnState::Waiting,
             launcher,
@@ -2670,20 +2690,27 @@ fn main() {
         }
     } else {
         eprintln!("tmnl: shell mode (run with --editor to launch mnml instead)");
-        Mode::Shell { session: None }
+        PaneKind::Shell { session: None }
     };
 
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
-    // Start with one tab holding the initial Mode. Multi-tab keybinds
-    // append to this Vec in a follow-up commit.
-    let initial_tab = Tab {
-        mode,
+    // Start with one tab holding a single pane. The pane's grid is a
+    // placeholder here — `resumed` resizes it once the GPU exists and
+    // the real window dimensions are known.
+    let initial_pane = Pane {
+        kind: mode,
+        grid: Grid::new(80, 24, CLEAR_BG),
+        last_cursor: None,
         label: String::new(),
         attention: false,
         last_status: None,
-        grid_snapshot: None,
-        last_cursor_snapshot: None,
+    };
+    let initial_tab = Tab {
+        layout: Layout::Leaf(0),
+        panes: vec![initial_pane],
+        focused: 0,
+        label: String::new(),
     };
     let mut app = App {
         window: None,

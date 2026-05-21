@@ -3,12 +3,14 @@
 //! Foundation for the splits feature (`docs/splits-plan.md`). This module
 //! is the pure geometry: the [`Layout`] tree and the recursive
 //! area-splitting in [`Layout::leaf_rects`]. Nothing here touches the
-//! GPU, the shell, or input — wiring `Layout` into `Tab` / the render
-//! loop is a later phase. Standalone + unit-tested so the tricky
+//! GPU, the shell, or input. Standalone + unit-tested so the tricky
 //! rect-splitting math is pinned before anything depends on it.
 //!
-//! Unused by non-test code until a later phase wires it into `Tab` —
-//! the unit tests exercise everything in the meantime.
+//! Phase 1 of the splits work wires `Layout` + [`PaneId`] into `Tab`
+//! and `composite()` (always a single `Leaf`); the `Split` constructor,
+//! [`Layout::pane_at`], [`Layout::leaf_ids`], and [`SplitDir`] stay
+//! exercised only by the unit tests until the split / focus verbs land
+//! in a later phase — hence the crate-level dead-code allowance.
 #![allow(dead_code)]
 
 /// Index of a pane within a tab's `panes` Vec.
