@@ -172,9 +172,13 @@ struct Tab {
     panes: Vec<Pane>,
     /// The pane that receives keyboard input + draws a cursor.
     focused: PaneId,
-    /// Cached strip label = the focused pane's label. `App::tick`
-    /// rewrites this; the chip renderer reads it.
+    /// Cached strip label. `App::tick` rewrites this each frame from
+    /// `custom_name` if set, otherwise the focused pane's label.
     label: String,
+    /// User-set tab name (right-click a chip → rename). `Some`
+    /// overrides the auto-derived focused-pane label; `None` (or an
+    /// empty rename) reverts to it. Session-only — not persisted.
+    custom_name: Option<String>,
 }
 
 impl Tab {
@@ -184,6 +188,14 @@ impl Tab {
     fn focused_pane_mut(&mut self) -> &mut Pane {
         &mut self.panes[self.focused]
     }
+}
+
+/// An in-progress tab rename. The strip chip for `tab_idx` becomes an
+/// inline text field showing `buf`; Esc cancels, Enter commits, and a
+/// click anywhere commits. Entered by right-clicking a tab chip.
+struct RenameState {
+    tab_idx: usize,
+    buf: String,
 }
 
 /// An AI suggestion shown as dim ghost text. Created from a worker
@@ -258,6 +270,8 @@ struct App {
     /// `CursorMoved` event over a *different* chip swaps `tabs[src]`
     /// and `tabs[dst]` and updates the index.
     dragging_tab: Option<usize>,
+    /// In-progress tab rename, if any — see [`RenameState`].
+    renaming_tab: Option<RenameState>,
     /// Index (into the active tab's `divider_lines`) of the divider
     /// currently being dragged to resize a split. Set on a left-press
     /// on a divider, cleared on left-release.
@@ -993,6 +1007,12 @@ impl ApplicationHandler for App {
                 if self.settings.is_some() && self.settings_handle_key(&ke) {
                     return;
                 }
+                // A tab rename swallows keys while active — Esc cancels,
+                // Enter commits, Backspace deletes, everything else
+                // types into the name.
+                if self.renaming_tab.is_some() && self.rename_handle_key(&ke) {
+                    return;
+                }
                 // Tab-management chords: ⌘T new, ⌘W close, ⌘1..⌘9 jump,
                 // ⌘⇧[ / ⌘⇧] cycle. macOS Terminal / iTerm / Safari
                 // conventions. Cmd = winit's `super_key()`. Intercept
@@ -1411,6 +1431,13 @@ impl ApplicationHandler for App {
                 } else {
                     self.buttons_down &= !(1u8 << b);
                 }
+                // A click anywhere commits an in-progress tab rename, so
+                // the inline-edit chip can't be stranded by a stray
+                // click. (A right-click to start a *new* rename commits
+                // the old one first, then re-enters below.)
+                if pressed && self.renaming_tab.is_some() {
+                    self.commit_rename();
+                }
                 // Strip-region intercept — clicks on tab chips switch
                 // (left) / close (middle). Tested against the cached
                 // pixel cursor against the rects produced by the last
@@ -1466,6 +1493,8 @@ impl ApplicationHandler for App {
                                         self.dragging_tab = Some(self.active);
                                     }
                                     MouseButton::Middle => self.close_tab_at(idx, event_loop),
+                                    // Right-click → rename the tab inline.
+                                    MouseButton::Right => self.start_rename(idx),
                                     _ => {}
                                 }
                             }
@@ -1830,6 +1859,7 @@ impl App {
             panes: vec![pane],
             focused: 0,
             label: "mnml".to_string(),
+            custom_name: None,
         });
         self.active = self.tabs.len() - 1;
     }
@@ -1858,6 +1888,7 @@ impl App {
                     panes: vec![pane],
                     focused: 0,
                     label,
+                    custom_name: None,
                 });
                 self.active = self.tabs.len() - 1;
             }
@@ -1881,6 +1912,9 @@ impl App {
         if idx >= self.tabs.len() {
             return;
         }
+        // A rename in flight pins a tab index that removing a tab would
+        // invalidate (indices shift) — drop it.
+        self.renaming_tab = None;
         if self.tabs.len() <= 1 {
             event_loop.exit();
             return;
@@ -2342,7 +2376,11 @@ impl App {
                     tick_secondary_pane(pane, i == active_idx);
                 }
             }
-            tab.label = tab.panes[tab.focused].label.clone();
+            // A user-set custom name wins over the auto-derived label.
+            tab.label = tab
+                .custom_name
+                .clone()
+                .unwrap_or_else(|| tab.panes[tab.focused].label.clone());
         }
 
         // Disambiguate duplicate labels with " (N)" — only when the
@@ -2354,11 +2392,24 @@ impl App {
             *counts.entry(t.label.as_str()).or_insert(0) += 1;
         }
         let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        // The tab being renamed (if any) shows its live edit buffer in
+        // the chip instead of its label, with a caret.
+        let rename = self
+            .renaming_tab
+            .as_ref()
+            .map(|r| (r.tab_idx, r.buf.clone()));
         let chips: Vec<(String, bool, bool)> = self
             .tabs
             .iter()
             .enumerate()
             .map(|(i, t)| {
+                if let Some((idx, buf)) = &rename
+                    && *idx == i
+                {
+                    // Inline rename field — render active-styled so it's
+                    // clearly the edit target.
+                    return (format!("{buf}▏"), true, false);
+                }
                 let label = if counts.get(t.label.as_str()).copied().unwrap_or(0) > 1 {
                     let n = seen.entry(t.label.as_str()).or_insert(0);
                     *n += 1;
@@ -2736,6 +2787,71 @@ impl App {
             // / native target underneath.
             _ => true,
         }
+    }
+
+    /// Begin renaming tab `idx` — its strip chip becomes an inline text
+    /// field. Any rename already in progress is committed first.
+    fn start_rename(&mut self, idx: usize) {
+        if idx >= self.tabs.len() {
+            return;
+        }
+        if self.renaming_tab.is_some() {
+            self.commit_rename();
+        }
+        // Seed with the current custom name (empty if never renamed) so
+        // the user can tweak it or clear it back to the auto label.
+        let buf = self.tabs[idx].custom_name.clone().unwrap_or_default();
+        self.renaming_tab = Some(RenameState { tab_idx: idx, buf });
+    }
+
+    /// Commit the in-progress rename: a non-empty buffer becomes the
+    /// tab's `custom_name`; an empty buffer clears it (reverts to the
+    /// auto-derived label). No-op when nothing is being renamed.
+    fn commit_rename(&mut self) {
+        let Some(st) = self.renaming_tab.take() else {
+            return;
+        };
+        if let Some(tab) = self.tabs.get_mut(st.tab_idx) {
+            let name = st.buf.trim();
+            tab.custom_name = (!name.is_empty()).then(|| name.to_string());
+        }
+    }
+
+    /// Abandon the in-progress rename without changing the tab name.
+    fn cancel_rename(&mut self) {
+        self.renaming_tab = None;
+    }
+
+    /// Feed a key to the in-progress tab rename. Returns `true` while a
+    /// rename is active — the key is consumed either way so it can't
+    /// leak to the hosted process. `false` ⇒ no rename in progress,
+    /// the caller handles the key normally.
+    fn rename_handle_key(&mut self, ke: &winit::event::KeyEvent) -> bool {
+        use winit::keyboard::{Key, NamedKey};
+        if self.renaming_tab.is_none() {
+            return false;
+        }
+        match &ke.logical_key {
+            Key::Named(NamedKey::Escape) => self.cancel_rename(),
+            Key::Named(NamedKey::Enter) => self.commit_rename(),
+            Key::Named(NamedKey::Backspace) => {
+                if let Some(st) = self.renaming_tab.as_mut() {
+                    st.buf.pop();
+                }
+            }
+            _ => {
+                // Append the key's resolved text (layout + shift
+                // applied), skipping control chars.
+                if let Some(txt) = &ke.text
+                    && let Some(st) = self.renaming_tab.as_mut()
+                {
+                    for ch in txt.chars().filter(|c| !c.is_control()) {
+                        st.buf.push(ch);
+                    }
+                }
+            }
+        }
+        true
     }
 
     fn shutdown_gracefully(&mut self) {
@@ -3205,6 +3321,7 @@ fn main() {
         panes: vec![initial_pane],
         focused: 0,
         label: String::new(),
+        custom_name: None,
     };
     let mut app = App {
         window: None,
@@ -3223,6 +3340,7 @@ fn main() {
         editor_template,
         native_tab_nonce: 1,
         dragging_tab: None,
+        renaming_tab: None,
         dragging_divider: None,
         fim: None,
         fim_pending: None,
@@ -3266,6 +3384,7 @@ mod tests {
             panes: vec![filled_pane(10, 4, 'A'), filled_pane(10, 4, 'B')],
             focused,
             label: String::new(),
+            custom_name: None,
         }
     }
 
@@ -3276,6 +3395,7 @@ mod tests {
             panes: vec![filled_pane(10, 4, 'A')],
             focused: 0,
             label: String::new(),
+            custom_name: None,
         };
         let mut window = Grid::new(10, 4, CLEAR_BG);
         composite(&tab, &mut window);
@@ -3331,6 +3451,7 @@ mod tests {
             ],
             focused: 2,
             label: String::new(),
+            custom_name: None,
         };
         let mut window = Grid::new(21, 9, CLEAR_BG);
         composite(&tab, &mut window);
