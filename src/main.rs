@@ -2710,27 +2710,20 @@ fn draw_ghost(grid: &mut grid::Grid, start: usize, text: &str) {
 /// Composite a tab's panes into the window grid the GPU renders.
 /// Splits the window `Rect` per `tab.layout` into one sub-rect per
 /// leaf, blits each pane's grid into its rect, then paints the divider
-/// lines between splits. The divider segments bordering the focused
-/// pane are tinted so focus is visible at a glance. Phase 1 had a
-/// single leaf; Phase 2 makes it N leaves + dividers — both ride the
-/// same `leaf_rects` / `divider_lines` recursion.
+/// lines between splits. Phase 1 had a single leaf; Phase 2 makes it N
+/// leaves + dividers — both ride the same `leaf_rects` /
+/// `divider_lines` recursion.
 fn composite(tab: &Tab, window: &mut grid::Grid) {
     // Uncovered cells (a pane grid briefly smaller than its rect
     // mid-resize) read as background — clear first, then paint over.
     window.clear();
     let area = Rect::new(0, 0, window.cols, window.rows);
-    let leaves = tab.layout.leaf_rects(area);
-    // The focused pane's rect — used to tint its divider edges.
-    let focus_rect = leaves
-        .iter()
-        .find(|(id, _)| *id == tab.focused)
-        .map(|(_, r)| *r);
-    for (pane_id, rect) in &leaves {
-        if let Some(pane) = tab.panes.get(*pane_id) {
-            blit_pane(&pane.grid, *rect, window, *pane_id == tab.focused);
+    for (pane_id, rect) in tab.layout.leaf_rects(area) {
+        if let Some(pane) = tab.panes.get(pane_id) {
+            blit_pane(&pane.grid, rect, window, pane_id == tab.focused);
         }
     }
-    paint_dividers(window, &tab.layout.divider_lines(area), focus_rect);
+    paint_dividers(window, &tab.layout.divider_lines(area));
 }
 
 /// Blit `src`'s cells into `window` at `rect`'s top-left, clipped to
@@ -2782,11 +2775,12 @@ fn box_glyph(up: bool, down: bool, left: bool, right: bool) -> char {
 
 /// Paint every divider cell, choosing the box-drawing glyph that
 /// matches its connectivity so dividers join cleanly at T-junctions
-/// and crosses. Cells whose 8-neighbour touches the focused pane's
-/// rect tint `ACCENT_FG`; the rest render dim so the divider reads as
-/// quiet chrome. (The diagonal neighbours matter at a junction: that
-/// corner cell only touches the focused pane diagonally.)
-fn paint_dividers(window: &mut grid::Grid, lines: &[(Rect, SplitDir)], focus_rect: Option<Rect>) {
+/// and crosses. Dividers render in one uniform dim colour — quiet
+/// chrome. (There's deliberately no focus tint: a divider cell at a
+/// junction is shared between a focused-pane edge and a non-focused
+/// one, so no single colour reads right. Focus is shown by the
+/// cursor — only the focused pane draws one.)
+fn paint_dividers(window: &mut grid::Grid, lines: &[(Rect, SplitDir)]) {
     let (cols, rows) = (window.cols, window.rows);
     if cols == 0 || rows == 0 {
         return;
@@ -2815,27 +2809,10 @@ fn paint_dividers(window: &mut grid::Grid, lines: &[(Rect, SplitDir)], focus_rec
                 x > 0 && div_at(x - 1, y),
                 div_at(x + 1, y),
             );
-            let touches_focus = focus_rect.is_some_and(|f| {
-                let (xm, xp) = (x.wrapping_sub(1), x + 1);
-                let (ym, yp) = (y.wrapping_sub(1), y + 1);
-                [
-                    (xm, y),
-                    (xp, y),
-                    (x, ym),
-                    (x, yp),
-                    (xm, ym),
-                    (xp, ym),
-                    (xm, yp),
-                    (xp, yp),
-                ]
-                .iter()
-                .any(|&(nx, ny)| f.contains(nx, ny))
-            });
-            let fg = if touches_focus { ACCENT_FG } else { DIM_FG };
             let i = (y * cols + x) as usize;
             window.cells[i] = grid::Cell {
                 ch: glyph,
-                fg,
+                fg: DIM_FG,
                 bg: window.cells[i].bg,
                 attrs: 0,
             };
@@ -3192,23 +3169,11 @@ mod tests {
     }
 
     #[test]
-    fn composite_divider_tints_toward_the_focused_pane() {
-        // Focus the left pane — the divider tints accent.
-        let mut window = Grid::new(21, 4, CLEAR_BG);
-        composite(&two_pane_tab(0), &mut window);
-        assert_eq!(window.cells[10].fg, ACCENT_FG);
-        // An out-of-range focus ⇒ no focus rect ⇒ dim divider.
-        composite(&two_pane_tab(9), &mut window);
-        assert_eq!(window.cells[10].fg, DIM_FG);
-    }
-
-    #[test]
-    fn composite_divider_tints_junction_cells() {
+    fn composite_dividers_join_at_junctions() {
         // A T-layout: pane 0 fills the left; the right column splits
-        // into pane 1 (top) and pane 2 (bottom). Focusing pane 2, the
-        // corner where the vertical + horizontal dividers meet must
-        // tint too — it only touches pane 2 diagonally, so the 8-way
-        // neighbour check is what makes the tinted lines join up.
+        // into pane 1 (top) and pane 2 (bottom). The cell where the
+        // vertical and horizontal dividers meet draws a `├` so the
+        // strokes join; dividers are one uniform dim colour.
         let tab = Tab {
             layout: Layout::Split {
                 dir: SplitDir::Vertical,
@@ -3233,19 +3198,10 @@ mod tests {
         composite(&tab, &mut window);
         // V divider at column 10, H divider at row 4 — junction (10, 4).
         let junction = &window.cells[4 * 21 + 10];
-        assert_eq!(
-            junction.ch, '├',
-            "junction draws a T-glyph so the strokes join"
-        );
-        assert_eq!(
-            junction.fg, ACCENT_FG,
-            "junction cell joins the tinted dividers"
-        );
-        // The V divider's top borders pane 1, not the focused pane 2.
-        assert_eq!(
-            window.cells[10].fg, DIM_FG,
-            "a divider not bordering focus stays dim"
-        );
+        assert_eq!(junction.ch, '├', "junction draws a T-glyph");
+        // Every divider cell is the same quiet chrome colour.
+        assert_eq!(junction.fg, DIM_FG);
+        assert_eq!(window.cells[10].fg, DIM_FG);
     }
 
     #[test]
