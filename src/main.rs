@@ -2812,8 +2812,7 @@ impl App {
             return;
         };
         if let Some(tab) = self.tabs.get_mut(st.tab_idx) {
-            let name = st.buf.trim();
-            tab.custom_name = (!name.is_empty()).then(|| name.to_string());
+            tab.custom_name = committed_tab_name(&st.buf);
         }
     }
 
@@ -3076,6 +3075,14 @@ fn nearest_in_dir(rects: &[(PaneId, Rect)], focused: PaneId, dir: FocusDir) -> O
         }
     }
     best.map(|(id, _)| id)
+}
+
+/// Resolve a tab-rename buffer to a tab's `custom_name`: a non-blank
+/// buffer becomes `Some(trimmed)`; a blank one clears it to `None`,
+/// reverting the tab to its auto-derived label. Pure — unit-tested.
+fn committed_tab_name(buf: &str) -> Option<String> {
+    let name = buf.trim();
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 /// Resolve a pane's strip label — the stable name (OSC title /
@@ -3363,6 +3370,20 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn committed_tab_name_trims_and_clears_on_blank() {
+        // A real name is trimmed and kept.
+        assert_eq!(
+            committed_tab_name("my session"),
+            Some("my session".to_string())
+        );
+        assert_eq!(committed_tab_name("  spaced  "), Some("spaced".to_string()));
+        // A blank / whitespace buffer clears the custom name, reverting
+        // the tab to its auto-derived label.
+        assert_eq!(committed_tab_name(""), None);
+        assert_eq!(committed_tab_name("   "), None);
+    }
 
     /// A pane whose grid is filled with `ch` — no real session, a
     /// pure-data fixture for compositor tests.
