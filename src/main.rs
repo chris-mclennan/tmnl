@@ -3078,16 +3078,17 @@ fn nearest_in_dir(rects: &[(PaneId, Rect)], focused: PaneId, dir: FocusDir) -> O
     best.map(|(id, _)| id)
 }
 
-/// Resolve a pane's strip label from its kind, OSC title, and cached
-/// spinner status.
+/// Resolve a pane's strip label — the stable name (OSC title /
+/// foreground process / shell), with Claude Code's spinner glyph
+/// appended when a session is thinking.
 fn compute_pane_label(pane: &mut Pane) -> String {
     match &mut pane.kind {
         PaneKind::Shell { session } => {
-            // Prefer the live status line — Claude Code's `✽ Wandering…`
-            // spinner cycles each frame, so the label tracks what the
-            // user sees inside. Sticky for `STATUS_STICKY_MS` after the
-            // spinner cycles off so brief gaps don't flicker back to the
-            // OSC title.
+            // Detect Claude Code's `✽ Wandering…` spinner — just its
+            // glyph (which cycles each frame) is appended to the name
+            // below, so a thinking tab stays identifiable. Cached
+            // sticky for `STATUS_STICKY_MS` so brief gaps between
+            // spinner redraws don't blink the glyph off.
             const STATUS_STICKY_MS: u128 = 2000;
             let now = std::time::Instant::now();
             let live = session.as_ref().and_then(|s| s.detect_status_line());
@@ -3107,17 +3108,24 @@ fn compute_pane_label(pane: &mut Pane) -> String {
                     Some(t.to_string())
                 }
             });
-            // Fallback chain: sticky status > OSC title > foreground
-            // process name > shell name.
             let fg = session
                 .as_mut()
                 .and_then(|s| s.fg_proc_name().map(|n| n.to_string()));
-            sticky.or(osc).or(fg).unwrap_or_else(|| {
+            // The name is the stable identity: OSC title → foreground
+            // process → shell name. Claude's spinner is layered on as
+            // *just its glyph* (`name ✽`) — the name stays put so a
+            // thinking tab is still tellable apart from its siblings;
+            // the status word ("Wandering…") would crowd it out.
+            let name = osc.or(fg).unwrap_or_else(|| {
                 session
                     .as_ref()
                     .map(|s| s.shell_name().to_string())
                     .unwrap_or_else(|| "shell".to_string())
-            })
+            });
+            match sticky.as_deref().and_then(|s| s.chars().next()) {
+                Some(glyph) => format!("{name} {glyph}"),
+                None => name,
+            }
         }
         PaneKind::Native {
             conn, client_title, ..
