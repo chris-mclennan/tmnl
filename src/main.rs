@@ -3291,4 +3291,192 @@ mod tests {
         assert_ne!(window.cells[0].attrs & ATTR_CURSOR_BLOCK, 0);
         assert_eq!(window.cells[11].attrs & ATTR_CURSOR_BLOCK, 0);
     }
+
+    #[test]
+    fn box_glyph_picks_the_right_junction() {
+        // Straight runs.
+        assert_eq!(box_glyph(true, true, false, false), '│');
+        assert_eq!(box_glyph(false, false, true, true), '─');
+        // T-junctions.
+        assert_eq!(box_glyph(true, true, false, true), '├');
+        assert_eq!(box_glyph(true, true, true, false), '┤');
+        assert_eq!(box_glyph(false, true, true, true), '┬');
+        assert_eq!(box_glyph(true, false, true, true), '┴');
+        // Corners.
+        assert_eq!(box_glyph(false, true, false, true), '┌');
+        assert_eq!(box_glyph(false, true, true, false), '┐');
+        assert_eq!(box_glyph(true, false, false, true), '└');
+        assert_eq!(box_glyph(true, false, true, false), '┘');
+        // A 4-way cross, and the lone-cell fallback.
+        assert_eq!(box_glyph(true, true, true, true), '┼');
+        assert_eq!(box_glyph(false, false, false, false), '│');
+    }
+
+    #[test]
+    fn dim_fg_fades_toward_the_background() {
+        // 40% of the way from white toward black ⇒ 0.6 grey.
+        let dimmed = dim_fg([1.0, 1.0, 1.0, 1.0], [0.0, 0.0, 0.0, 1.0]);
+        assert!((dimmed[0] - 0.6).abs() < 1e-6);
+        assert_eq!(dimmed[3], 1.0); // alpha untouched
+        // fg already equal to bg ⇒ no change.
+        assert_eq!(dim_fg([0.5; 4], [0.5; 4]), [0.5; 4]);
+    }
+
+    #[test]
+    fn first_button_finds_the_lowest_set_bit() {
+        assert_eq!(first_button(0), BUTTON_NONE);
+        assert_eq!(first_button(1 << BUTTON_LEFT), BUTTON_LEFT);
+        assert_eq!(first_button(1 << BUTTON_RIGHT), BUTTON_RIGHT);
+        // Left + Right both held — the lowest (Left) wins.
+        assert_eq!(
+            first_button((1 << BUTTON_LEFT) | (1 << BUTTON_RIGHT)),
+            BUTTON_LEFT
+        );
+    }
+
+    #[test]
+    fn arg_f32_parses_a_flag_value() {
+        let argv = vec!["--inset".to_string(), "12.5".to_string()];
+        assert_eq!(arg_f32(&argv, "--inset"), Some(12.5));
+        assert_eq!(arg_f32(&argv, "--missing"), None);
+        // Present but unparseable.
+        let bad = vec!["--inset".to_string(), "huge".to_string()];
+        assert_eq!(arg_f32(&bad, "--inset"), None);
+        // Present but nothing follows.
+        assert_eq!(arg_f32(&["--inset".to_string()], "--inset"), None);
+    }
+
+    #[test]
+    fn pack_mods_maps_each_modifier_bit() {
+        assert_eq!(pack_mods(ModifiersState::empty()), 0);
+        assert_eq!(pack_mods(ModifiersState::SHIFT), MOD_SHIFT);
+        assert_eq!(pack_mods(ModifiersState::CONTROL), MOD_CTRL);
+        assert_eq!(pack_mods(ModifiersState::ALT), MOD_ALT);
+        assert_eq!(pack_mods(ModifiersState::SUPER), MOD_SUPER);
+        assert_eq!(
+            pack_mods(ModifiersState::SHIFT | ModifiersState::CONTROL),
+            MOD_SHIFT | MOD_CTRL
+        );
+    }
+
+    #[test]
+    fn pack_mods_cmd_to_ctrl_folds_super_into_ctrl() {
+        // ⌘ alone lands as Ctrl on the wire.
+        assert_eq!(pack_mods_cmd_to_ctrl(ModifiersState::SUPER), MOD_CTRL);
+        assert_eq!(pack_mods_cmd_to_ctrl(ModifiersState::CONTROL), MOD_CTRL);
+        // ⌘ + ⌃ together don't double-count.
+        assert_eq!(
+            pack_mods_cmd_to_ctrl(ModifiersState::SUPER | ModifiersState::CONTROL),
+            MOD_CTRL
+        );
+        assert_eq!(
+            pack_mods_cmd_to_ctrl(ModifiersState::SUPER | ModifiersState::SHIFT),
+            MOD_CTRL | MOD_SHIFT
+        );
+    }
+
+    #[test]
+    fn translate_key_maps_named_and_char_keys() {
+        use winit::keyboard::{Key, NamedKey};
+        let none = ModifiersState::empty();
+        assert!(matches!(
+            translate_key(&Key::Named(NamedKey::Enter), none),
+            Some(KeyCode::Enter)
+        ));
+        assert!(matches!(
+            translate_key(&Key::Named(NamedKey::ArrowLeft), none),
+            Some(KeyCode::Left)
+        ));
+        assert!(matches!(
+            translate_key(&Key::Named(NamedKey::F5), none),
+            Some(KeyCode::F(5))
+        ));
+        // Tab → Tab; Shift+Tab → BackTab.
+        assert!(matches!(
+            translate_key(&Key::Named(NamedKey::Tab), none),
+            Some(KeyCode::Tab)
+        ));
+        assert!(matches!(
+            translate_key(&Key::Named(NamedKey::Tab), ModifiersState::SHIFT),
+            Some(KeyCode::BackTab)
+        ));
+        // A character key.
+        assert!(matches!(
+            translate_key(&Key::Character("k".into()), none),
+            Some(KeyCode::Char('k'))
+        ));
+    }
+
+    #[test]
+    fn draw_ghost_writes_dim_cells_and_clips_at_the_end() {
+        let mut g = Grid::new(6, 1, CLEAR_BG);
+        draw_ghost(&mut g, 2, "hello");
+        // "hell" fits at indices 2..=5; the final "o" is past the grid.
+        assert_eq!(g.cells[2].ch, 'h');
+        assert_eq!(g.cells[5].ch, 'l');
+        assert_eq!(g.cells[2].fg, DIM_FG);
+        assert!(!g.cells.iter().any(|c| c.ch == 'o'));
+    }
+
+    #[test]
+    fn apply_frame_to_grid_writes_runs_and_the_cursor() {
+        use super::protocol::{DiffRun, Frame, WireCell};
+        let mut g = Grid::new(4, 2, CLEAR_BG);
+        let mut last_cursor = None;
+        // A run of two cells from index 1: 'A', 'B'.
+        let frame = Frame {
+            seq: 0,
+            cols: 4,
+            rows: 2,
+            cursor_col: 2,
+            cursor_row: 1,
+            cursor_shape: 0,
+            cursor_visible: 1,
+            runs: vec![DiffRun {
+                start: 1,
+                cells: vec![
+                    WireCell {
+                        ch: 'A' as u32,
+                        fg: 0,
+                        bg: 0,
+                        attrs: 0,
+                    },
+                    WireCell {
+                        ch: 'B' as u32,
+                        fg: 0,
+                        bg: 0,
+                        attrs: 0,
+                    },
+                ],
+            }],
+        };
+        apply_frame_to_grid(&mut g, &mut last_cursor, &frame);
+        assert_eq!(g.cells[1].ch, 'A');
+        assert_eq!(g.cells[2].ch, 'B');
+        // Cursor at (col 2, row 1) ⇒ index 1*4 + 2 = 6, block bit set.
+        assert_eq!(last_cursor, Some(6));
+        assert_ne!(g.cells[6].attrs & ATTR_CURSOR_BLOCK, 0);
+    }
+
+    #[test]
+    fn apply_frame_to_grid_clears_the_previous_cursor() {
+        use super::protocol::Frame;
+        let mut g = Grid::new(4, 2, CLEAR_BG);
+        let mut last_cursor = Some(3);
+        g.cells[3].attrs |= ATTR_CURSOR_BLOCK;
+        // A frame whose cursor is hidden — the old overlay bit clears.
+        let frame = Frame {
+            seq: 1,
+            cols: 4,
+            rows: 2,
+            cursor_col: 0,
+            cursor_row: 0,
+            cursor_shape: 0,
+            cursor_visible: 0,
+            runs: vec![],
+        };
+        apply_frame_to_grid(&mut g, &mut last_cursor, &frame);
+        assert_eq!(last_cursor, None);
+        assert_eq!(g.cells[3].attrs & ATTR_CURSOR_BLOCK, 0);
+    }
 }

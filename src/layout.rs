@@ -574,4 +574,50 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn divider_lines_one_horizontal_split() {
+        let l = Layout::Split {
+            dir: SplitDir::Horizontal,
+            ratio: 0.5,
+            first: Box::new(Layout::Leaf(0)),
+            second: Box::new(Layout::Leaf(1)),
+        };
+        // 25 tall → 24 usable, 12/12 with the divider as row 12.
+        let d = l.divider_lines(Rect::new(0, 0, 80, 25));
+        assert_eq!(d, vec![(Rect::new(0, 12, 80, 1), SplitDir::Horizontal)]);
+    }
+
+    #[test]
+    fn resize_split_at_clamps_so_neither_pane_collapses() {
+        let mut l = Layout::Split {
+            dir: SplitDir::Vertical,
+            ratio: 0.5,
+            first: Box::new(Layout::Leaf(0)),
+            second: Box::new(Layout::Leaf(1)),
+        };
+        let area = Rect::new(0, 0, 101, 24);
+        // Drag the divider hard against the left edge — the first pane
+        // keeps a sliver rather than collapsing to zero.
+        l.resize_split_at(area, 0, 0, 12);
+        assert!(l.leaf_rects(area)[0].1.w > 0);
+        // Drag hard right — now the second pane keeps a sliver.
+        l.resize_split_at(area, 0, 100, 12);
+        assert!(l.leaf_rects(area)[1].1.w > 0);
+    }
+
+    #[test]
+    fn pane_at_returns_none_on_a_divider() {
+        let l = Layout::Split {
+            dir: SplitDir::Horizontal,
+            ratio: 0.5,
+            first: Box::new(Layout::Leaf(0)),
+            second: Box::new(Layout::Leaf(1)),
+        };
+        let area = Rect::new(0, 0, 80, 25);
+        // Row 12 is the divider strip — it belongs to no pane.
+        assert_eq!(l.pane_at(area, 40, 12), None);
+        assert_eq!(l.pane_at(area, 40, 5), Some(0));
+        assert_eq!(l.pane_at(area, 40, 20), Some(1));
+    }
 }
