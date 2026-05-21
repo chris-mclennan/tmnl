@@ -84,6 +84,10 @@ const STRIP_BG: [f32; 4] = [0.133, 0.149, 0.180, 1.0];
 const TEXT_FG: [f32; 4] = [0.86, 0.87, 0.92, 1.0];
 const ACCENT_FG: [f32; 4] = [0.93, 0.73, 0.45, 1.0];
 const DIM_FG: [f32; 4] = [0.48, 0.50, 0.58, 1.0];
+/// How far a non-focused split pane's text is faded toward its own
+/// background — the focus cue. Per-pane, so it sidesteps the
+/// shared-divider-cell problem the old divider tint had.
+const INACTIVE_DIM: f32 = 0.4;
 const ATTR_CURSOR_BLOCK: u32 = 1 << 16;
 const ATTR_CURSOR_UNDERLINE: u32 = 1 << 17;
 const ATTR_CURSOR_BAR: u32 = 1 << 18;
@@ -2729,10 +2733,22 @@ fn composite(tab: &Tab, window: &mut grid::Grid) {
     paint_dividers(window, &tab.layout.divider_lines(area));
 }
 
+/// Fade `fg` toward `bg` by [`INACTIVE_DIM`] — a non-focused split
+/// pane's text, lower-contrast so the focused pane reads as active.
+fn dim_fg(fg: [f32; 4], bg: [f32; 4]) -> [f32; 4] {
+    [
+        fg[0] + (bg[0] - fg[0]) * INACTIVE_DIM,
+        fg[1] + (bg[1] - fg[1]) * INACTIVE_DIM,
+        fg[2] + (bg[2] - fg[2]) * INACTIVE_DIM,
+        fg[3],
+    ]
+}
+
 /// Blit `src`'s cells into `window` at `rect`'s top-left, clipped to
 /// `rect`, to `src`'s own extent, and to the window's bounds. Only the
-/// focused pane draws a cursor — for every other pane the cursor
-/// overlay bits are stripped as the cells are copied.
+/// focused pane draws a cursor + full-bright text; every other pane
+/// has its cursor overlay bits stripped and its text dimmed as the
+/// cells are copied — the focus cue.
 fn blit_pane(src: &grid::Grid, rect: Rect, window: &mut grid::Grid, focused: bool) {
     let cols = rect.w.min(src.cols).min(window.cols.saturating_sub(rect.x)) as usize;
     let rows = rect.h.min(src.rows).min(window.rows.saturating_sub(rect.y));
@@ -2747,6 +2763,7 @@ fn blit_pane(src: &grid::Grid, rect: Rect, window: &mut grid::Grid, focused: boo
             for (dc, sc) in dst.iter_mut().zip(src_row) {
                 let mut cell = *sc;
                 cell.attrs &= !(ATTR_CURSOR_BLOCK | ATTR_CURSOR_UNDERLINE | ATTR_CURSOR_BAR);
+                cell.fg = dim_fg(cell.fg, cell.bg);
                 *dc = cell;
             }
         }
@@ -3184,6 +3201,17 @@ mod tests {
         assert_eq!(at(10, 0), '│'); // divider column
         assert_eq!(at(11, 0), 'B');
         assert_eq!(at(20, 0), 'B');
+    }
+
+    #[test]
+    fn composite_dims_unfocused_panes() {
+        // Focus the left pane; the right (unfocused) pane's text fades.
+        let mut window = Grid::new(21, 4, CLEAR_BG);
+        composite(&two_pane_tab(0), &mut window);
+        // Focused pane 0 keeps full-bright text.
+        assert_eq!(window.cells[0].fg, [1.0; 4]);
+        // Unfocused pane 1 (right half, from col 11) is dimmed.
+        assert_ne!(window.cells[11].fg, [1.0; 4]);
     }
 
     #[test]
