@@ -2037,6 +2037,80 @@ impl App {
         self.relayout_all_panes();
     }
 
+    /// Open a new Native pane running `command args…` as a vertical
+    /// split off the focused pane — the server side of
+    /// `Message::OpenPane`. tmnl mints the socket; the `Launcher`
+    /// appends `--blit <socket>`, so `command` is the bare program
+    /// (e.g. `mixr`). Used by mnml's `mixr.show` to bring mixr up
+    /// beside the editor instead of nesting it as an mnml pty pane.
+    fn open_pane_with_command(&mut self, command: String, args: Vec<String>) {
+        let (cols, rows) = match self.gpu.as_ref() {
+            Some(gpu) => (gpu.grid.cols, gpu.grid.rows),
+            None => return,
+        };
+        let socket_path = native_tab_socket_path(self.native_tab_nonce);
+        self.native_tab_nonce = self.native_tab_nonce.saturating_add(1);
+        let server = match Server::start(socket_path.clone()) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("tmnl: open-pane server start failed: {e}");
+                return;
+            }
+        };
+        // cwd: reuse the editor template's workspace when there is one,
+        // else the process cwd — the launched program keys off its own
+        // config ($HOME), so this is just a sane default.
+        let workspace = self
+            .editor_template
+            .as_ref()
+            .map(|t| t.workspace.clone())
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+        let label = std::path::Path::new(&command)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("app")
+            .to_string();
+        let cfg = LauncherConfig {
+            command: std::path::PathBuf::from(&command),
+            workspace,
+            socket: socket_path.clone(),
+            extra_args: args,
+        };
+        let mut l = Launcher::new(cfg);
+        let launcher = match l.spawn() {
+            Ok(()) => Some(l),
+            Err(e) => {
+                eprintln!(
+                    "tmnl: open-pane launch failed ({e}); start it manually with --blit {}",
+                    socket_path.display()
+                );
+                None
+            }
+        };
+        let mut grid = grid::Grid::new(cols, rows, CLEAR_BG);
+        paint_idle(&mut grid, ConnState::Waiting, &socket_path);
+        let pane = Pane {
+            kind: PaneKind::Native {
+                server,
+                conn: ConnState::Waiting,
+                launcher,
+                client_title: None,
+            },
+            grid,
+            last_cursor: None,
+            label,
+            attention: false,
+            last_status: None,
+        };
+        let tab = &mut self.tabs[self.active];
+        let new_id = tab.panes.len();
+        tab.panes.push(pane);
+        tab.layout
+            .split_leaf(tab.focused, SplitDir::Vertical, new_id);
+        tab.focused = new_id;
+        self.relayout_all_panes();
+    }
+
     /// Close the focused pane — its split collapses so the sibling
     /// takes the freed space. Closing a tab's last pane closes the
     /// whole tab.
@@ -2345,6 +2419,11 @@ impl App {
             }
         }
 
+        // Sibling-pane requests from the focused native client
+        // (`Message::OpenPane`) — collected during the focused-pane
+        // tick, applied below once the pane borrow is released.
+        let mut open_pane_reqs: Vec<(String, Vec<String>)> = Vec::new();
+
         // Tick the active tab's focused pane.
         let want_ghost_refresh = self.fim_redraw;
         let focused = self.tabs[self.active].focused;
@@ -2404,6 +2483,9 @@ impl App {
                             ServerEvent::Title(s) => {
                                 *client_title = Some(s);
                             }
+                            ServerEvent::OpenPane { command, args } => {
+                                open_pane_reqs.push((command, args));
+                            }
                         }
                     }
                     // Diffs are cumulative — apply every frame in order.
@@ -2438,6 +2520,13 @@ impl App {
                     }
                 }
             }
+        }
+
+        // A focused native client asked to open a sibling pane
+        // (mnml's `mixr.show`) — honor it now the pane borrow is
+        // released.
+        for (command, args) in open_pane_reqs.drain(..) {
+            self.open_pane_with_command(command, args);
         }
 
         // Overlay the AI ghost suggestion, or a "generating…"
@@ -2964,6 +3053,9 @@ fn tick_secondary_pane(pane: &mut Pane, visible: bool) {
                     ServerEvent::Title(s) => {
                         *client_title = Some(s);
                     }
+                    // A non-focused pane can't be interacted with to
+                    // trigger an OpenPane — drop it.
+                    ServerEvent::OpenPane { .. } => {}
                 }
             }
             while let Ok(f) = server.frame_rx.try_recv() {

@@ -24,6 +24,13 @@ pub enum ServerEvent {
     /// updates the Native tab's label to this string. Repeated
     /// titles overwrite (each Title replaces the previous one).
     Title(String),
+    /// Client asked to open a sibling pane running `command args…`
+    /// (`Message::OpenPane`) — e.g. mnml's `mixr.show`. The renderer
+    /// splits + launches it as a native client.
+    OpenPane {
+        command: String,
+        args: Vec<String>,
+    },
 }
 
 impl Server {
@@ -166,6 +173,15 @@ fn reader_loop(
                     break;
                 }
             }
+            Ok(Message::OpenPane { command, args }) => {
+                if event_tx
+                    .send(ServerEvent::OpenPane { command, args })
+                    .is_err()
+                {
+                    log::warn!("event_tx.send(OpenPane) failed; reader exiting");
+                    break;
+                }
+            }
             Err(e) => {
                 if e.kind() != std::io::ErrorKind::UnexpectedEof {
                     log::warn!("read error: {e:?}");
@@ -299,6 +315,31 @@ mod tests {
         match roundtrip(&Message::Title("mnml · src/main.rs".to_string())) {
             Message::Title(s) => assert_eq!(s, "mnml · src/main.rs"),
             m => panic!("expected Title, got {m:?}"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_open_pane() {
+        match roundtrip(&Message::OpenPane {
+            command: "mixr".to_string(),
+            args: vec!["--dashboard".to_string(), "x".to_string()],
+        }) {
+            Message::OpenPane { command, args } => {
+                assert_eq!(command, "mixr");
+                assert_eq!(args, vec!["--dashboard".to_string(), "x".to_string()]);
+            }
+            m => panic!("expected OpenPane, got {m:?}"),
+        }
+        // No-args form.
+        match roundtrip(&Message::OpenPane {
+            command: "mixr".to_string(),
+            args: vec![],
+        }) {
+            Message::OpenPane { command, args } => {
+                assert_eq!(command, "mixr");
+                assert!(args.is_empty());
+            }
+            m => panic!("expected OpenPane, got {m:?}"),
         }
     }
 
