@@ -815,3 +815,94 @@ mod scan_tests {
         assert!(flag_after(&[b"hello \x1b]1337;Notify=ok\x07 world",]));
     }
 }
+
+#[cfg(test)]
+mod encode_tests {
+    use super::*;
+
+    fn ch(s: &str, mods: ModifiersState) -> Option<Vec<u8>> {
+        winit_key_to_bytes(&Key::Character(s.into()), mods)
+    }
+    fn named(n: NamedKey) -> Option<Vec<u8>> {
+        winit_key_to_bytes(&Key::Named(n), ModifiersState::empty())
+    }
+
+    #[test]
+    fn plain_chars_pass_through_as_utf8() {
+        assert_eq!(ch("a", ModifiersState::empty()), Some(b"a".to_vec()));
+        // A non-ASCII char keeps its multi-byte UTF-8 encoding.
+        assert_eq!(
+            ch("é", ModifiersState::empty()),
+            Some("é".as_bytes().to_vec())
+        );
+    }
+
+    #[test]
+    fn ctrl_letters_encode_as_control_bytes() {
+        assert_eq!(ch("c", ModifiersState::CONTROL), Some(vec![0x03])); // ^C
+        assert_eq!(ch("a", ModifiersState::CONTROL), Some(vec![0x01])); // ^A
+        // Ctrl is case-insensitive — ^C and Ctrl+Shift+C both give 0x03.
+        assert_eq!(
+            ch("C", ModifiersState::CONTROL | ModifiersState::SHIFT),
+            Some(vec![0x03])
+        );
+        // The non-letter control slots.
+        assert_eq!(ch(" ", ModifiersState::CONTROL), Some(vec![0])); // ^Space
+        assert_eq!(ch("[", ModifiersState::CONTROL), Some(vec![0x1b])); // ^[ == Esc
+        assert_eq!(ch("\\", ModifiersState::CONTROL), Some(vec![0x1c]));
+    }
+
+    #[test]
+    fn alt_prefixes_a_char_with_escape() {
+        assert_eq!(ch("x", ModifiersState::ALT), Some(vec![0x1b, b'x']));
+    }
+
+    #[test]
+    fn named_keys_encode_to_their_terminal_sequences() {
+        assert_eq!(named(NamedKey::Enter), Some(b"\r".to_vec()));
+        assert_eq!(named(NamedKey::Backspace), Some(b"\x7f".to_vec()));
+        assert_eq!(named(NamedKey::Tab), Some(b"\t".to_vec()));
+        assert_eq!(named(NamedKey::Escape), Some(b"\x1b".to_vec()));
+        // Arrows — CSI cursor sequences.
+        assert_eq!(named(NamedKey::ArrowUp), Some(b"\x1b[A".to_vec()));
+        assert_eq!(named(NamedKey::ArrowDown), Some(b"\x1b[B".to_vec()));
+        assert_eq!(named(NamedKey::ArrowRight), Some(b"\x1b[C".to_vec()));
+        assert_eq!(named(NamedKey::ArrowLeft), Some(b"\x1b[D".to_vec()));
+        // Navigation + editing.
+        assert_eq!(named(NamedKey::Home), Some(b"\x1b[H".to_vec()));
+        assert_eq!(named(NamedKey::PageUp), Some(b"\x1b[5~".to_vec()));
+        assert_eq!(named(NamedKey::Delete), Some(b"\x1b[3~".to_vec()));
+        // Function keys — F1–F4 use SS3, F5+ use CSI.
+        assert_eq!(named(NamedKey::F1), Some(b"\x1bOP".to_vec()));
+        assert_eq!(named(NamedKey::F5), Some(b"\x1b[15~".to_vec()));
+        assert_eq!(named(NamedKey::F12), Some(b"\x1b[24~".to_vec()));
+    }
+
+    #[test]
+    fn ansi_color_covers_the_three_palette_ranges() {
+        // The 16 themed slots: index 15 is white.
+        assert_eq!(ansi_color(15), [1.0, 1.0, 1.0, 1.0]);
+        // The 6×6×6 cube: index 16 is its black corner.
+        assert_eq!(ansi_color(16), [0.0, 0.0, 0.0, 1.0]);
+        // The 24-step grayscale ramp: 232 is the darkest (value 8).
+        let v = 8.0 / 255.0;
+        assert_eq!(ansi_color(232), [v, v, v, 1.0]);
+    }
+
+    #[test]
+    fn vt_color_to_rgba_handles_each_color_kind() {
+        let default = [0.5, 0.5, 0.5, 1.0];
+        // Default defers to the supplied fallback.
+        assert_eq!(vt_color_to_rgba(vt100::Color::Default, default), default);
+        // A true-color RGB maps straight through.
+        assert_eq!(
+            vt_color_to_rgba(vt100::Color::Rgb(255, 0, 0), default),
+            [1.0, 0.0, 0.0, 1.0]
+        );
+        // An indexed color routes through the ANSI palette.
+        assert_eq!(
+            vt_color_to_rgba(vt100::Color::Idx(15), default),
+            ansi_color(15)
+        );
+    }
+}
