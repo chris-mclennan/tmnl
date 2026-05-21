@@ -26,7 +26,7 @@ use atlas::Atlas;
 use config::Config;
 use grid::Grid;
 use launcher::{Launcher, LauncherConfig, LauncherPoll};
-use layout::{Layout, PaneId, Rect};
+use layout::{Layout, PaneId, Rect, SplitDir};
 use menu::AppMenu;
 use pipeline::CellPipeline;
 use protocol::{
@@ -2458,31 +2458,90 @@ fn draw_ghost(grid: &mut grid::Grid, start: usize, text: &str) {
 
 /// Composite a tab's panes into the window grid the GPU renders.
 /// Splits the window `Rect` per `tab.layout` into one sub-rect per
-/// leaf, then blits each pane's grid into its rect. Phase 1 of the
-/// splits work: a tab has exactly one leaf, so there is one rect that
-/// fills the window. Phase 2 adds N leaves + divider lines on top of
-/// the same recursion.
+/// leaf, blits each pane's grid into its rect, then paints the divider
+/// lines between splits. The divider segments bordering the focused
+/// pane are tinted so focus is visible at a glance. Phase 1 had a
+/// single leaf; Phase 2 makes it N leaves + dividers — both ride the
+/// same `leaf_rects` / `divider_lines` recursion.
 fn composite(tab: &Tab, window: &mut grid::Grid) {
-    // Uncovered cells (divider gaps, mid-resize mismatch) read as
-    // background — clear first, then blit each leaf over the top.
+    // Uncovered cells (a pane grid briefly smaller than its rect
+    // mid-resize) read as background — clear first, then paint over.
     window.clear();
     let area = Rect::new(0, 0, window.cols, window.rows);
-    for (pane_id, rect) in tab.layout.leaf_rects(area) {
-        if let Some(pane) = tab.panes.get(pane_id) {
-            blit_pane(&pane.grid, rect, window);
+    let leaves = tab.layout.leaf_rects(area);
+    // The focused pane's rect — used to tint its divider edges.
+    let focus_rect = leaves
+        .iter()
+        .find(|(id, _)| *id == tab.focused)
+        .map(|(_, r)| *r);
+    for (pane_id, rect) in &leaves {
+        if let Some(pane) = tab.panes.get(*pane_id) {
+            blit_pane(&pane.grid, *rect, window, *pane_id == tab.focused);
         }
+    }
+    for (line, dir) in tab.layout.divider_lines(area) {
+        paint_divider(window, line, dir, focus_rect);
     }
 }
 
 /// Blit `src`'s cells into `window` at `rect`'s top-left, clipped to
-/// `rect`, to `src`'s own extent, and to the window's bounds.
-fn blit_pane(src: &grid::Grid, rect: Rect, window: &mut grid::Grid) {
+/// `rect`, to `src`'s own extent, and to the window's bounds. Only the
+/// focused pane draws a cursor — for every other pane the cursor
+/// overlay bits are stripped as the cells are copied.
+fn blit_pane(src: &grid::Grid, rect: Rect, window: &mut grid::Grid, focused: bool) {
     let cols = rect.w.min(src.cols).min(window.cols.saturating_sub(rect.x)) as usize;
     let rows = rect.h.min(src.rows).min(window.rows.saturating_sub(rect.y));
     for r in 0..rows {
         let s = (r * src.cols) as usize;
         let d = ((rect.y + r) * window.cols + rect.x) as usize;
-        window.cells[d..d + cols].copy_from_slice(&src.cells[s..s + cols]);
+        let dst = &mut window.cells[d..d + cols];
+        let src_row = &src.cells[s..s + cols];
+        if focused {
+            dst.copy_from_slice(src_row);
+        } else {
+            for (dc, sc) in dst.iter_mut().zip(src_row) {
+                let mut cell = *sc;
+                cell.attrs &= !(ATTR_CURSOR_BLOCK | ATTR_CURSOR_UNDERLINE | ATTR_CURSOR_BAR);
+                *dc = cell;
+            }
+        }
+    }
+}
+
+/// Paint a divider strip with `│` / `─` glyphs. Cells whose 4-neighbour
+/// touches the focused pane's rect are tinted `ACCENT_FG`; the rest
+/// render dim so the divider reads as quiet chrome.
+fn paint_divider(window: &mut grid::Grid, line: Rect, dir: SplitDir, focus_rect: Option<Rect>) {
+    let glyph = match dir {
+        SplitDir::Vertical => '│',
+        SplitDir::Horizontal => '─',
+    };
+    for dy in 0..line.h {
+        for dx in 0..line.w {
+            let x = line.x + dx;
+            let y = line.y + dy;
+            if x >= window.cols || y >= window.rows {
+                continue;
+            }
+            let touches_focus = focus_rect.is_some_and(|f| {
+                [
+                    (x.wrapping_sub(1), y),
+                    (x + 1, y),
+                    (x, y.wrapping_sub(1)),
+                    (x, y + 1),
+                ]
+                .iter()
+                .any(|&(nx, ny)| f.contains(nx, ny))
+            });
+            let fg = if touches_focus { ACCENT_FG } else { DIM_FG };
+            let i = (y * window.cols + x) as usize;
+            window.cells[i] = grid::Cell {
+                ch: glyph,
+                fg,
+                bg: window.cells[i].bg,
+                attrs: 0,
+            };
+        }
     }
 }
 
@@ -2737,4 +2796,91 @@ fn main() {
     };
     event_loop.run_app(&mut app).unwrap();
     drop(app);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A pane whose grid is filled with `ch` — no real session, a
+    /// pure-data fixture for compositor tests.
+    fn filled_pane(cols: u32, rows: u32, ch: char) -> Pane {
+        let mut grid = Grid::new(cols, rows, CLEAR_BG);
+        for cell in &mut grid.cells {
+            cell.ch = ch;
+        }
+        Pane {
+            kind: PaneKind::Shell { session: None },
+            grid,
+            last_cursor: None,
+            label: String::new(),
+            attention: false,
+            last_status: None,
+        }
+    }
+
+    fn two_pane_tab(focused: PaneId) -> Tab {
+        Tab {
+            layout: Layout::Split {
+                dir: SplitDir::Vertical,
+                ratio: 0.5,
+                first: Box::new(Layout::Leaf(0)),
+                second: Box::new(Layout::Leaf(1)),
+            },
+            panes: vec![filled_pane(10, 4, 'A'), filled_pane(10, 4, 'B')],
+            focused,
+            label: String::new(),
+        }
+    }
+
+    #[test]
+    fn composite_single_leaf_fills_the_window() {
+        let tab = Tab {
+            layout: Layout::Leaf(0),
+            panes: vec![filled_pane(10, 4, 'A')],
+            focused: 0,
+            label: String::new(),
+        };
+        let mut window = Grid::new(10, 4, CLEAR_BG);
+        composite(&tab, &mut window);
+        assert!(window.cells.iter().all(|c| c.ch == 'A'));
+    }
+
+    #[test]
+    fn composite_tiles_two_panes_with_a_divider() {
+        // 21 wide ⇒ 20 usable, 10/10 either side of a 1-col divider.
+        let mut window = Grid::new(21, 4, CLEAR_BG);
+        composite(&two_pane_tab(0), &mut window);
+        let at = |x: u32, y: u32| window.cells[(y * 21 + x) as usize].ch;
+        assert_eq!(at(0, 0), 'A');
+        assert_eq!(at(9, 0), 'A');
+        assert_eq!(at(10, 0), '│'); // divider column
+        assert_eq!(at(11, 0), 'B');
+        assert_eq!(at(20, 0), 'B');
+    }
+
+    #[test]
+    fn composite_divider_tints_toward_the_focused_pane() {
+        // Focus the left pane — the divider tints accent.
+        let mut window = Grid::new(21, 4, CLEAR_BG);
+        composite(&two_pane_tab(0), &mut window);
+        assert_eq!(window.cells[10].fg, ACCENT_FG);
+        // An out-of-range focus ⇒ no focus rect ⇒ dim divider.
+        composite(&two_pane_tab(9), &mut window);
+        assert_eq!(window.cells[10].fg, DIM_FG);
+    }
+
+    #[test]
+    fn composite_strips_the_cursor_from_unfocused_panes() {
+        let mut tab = two_pane_tab(0);
+        // A cursor overlay bit on cell 0 of each pane.
+        tab.panes[0].grid.cells[0].attrs |= ATTR_CURSOR_BLOCK;
+        tab.panes[1].grid.cells[0].attrs |= ATTR_CURSOR_BLOCK;
+        let mut window = Grid::new(21, 4, CLEAR_BG);
+        composite(&tab, &mut window);
+        // Focused pane 0 keeps its cursor; pane 1's (at window col 11)
+        // is stripped.
+        assert_ne!(window.cells[0].attrs & ATTR_CURSOR_BLOCK, 0);
+        assert_eq!(window.cells[11].attrs & ATTR_CURSOR_BLOCK, 0);
+    }
 }
