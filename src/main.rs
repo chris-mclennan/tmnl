@@ -95,6 +95,15 @@ enum ConnState {
     Streaming,
 }
 
+/// A four-way direction for `⌘⌥`-arrow split-pane focus movement.
+#[derive(Clone, Copy)]
+enum FocusDir {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
 /// The leaf payload of a pane — what `Tab.mode` used to hold before
 /// the splits refactor. Renamed from `Mode`; otherwise unchanged.
 enum PaneKind {
@@ -953,11 +962,9 @@ impl ApplicationHandler for App {
                 if let Some(w) = &self.window {
                     w.request_redraw();
                 }
-                // Resize every pane's grid to match the new window size
-                // (Phase 1: one pane per tab, each filling the window)
-                // and forward the size to each pane's session.
-                if let Some((cols, rows)) = resize {
-                    self.resize_all_panes(cols, rows);
+                // Re-lay-out every tab's panes to the new window size.
+                if resize.is_some() {
+                    self.relayout_all_panes();
                 }
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
@@ -1004,10 +1011,30 @@ impl ApplicationHandler for App {
                             return;
                         }
                         (Some('w'), true) => {
-                            // ⌘⇧W — explicit "close the entire tmnl tab"
-                            // even on Native tabs, in case the user really
-                            // wants out (the bare ⌘W now stays inside mnml).
-                            self.close_active_tab(event_loop);
+                            // ⌘⇧W — close the focused split pane. Its
+                            // split collapses so the sibling takes the
+                            // freed space; closing the tab's last pane
+                            // closes the whole tab.
+                            self.close_focused_pane(event_loop);
+                            if let Some(w) = &self.window {
+                                w.request_redraw();
+                            }
+                            return;
+                        }
+                        (Some('d'), false) => {
+                            // ⌘D — split the focused pane right (a fresh
+                            // shell pane to the right). tmnl-level —
+                            // never forwarded to the hosted process.
+                            self.split_active_pane(SplitDir::Vertical);
+                            if let Some(w) = &self.window {
+                                w.request_redraw();
+                            }
+                            return;
+                        }
+                        (Some('d'), true) => {
+                            // ⌘⇧D — split the focused pane down (a fresh
+                            // shell pane below).
+                            self.split_active_pane(SplitDir::Horizontal);
                             if let Some(w) = &self.window {
                                 w.request_redraw();
                             }
@@ -1157,6 +1184,28 @@ impl ApplicationHandler for App {
                         _ => {}
                     }
                 }
+                // ⌘⌥ + Arrow — move focus to the split pane in that
+                // direction. tmnl-level (consumed, never forwarded) so
+                // it works in both Shell and Native tabs.
+                if self.mods.super_key()
+                    && self.mods.alt_key()
+                    && let Key::Named(nk) = &ke.logical_key
+                {
+                    let dir = match nk {
+                        NamedKey::ArrowLeft => Some(FocusDir::Left),
+                        NamedKey::ArrowRight => Some(FocusDir::Right),
+                        NamedKey::ArrowUp => Some(FocusDir::Up),
+                        NamedKey::ArrowDown => Some(FocusDir::Down),
+                        _ => None,
+                    };
+                    if let Some(dir) = dir {
+                        self.focus_dir(dir);
+                        if let Some(w) = &self.window {
+                            w.request_redraw();
+                        }
+                        return;
+                    }
+                }
                 // ⌘I — AI completion of the current command line.
                 // ⌘K — generate a command from a typed description.
                 if self.mods.super_key()
@@ -1288,32 +1337,34 @@ impl ApplicationHandler for App {
                         }
                         return;
                     }
-                    if let PaneKind::Native { server, .. } =
-                        &self.tabs[self.active].focused_pane().kind
-                        && prev != self.cursor_cell
+                    // Route hover / drag to the pane under the cursor,
+                    // in that pane's local coordinates. A Native client
+                    // needs Moved events for hover tooltips / divider
+                    // highlights; a plain shell only gets motion under
+                    // ?1003h but a Native tab always wants them.
+                    if prev != self.cursor_cell
+                        && let Some((id, lc, lr)) = self.pane_under_cursor()
                     {
-                        // Button held → Drag; no button → Moved (bare
-                        // hover). The Native client needs Moved events
-                        // for hover tooltips / divider highlights — a
-                        // plain terminal only gets motion under ?1003h,
-                        // but a Native tab always wants them.
-                        if self.buttons_down != 0 {
-                            let button = first_button(self.buttons_down);
-                            server.send_input(&InputEvent::Mouse(MouseInput {
-                                kind: MouseKind::Drag,
-                                button,
-                                col,
-                                row,
-                                mods: pack_mods(self.mods),
-                            }));
-                        } else {
-                            server.send_input(&InputEvent::Mouse(MouseInput {
-                                kind: MouseKind::Moved,
-                                button: BUTTON_NONE,
-                                col,
-                                row,
-                                mods: pack_mods(self.mods),
-                            }));
+                        let held = self.buttons_down != 0;
+                        let mouse = MouseInput {
+                            kind: if held {
+                                MouseKind::Drag
+                            } else {
+                                MouseKind::Moved
+                            },
+                            button: if held {
+                                first_button(self.buttons_down)
+                            } else {
+                                BUTTON_NONE
+                            },
+                            col: lc,
+                            row: lr,
+                            mods: pack_mods(self.mods),
+                        };
+                        if let PaneKind::Native { server, .. } =
+                            &self.tabs[self.active].panes[id].kind
+                        {
+                            server.send_input(&InputEvent::Mouse(mouse));
                         }
                     }
                 }
@@ -1401,20 +1452,28 @@ impl ApplicationHandler for App {
                 if !pressed && button == MouseButton::Left {
                     self.dragging_tab = None;
                 }
-                if let PaneKind::Native { server, .. } = &self.tabs[self.active].focused_pane().kind
-                {
-                    let (col, row) = self.cursor_cell;
-                    server.send_input(&InputEvent::Mouse(MouseInput {
-                        kind: if pressed {
-                            MouseKind::Down
-                        } else {
-                            MouseKind::Up
-                        },
-                        button: b,
-                        col,
-                        row,
-                        mods: pack_mods(self.mods),
-                    }));
+                // Body click — focus the pane under the cursor (on
+                // press) and forward the event to it in that pane's
+                // local coordinates. Shell panes don't take mouse input
+                // yet; only Native panes are forwarded to.
+                if let Some((id, lc, lr)) = self.pane_under_cursor() {
+                    if pressed {
+                        self.tabs[self.active].focused = id;
+                    }
+                    if let PaneKind::Native { server, .. } = &self.tabs[self.active].panes[id].kind
+                    {
+                        server.send_input(&InputEvent::Mouse(MouseInput {
+                            kind: if pressed {
+                                MouseKind::Down
+                            } else {
+                                MouseKind::Up
+                            },
+                            button: b,
+                            col: lc,
+                            row: lr,
+                            mods: pack_mods(self.mods),
+                        }));
+                    }
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -1432,9 +1491,12 @@ impl ApplicationHandler for App {
                     MouseScrollDelta::LineDelta(x, y) => (x, y),
                     MouseScrollDelta::PixelDelta(p) => (p.x as f32 / 24.0, p.y as f32 / 24.0),
                 };
-                let (col, row) = self.cursor_cell;
+                // Scroll the pane under the cursor (None ⇒ on a divider).
+                let Some((id, col, row)) = self.pane_under_cursor() else {
+                    return;
+                };
                 let mods = pack_mods(self.mods);
-                match &mut self.tabs[self.active].focused_pane_mut().kind {
+                match &mut self.tabs[self.active].panes[id].kind {
                     // Shell mode — scroll vt100's scrollback. Skipped
                     // while a full-screen TUI owns the alt-screen (it
                     // manages its own view). Wheel up → into history.
@@ -1482,8 +1544,7 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 self.tick(event_loop);
                 // Composite the active tab's panes into the window grid
-                // the GPU renders. Phase 1: one pane per tab, so this is
-                // a full-window copy of the focused pane's grid.
+                // the GPU renders.
                 if let Some(gpu) = self.gpu.as_mut() {
                     composite(&self.tabs[self.active], &mut gpu.grid);
                 }
@@ -1834,8 +1895,8 @@ impl App {
     /// Pipe a grid resize (caused by a font-zoom change) out to every
     /// pane — same shape as the window-resize / inset / strip paths.
     fn forward_font_resize(&mut self, resize: Option<(u16, u16)>) {
-        if let Some((cols, rows)) = resize {
-            self.resize_all_panes(cols, rows);
+        if resize.is_some() {
+            self.relayout_all_panes();
         }
     }
 
@@ -1864,24 +1925,33 @@ impl App {
         }
     }
 
-    /// Resize every pane's grid to `(cols, rows)` and forward the new
-    /// size to each pane's session. Phase 1: every pane fills the whole
-    /// window, so all panes share the window-grid dimensions. Called
-    /// whenever the window grid is resized — window resize, font zoom,
-    /// strip-height change, inset change.
-    fn resize_all_panes(&mut self, cols: u16, rows: u16) {
+    /// Resize every pane in every tab to its leaf rect under the
+    /// current window grid, and forward the new size to each pane's
+    /// session. Layout-aware: a tab with splits gets each pane sized to
+    /// its share of the window, not the whole window. Called whenever
+    /// the window grid is resized (window resize, font zoom, strip /
+    /// inset change) OR a tab's layout changes (split / close).
+    fn relayout_all_panes(&mut self) {
+        let (cols, rows) = match self.gpu.as_ref() {
+            Some(gpu) => (gpu.grid.cols, gpu.grid.rows),
+            None => return,
+        };
+        let area = Rect::new(0, 0, cols, rows);
         for tab in self.tabs.iter_mut() {
-            for pane in tab.panes.iter_mut() {
-                pane.grid.resize(cols as u32, rows as u32);
+            for (pane_id, rect) in tab.layout.leaf_rects(area) {
+                let Some(pane) = tab.panes.get_mut(pane_id) else {
+                    continue;
+                };
+                pane.grid.resize(rect.w, rect.h);
                 let Pane { kind, grid, .. } = pane;
                 match kind {
                     PaneKind::Shell { session } => {
                         if let Some(s) = session {
-                            s.resize(rows, cols);
+                            s.resize(rect.h as u16, rect.w as u16);
                         }
                     }
                     PaneKind::Native { server, conn, .. } => {
-                        server.send_resize(cols, rows);
+                        server.send_resize(rect.w as u16, rect.h as u16);
                         // Re-center the idle banner for not-yet-streaming
                         // panes so it isn't stranded off-center.
                         if *conn != ConnState::Streaming {
@@ -1891,6 +1961,95 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Split the focused pane — a fresh shell pane takes half its area.
+    /// `SplitDir::Vertical` puts the new pane to the right, `Horizontal`
+    /// below. The new pane takes focus.
+    fn split_active_pane(&mut self, dir: SplitDir) {
+        let (cols, rows) = match self.gpu.as_ref() {
+            Some(gpu) => (gpu.grid.cols, gpu.grid.rows),
+            None => return,
+        };
+        // New panes are shells (cheap; a Native split is a follow-up).
+        let session = match ShellSession::spawn(rows as u16, cols as u16, TEXT_FG, CLEAR_BG) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("tmnl: split failed: {e}");
+                return;
+            }
+        };
+        let label = session.shell_name().to_string();
+        let tab = &mut self.tabs[self.active];
+        let new_id = tab.panes.len();
+        tab.panes.push(Pane {
+            kind: PaneKind::Shell {
+                session: Some(session),
+            },
+            // relayout_all_panes resizes this to its real leaf rect.
+            grid: grid::Grid::new(cols, rows, CLEAR_BG),
+            last_cursor: None,
+            label,
+            attention: false,
+            last_status: None,
+        });
+        tab.layout.split_leaf(tab.focused, dir, new_id);
+        tab.focused = new_id;
+        self.relayout_all_panes();
+    }
+
+    /// Close the focused pane — its split collapses so the sibling
+    /// takes the freed space. Closing a tab's last pane closes the
+    /// whole tab.
+    fn close_focused_pane(&mut self, event_loop: &ActiveEventLoop) {
+        if self.tabs[self.active].panes.len() <= 1 {
+            self.close_active_tab(event_loop);
+            return;
+        }
+        let tab = &mut self.tabs[self.active];
+        let closed = tab.focused;
+        // The pane to focus next, captured before ids shift.
+        let next = tab.layout.sibling_leaf(closed);
+        if !tab.layout.remove_leaf(closed) {
+            return; // not a leaf in the tree (shouldn't happen)
+        }
+        tab.panes.remove(closed);
+        tab.layout.shift_ids_after_removal(closed);
+        // `next` is in pre-removal id space — shift it the same way.
+        tab.focused = next
+            .map(|id| if id > closed { id - 1 } else { id })
+            .unwrap_or(0);
+        self.relayout_all_panes();
+    }
+
+    /// Move keyboard focus to the pane nearest the focused one in
+    /// `dir`. No-op if there's no pane in that direction.
+    fn focus_dir(&mut self, dir: FocusDir) {
+        let (cols, rows) = match self.gpu.as_ref() {
+            Some(gpu) => (gpu.grid.cols, gpu.grid.rows),
+            None => return,
+        };
+        let area = Rect::new(0, 0, cols, rows);
+        let tab = &mut self.tabs[self.active];
+        let rects = tab.layout.leaf_rects(area);
+        if let Some(id) = nearest_in_dir(&rects, tab.focused, dir) {
+            tab.focused = id;
+        }
+    }
+
+    /// The pane under the mouse cursor + the cursor translated into
+    /// that pane's local cell coordinates. `None` when the cursor is
+    /// on a divider or outside every pane.
+    fn pane_under_cursor(&self) -> Option<(PaneId, u16, u16)> {
+        let gpu = self.gpu.as_ref()?;
+        let area = Rect::new(0, 0, gpu.grid.cols, gpu.grid.rows);
+        let (cx, cy) = (self.cursor_cell.0 as u32, self.cursor_cell.1 as u32);
+        let tab = &self.tabs[self.active];
+        tab.layout
+            .leaf_rects(area)
+            .into_iter()
+            .find(|(_, r)| r.contains(cx, cy))
+            .map(|(id, r)| (id, (cx - r.x) as u16, (cy - r.y) as u16))
     }
 
     /// Ensure the AI completion worker thread is running.
@@ -2110,8 +2269,8 @@ impl App {
             gpu.set_strip_chips(&chips);
             gpu.set_strip_h(target_strip)
         };
-        if let Some((cols, rows)) = strip_resize {
-            self.resize_all_panes(cols, rows);
+        if strip_resize.is_some() {
+            self.relayout_all_panes();
         }
 
         // Shell mode only: auto-switch the inset when a full-screen TUI
@@ -2126,8 +2285,8 @@ impl App {
             self.altscreen_active = altscreen;
             let target_inset = self.cfg.active_inset(altscreen);
             let inset_resize = self.gpu.as_mut().unwrap().set_inset_px(target_inset);
-            if let Some((cols, rows)) = inset_resize {
-                self.resize_all_panes(cols, rows);
+            if inset_resize.is_some() {
+                self.relayout_all_panes();
             }
         }
 
@@ -2337,8 +2496,8 @@ impl App {
             Some(gpu) => gpu.set_inset_px(new_inset),
             None => return,
         };
-        if let Some((cols, rows)) = resize {
-            self.resize_all_panes(cols, rows);
+        if resize.is_some() {
+            self.relayout_all_panes();
         }
     }
 
@@ -2543,6 +2702,39 @@ fn paint_divider(window: &mut grid::Grid, line: Rect, dir: SplitDir, focus_rect:
             };
         }
     }
+}
+
+/// The pane nearest `focused` in direction `dir`, by leaf-rect
+/// centers — only panes that genuinely lie that way qualify. Pure
+/// geometry, so `App::focus_dir` is a thin wrapper that just feeds it
+/// the current layout's rects.
+fn nearest_in_dir(rects: &[(PaneId, Rect)], focused: PaneId, dir: FocusDir) -> Option<PaneId> {
+    let fr = rects
+        .iter()
+        .find(|(id, _)| *id == focused)
+        .map(|(_, r)| *r)?;
+    let (fcx, fcy) = (fr.x + fr.w / 2, fr.y + fr.h / 2);
+    let mut best: Option<(PaneId, u32)> = None;
+    for &(id, r) in rects {
+        if id == focused {
+            continue;
+        }
+        let qualifies = match dir {
+            FocusDir::Left => r.x + r.w <= fr.x,
+            FocusDir::Right => r.x >= fr.x + fr.w,
+            FocusDir::Up => r.y + r.h <= fr.y,
+            FocusDir::Down => r.y >= fr.y + fr.h,
+        };
+        if !qualifies {
+            continue;
+        }
+        let (rcx, rcy) = (r.x + r.w / 2, r.y + r.h / 2);
+        let dist = fcx.abs_diff(rcx) + fcy.abs_diff(rcy);
+        if best.is_none_or(|(_, d)| dist < d) {
+            best = Some((id, dist));
+        }
+    }
+    best.map(|(id, _)| id)
 }
 
 /// Resolve a pane's strip label from its kind, OSC title, and cached
@@ -2868,6 +3060,34 @@ mod tests {
         // An out-of-range focus ⇒ no focus rect ⇒ dim divider.
         composite(&two_pane_tab(9), &mut window);
         assert_eq!(window.cells[10].fg, DIM_FG);
+    }
+
+    #[test]
+    fn nearest_in_dir_picks_the_adjacent_pane() {
+        // 0 | 1 — side by side.
+        let rects = vec![(0, Rect::new(0, 0, 10, 8)), (1, Rect::new(11, 0, 10, 8))];
+        assert_eq!(nearest_in_dir(&rects, 0, FocusDir::Right), Some(1));
+        assert_eq!(nearest_in_dir(&rects, 1, FocusDir::Left), Some(0));
+        // Nothing to the left of 0 or above either pane.
+        assert_eq!(nearest_in_dir(&rects, 0, FocusDir::Left), None);
+        assert_eq!(nearest_in_dir(&rects, 0, FocusDir::Up), None);
+    }
+
+    #[test]
+    fn nearest_in_dir_chooses_the_closest_of_several() {
+        // 0 on the left; the right column is split into 1 (tall, top)
+        // and 2 (short, bottom).
+        let rects = vec![
+            (0, Rect::new(0, 0, 10, 8)),
+            (1, Rect::new(11, 0, 10, 5)),
+            (2, Rect::new(11, 6, 10, 2)),
+        ];
+        // From 0 (center y≈4), Right → 1 — its center is nearer than 2's.
+        assert_eq!(nearest_in_dir(&rects, 0, FocusDir::Right), Some(1));
+        // 1 ↕ 2 are stacked.
+        assert_eq!(nearest_in_dir(&rects, 1, FocusDir::Down), Some(2));
+        assert_eq!(nearest_in_dir(&rects, 2, FocusDir::Up), Some(1));
+        assert_eq!(nearest_in_dir(&rects, 1, FocusDir::Left), Some(0));
     }
 
     #[test]
