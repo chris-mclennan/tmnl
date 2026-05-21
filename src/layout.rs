@@ -250,6 +250,45 @@ impl Layout {
             }
         }
     }
+
+    /// Drag the `idx`-th split's divider toward cursor cell `(cx, cy)`,
+    /// recomputing that split's `ratio` so the divider lands under the
+    /// cursor. Splits are indexed in the same pre-order as
+    /// [`Layout::divider_lines`], so a divider hit-tested against that
+    /// list maps straight to `idx`. The ratio is clamped to keep both
+    /// children at least a sliver wide. No-op if `idx` is out of range.
+    pub fn resize_split_at(&mut self, area: Rect, idx: usize, cx: u32, cy: u32) {
+        self.resize_walk(area, idx, &mut 0, cx, cy);
+    }
+
+    fn resize_walk(&mut self, area: Rect, idx: usize, next: &mut usize, cx: u32, cy: u32) {
+        if let Layout::Split {
+            dir,
+            ratio,
+            first,
+            second,
+        } = self
+        {
+            let here = *next;
+            *next += 1;
+            if here == idx {
+                *ratio = match dir {
+                    SplitDir::Vertical => {
+                        let usable = area.w.saturating_sub(1).max(1) as f32;
+                        (cx.saturating_sub(area.x) as f32 / usable).clamp(0.05, 0.95)
+                    }
+                    SplitDir::Horizontal => {
+                        let usable = area.h.saturating_sub(1).max(1) as f32;
+                        (cy.saturating_sub(area.y) as f32 / usable).clamp(0.05, 0.95)
+                    }
+                };
+                return;
+            }
+            let (a, b, _) = split_rects(area, *dir, *ratio);
+            first.resize_walk(a, idx, next, cx, cy);
+            second.resize_walk(b, idx, next, cx, cy);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -477,6 +516,33 @@ mod tests {
         };
         l.shift_ids_after_removal(1);
         assert_eq!(l.leaf_ids(), vec![0, 1]);
+    }
+
+    #[test]
+    fn resize_split_at_targets_the_indexed_split() {
+        // Divider 0 = the outer vertical split; divider 1 = the inner
+        // horizontal split — same pre-order as `divider_lines`.
+        let mut l = Layout::Split {
+            dir: SplitDir::Vertical,
+            ratio: 0.5,
+            first: Box::new(Layout::Leaf(0)),
+            second: Box::new(Layout::Split {
+                dir: SplitDir::Horizontal,
+                ratio: 0.5,
+                first: Box::new(Layout::Leaf(1)),
+                second: Box::new(Layout::Leaf(2)),
+            }),
+        };
+        let area = Rect::new(0, 0, 101, 101);
+        // Drag divider 0 (vertical) to column 30 — pane 0 becomes 30 wide.
+        l.resize_split_at(area, 0, 30, 50);
+        assert_eq!(l.leaf_rects(area)[0].1.w, 30);
+        // Drag divider 1 (the inner horizontal) to row 20.
+        l.resize_split_at(area, 1, 80, 20);
+        assert_eq!(l.leaf_rects(area)[1].1.h, 20);
+        // An out-of-range divider index is a no-op.
+        l.resize_split_at(area, 9, 0, 0);
+        assert_eq!(l.leaf_rects(area)[1].1.h, 20);
     }
 
     #[test]

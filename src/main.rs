@@ -254,6 +254,10 @@ struct App {
     /// `CursorMoved` event over a *different* chip swaps `tabs[src]`
     /// and `tabs[dst]` and updates the index.
     dragging_tab: Option<usize>,
+    /// Index (into the active tab's `divider_lines`) of the divider
+    /// currently being dragged to resize a split. Set on a left-press
+    /// on a divider, cleared on left-release.
+    dragging_divider: Option<usize>,
     /// Local AI command-completion worker (`fim-engine`). Spawned
     /// lazily on the first ⌘I trigger so the model only loads if the
     /// feature is used.
@@ -1293,79 +1297,100 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                if let Some(gpu) = &self.gpu {
-                    let (col, row) = gpu.pixel_to_cell(position.x, position.y);
-                    let prev = self.cursor_cell;
-                    self.cursor_cell = (col, row);
-                    self.cursor_px = (position.x, position.y);
-                    // Drags that originated in the strip stay in chrome —
-                    // don't forward them as terminal drag events. (Hit-test
-                    // by Y: anything above the grid is chrome.)
-                    let in_chrome = position.y < (gpu.inset_px + gpu.strip_h) as f64;
-                    if in_chrome {
-                        // Drag-to-reorder: while a chip drag is armed
-                        // and the cursor crosses into a different
-                        // chip's rect, swap the two tabs. Chip rects
-                        // get re-computed each render, so subsequent
-                        // moves keep dragging the same tab through
-                        // the strip.
-                        if let Some(src) = self.dragging_tab
-                            && self.buttons_down & (1u8 << BUTTON_LEFT) != 0
+                // Snapshot what we need off the GPU up front so the
+                // borrow is released before `relayout_all_panes` (which
+                // needs `&mut self`).
+                let Some((cell, (gcols, grows), chrome_h)) = self.gpu.as_ref().map(|g| {
+                    (
+                        g.pixel_to_cell(position.x, position.y),
+                        (g.grid.cols, g.grid.rows),
+                        (g.inset_px + g.strip_h) as f64,
+                    )
+                }) else {
+                    return;
+                };
+                let prev = self.cursor_cell;
+                self.cursor_cell = cell;
+                self.cursor_px = (position.x, position.y);
+                let (col, row) = cell;
+                let in_chrome = position.y < chrome_h;
+
+                // A divider drag owns the event while it's armed — move
+                // the split's ratio so the divider tracks the cursor.
+                if let Some(idx) = self.dragging_divider {
+                    if !in_chrome && self.buttons_down & (1u8 << BUTTON_LEFT) != 0 {
+                        let area = Rect::new(0, 0, gcols, grows);
+                        self.tabs[self.active]
+                            .layout
+                            .resize_split_at(area, idx, col as u32, row as u32);
+                        self.relayout_all_panes();
+                        if let Some(w) = &self.window {
+                            w.request_redraw();
+                        }
+                    }
+                    return;
+                }
+
+                // Drags that originated in the strip stay in chrome —
+                // don't forward them as terminal drag events.
+                if in_chrome {
+                    // Drag-to-reorder: while a chip drag is armed and the
+                    // cursor crosses into a different chip's rect, swap
+                    // the two tabs.
+                    if let Some(src) = self.dragging_tab
+                        && self.buttons_down & (1u8 << BUTTON_LEFT) != 0
+                        && let Some(gpu) = &self.gpu
+                    {
+                        let dst = gpu
+                            .strip_chip_rects
+                            .iter()
+                            .find(|(x0, x1, _)| position.x >= *x0 as f64 && position.x < *x1 as f64)
+                            .map(|(_, _, idx)| *idx);
+                        if let Some(dst) = dst
+                            && dst != src
+                            && dst < self.tabs.len()
                         {
-                            let dst = gpu
-                                .strip_chip_rects
-                                .iter()
-                                .find(|(x0, x1, _)| {
-                                    position.x >= *x0 as f64 && position.x < *x1 as f64
-                                })
-                                .map(|(_, _, idx)| *idx);
-                            if let Some(dst) = dst
-                                && dst != src
-                                && dst < self.tabs.len()
-                            {
-                                self.tabs.swap(src, dst);
-                                if self.active == src {
-                                    self.active = dst;
-                                } else if self.active == dst {
-                                    self.active = src;
-                                }
-                                self.dragging_tab = Some(dst);
-                                if let Some(w) = &self.window {
-                                    w.request_redraw();
-                                }
+                            self.tabs.swap(src, dst);
+                            if self.active == src {
+                                self.active = dst;
+                            } else if self.active == dst {
+                                self.active = src;
+                            }
+                            self.dragging_tab = Some(dst);
+                            if let Some(w) = &self.window {
+                                w.request_redraw();
                             }
                         }
-                        return;
                     }
-                    // Route hover / drag to the pane under the cursor,
-                    // in that pane's local coordinates. A Native client
-                    // needs Moved events for hover tooltips / divider
-                    // highlights; a plain shell only gets motion under
-                    // ?1003h but a Native tab always wants them.
-                    if prev != self.cursor_cell
-                        && let Some((id, lc, lr)) = self.pane_under_cursor()
+                    return;
+                }
+                // Route hover / drag to the pane under the cursor, in
+                // that pane's local coordinates. A Native client needs
+                // Moved events for hover tooltips / divider highlights;
+                // a plain shell only gets motion under ?1003h but a
+                // Native tab always wants them.
+                if prev != self.cursor_cell
+                    && let Some((id, lc, lr)) = self.pane_under_cursor()
+                {
+                    let held = self.buttons_down != 0;
+                    let mouse = MouseInput {
+                        kind: if held {
+                            MouseKind::Drag
+                        } else {
+                            MouseKind::Moved
+                        },
+                        button: if held {
+                            first_button(self.buttons_down)
+                        } else {
+                            BUTTON_NONE
+                        },
+                        col: lc,
+                        row: lr,
+                        mods: pack_mods(self.mods),
+                    };
+                    if let PaneKind::Native { server, .. } = &self.tabs[self.active].panes[id].kind
                     {
-                        let held = self.buttons_down != 0;
-                        let mouse = MouseInput {
-                            kind: if held {
-                                MouseKind::Drag
-                            } else {
-                                MouseKind::Moved
-                            },
-                            button: if held {
-                                first_button(self.buttons_down)
-                            } else {
-                                BUTTON_NONE
-                            },
-                            col: lc,
-                            row: lr,
-                            mods: pack_mods(self.mods),
-                        };
-                        if let PaneKind::Native { server, .. } =
-                            &self.tabs[self.active].panes[id].kind
-                        {
-                            server.send_input(&InputEvent::Mouse(mouse));
-                        }
+                        server.send_input(&InputEvent::Mouse(mouse));
                     }
                 }
             }
@@ -1447,10 +1472,20 @@ impl ApplicationHandler for App {
                         return;
                     }
                 }
-                // Outside the strip — releasing the left button also
-                // ends a drag that started in chrome.
+                // Releasing the left button ends any in-flight drag —
+                // chip-reorder or divider-resize.
                 if !pressed && button == MouseButton::Left {
                     self.dragging_tab = None;
+                    self.dragging_divider = None;
+                }
+                // A left-press on a divider starts a drag-resize of that
+                // split — it owns the gesture, no pane dispatch.
+                if pressed
+                    && button == MouseButton::Left
+                    && let Some(idx) = self.divider_at_cursor()
+                {
+                    self.dragging_divider = Some(idx);
+                    return;
                 }
                 // Body click — focus the pane under the cursor (on
                 // press) and forward the event to it in that pane's
@@ -2050,6 +2085,19 @@ impl App {
             .into_iter()
             .find(|(_, r)| r.contains(cx, cy))
             .map(|(id, r)| (id, (cx - r.x) as u16, (cy - r.y) as u16))
+    }
+
+    /// The index — into the active tab's `divider_lines` — of the
+    /// divider the cursor is on, if any. Starts a drag-resize.
+    fn divider_at_cursor(&self) -> Option<usize> {
+        let gpu = self.gpu.as_ref()?;
+        let area = Rect::new(0, 0, gpu.grid.cols, gpu.grid.rows);
+        let (cx, cy) = (self.cursor_cell.0 as u32, self.cursor_cell.1 as u32);
+        self.tabs[self.active]
+            .layout
+            .divider_lines(area)
+            .iter()
+            .position(|(r, _)| r.contains(cx, cy))
     }
 
     /// Ensure the AI completion worker thread is running.
@@ -3071,6 +3119,7 @@ fn main() {
         editor_template,
         native_tab_nonce: 1,
         dragging_tab: None,
+        dragging_divider: None,
         fim: None,
         fim_pending: None,
         fim_next_id: 0,
