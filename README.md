@@ -150,6 +150,7 @@ tmnl is one of a small family of terminal-native Rust tools:
 | [**mnml**](https://github.com/chris-mclennan/mnml) | A terminal IDE | runs as a native tmnl tab |
 | [**mixr**](https://github.com/chris-mclennan/mixr) | A terminal DJ app | runs as a native tmnl tab |
 | [**tmnl-protocol**](https://github.com/chris-mclennan/tmnl-protocol) | The binary wire protocol | native mode's wire format |
+| [**fim-engine**](https://github.com/chris-mclennan/fim-engine) | Embedded code completion | powers tmnl's ⌘I completion |
 
 ## Contributing
 
