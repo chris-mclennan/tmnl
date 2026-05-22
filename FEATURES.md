@@ -1,99 +1,63 @@
-# tmnl — features & roadmap
+# tmnl — Features
 
-Two tracks. **Native mode** is the differentiator and where the design
-energy goes. **Shell mode** needs to clear table stakes so tmnl is a
-credible daily driver — but it should not turn into a race to out-feature
-WezTerm/Ghostty, which is unwinnable.
+The shipped feature inventory. For the overview see [README.md](README.md); for
+the roadmap and design notes see [`.local/PLAN.md`](.local/PLAN.md).
 
-## Shipped
+tmnl has two tracks. **Native mode** is the differentiator and where the design
+energy goes. **Shell mode** needs to clear table stakes so tmnl is a credible
+daily driver — without turning into a race to out-feature WezTerm / Ghostty.
 
-- [x] Shell mode — hosts a real pty, parses output with `vt100`
-- [x] Native mode — `tmnl-protocol` v3 over a Unix socket
-- [x] GPU rendering — `wgpu` cell pipeline + chrome strip pipeline
-- [x] True-color cells (rgba fg/bg)
-- [x] Cursor shape + visibility
-- [x] Mouse input — click, drag, move, scroll (4 directions)
-- [x] Native tabs
-- [x] Native macOS menu bar (tmnl / Shell / Edit / View / Window / Help)
-- [x] Mac-style editing chords (⌘Z/X/C/V/A/S/F/N)
-- [x] In-grid Settings modal, persisted to `~/.config/tmnl/config.toml`
-- [x] Tab titles set by the backing app (`Message::Title`, protocol v3)
-- [x] Partial-frame updates (`DiffRun` — only changed cell runs on the wire)
-- [x] Configurable window size + prompt inset
-- [x] OSC 133 shell integration — command lifecycle + command-line anchor
-- [x] Local AI command completion — ⌘I continuation + ⌘K NL→command
-      (`fim-engine`, offline qwen2.5-coder)
-- [x] Headless mode (`--headless`) — scriptable cell-grid dumps for tests
+---
 
-## Planned — table stakes (shell mode)
+## Rendering
 
-Ordered roughly by impact-to-effort. The goal is "nobody bounces," not
-feature maximalism.
+- **GPU rendering** — a `wgpu` cell pipeline plus a separate chrome-strip
+  pipeline.
+- **True-color cells** — RGBA foreground and background per cell.
+- **Cursor** — shape and visibility, driven by the cell source.
+- **Configurable window** — size and prompt inset, persisted to
+  `~/.config/tmnl/config.toml`.
 
-- [ ] **Scrollback + search** — scroll history and find within it
-- [ ] **Splits / panes** — the single biggest "why I can't switch" gap
-- [~] **Shell integration (OSC 133)** — parsing + command-lifecycle
-      tracking landed (`src/osc133.rs`, see autosuggestion Phase 1);
-      jump-to-prompt and a command-status UI still to do
-- [ ] **Clickable URLs** — plain-text detection + OSC 8 hyperlinks
-- [ ] **Color schemes / theming** — bundled themes + user themes
-- [ ] **Font config** — family, size, fallback, ligatures
-- [ ] **Keybinding remapping** — user-defined chords
-- [ ] **Selection + copy/paste polish** — block select, auto-copy option
-- [ ] **Cross-platform** — currently macOS-only; Linux is the likely next
-      target (winit + wgpu already portable; `muda` menu + `.app` are not)
-- [ ] Image protocols (Kitty graphics / iTerm / Sixel) — evaluate later
+## Shell mode
 
-## Planned — native mode (the differentiator)
+- **Real pty** — hosts your `$SHELL`, output parsed into cells with `vt100`.
+- **Mouse input** — click, drag, move, and scroll (all four directions).
+- **OSC 133 shell integration** — parses semantic-prompt marks to track the
+  command lifecycle and the command-line anchor. See
+  [`docs/shell-integration.md`](docs/shell-integration.md).
+- **Local AI command completion** — entirely offline, nothing leaves the machine:
+  - `⌘I` completes the half-typed command line (continuation).
+  - `⌘K` turns a natural-language description on the prompt into a shell command.
+  - Both run a quantized qwen2.5-coder model in-process via the embedded
+    `fim-engine` crate; results render as dim ghost text, `Tab` accepts.
 
-- [ ] **Published SDK** — an ergonomic client layer in `tmnl-protocol`
-      (connect + handshake + frame builder) so a backing app is ~20 lines,
-      not ~100. See [`docs/sdk-guide.md`](docs/sdk-guide.md). *In progress.*
-- [ ] **A second reference client** — something other than mnml targeting
-      the protocol (a file picker, a git UI). Until this exists, "TUI
-      runtime" is aspirational; the protocol is just mnml's renderer.
-- [ ] **Capability negotiation** — `Hello` carries a feature set so the
-      protocol can grow without breaking older clients
-- [ ] **Richer input** — hover regions, focus events, IME/composition
-- [ ] **Embedded content** — images / inline widgets in a native frame,
-      something a pty terminal cannot express cheaply
-- [ ] **Latency benchmark** — publish input→frame latency vs a pty
-      terminal. If native mode is visibly snappier, that *is* the pitch.
+## Native mode
 
-## Autosuggestion & autocomplete
+- **`tmnl-protocol` over a Unix socket** — apps send structured `Frame`s of
+  cells instead of ANSI escape codes.
+- **Partial-frame updates** — `DiffRun` puts only changed cell-runs on the wire.
+- **App-set tab titles** — via `Message::Title`.
+- **Reference client** — [`mnml`](https://github.com/chris-mclennan/mnml) runs as
+  a native tmnl tab; [`examples/hello_client.rs`](examples/hello_client.rs) is a
+  minimal template.
 
-Two distinct things, settled after working through the architecture:
+## Window & chrome
 
-**Inline history autosuggestion** — fish-style ghost text from your
-shell history. The shell already does this well, so tmnl just documents
-`zsh-autosuggestions` (see `docs/shell-integration.md`). A tmnl-native
-re-implementation would be redundant, so there isn't one.
+- **Native tabs.**
+- **Native macOS menu bar** — tmnl / Shell / Edit / View / Window / Help.
+- **Mac-style editing chords** — `⌘Z` / `X` / `C` / `V` / `A` / `S` / `F` / `N`.
+- **In-grid settings modal** — persisted to `~/.config/tmnl/config.toml`.
 
-**AI command completion** — local, offline, private. A quantized
-qwen2.5-coder model (the `fim-engine` sibling crate, candle inference,
-in-process) completes a half-typed command. This is the differentiated
-feature: Warp's AI is cloud; this never leaves the machine.
+## Tooling
 
-- [x] **Phase 0** — `zsh-autosuggestions` documented in
-      `docs/shell-integration.md`. History ghost text today, zero tmnl
-      code.
-- [x] **Phase 1** — OSC 133 parsing. tmnl scans semantic-prompt marks
-      and tracks command lifecycle + the command-line anchor.
-      `src/osc133.rs`, `shell-integration/tmnl.zsh`.
-- [x] **Stage 1 — AI continuation.** ⌘I completes the current command
-      line via `fim-engine` (local qwen2.5-coder, on-demand). The result
-      renders as dim ghost text; Tab accepts, any other key dismisses.
-      `src/fim.rs`. Needs the OSC 133 snippet installed (it supplies the
-      command-line anchor). On-demand because CPU inference is ~0.3–1.6s;
-      inline-as-you-type waits on `fim-engine`'s Metal-acceleration
-      follow-up.
-- [x] **Stage 2 — NL→command.** ⌘K turns a natural-language description
-      typed on the prompt into a shell command — `fim-engine` with a
-      shebang-shaped FIM prompt (`#!/bin/zsh` + the description as a
-      comment), so no `fim-engine` change was needed. The command
-      previews as dim ghost text on the row below; Tab accepts (erases
-      the description, types the command).
+- **Headless mode** (`--headless`) — scriptable cell-grid dumps, so a piped
+  command script doubles as a pass/fail test.
+- **Protocol smoke harness** — `examples/fake_server` and `examples/fake_client`
+  exercise both sides of `tmnl-protocol` without a GPU window.
 
-Dropped along the way: a tmnl-native *history* ghost text (redundant
-with `zsh-autosuggestions`), and a "native-mode suggestion API" (native
-mode has no command line — a backing app renders its own suggestions).
+---
+
+**Roadmap** — scrollback & search, splits / panes, clickable URLs, theming, font
+config, cross-platform support, and the native-mode differentiators (a published
+SDK, a second reference client, capability negotiation) are tracked in
+[`.local/PLAN.md`](.local/PLAN.md).
