@@ -6,8 +6,8 @@ and the bit of architecture worth knowing before you change code.
 ## Getting started
 
 ```bash
-git clone https://github.com/chris-mclennan/tmnl
-cd tmnl
+git clone https://github.com/chris-mclennan/tmnl-rs
+cd tmnl-rs
 cargo build
 cargo run --bin tmnl
 ```
@@ -69,7 +69,7 @@ own guidance before touching it.
 
 ## Reporting bugs & requesting features
 
-Use the [issue tracker](https://github.com/chris-mclennan/tmnl/issues). For bugs,
+Use the [issue tracker](https://github.com/chris-mclennan/tmnl-rs/issues). For bugs,
 include your macOS version and steps to reproduce.
 
 ## License

@@ -37,7 +37,7 @@ daily driver — without turning into a race to out-feature WezTerm / Ghostty.
   cells instead of ANSI escape codes.
 - **Partial-frame updates** — `DiffRun` puts only changed cell-runs on the wire.
 - **App-set tab titles** — via `Message::Title`.
-- **Reference client** — [`mnml`](https://github.com/chris-mclennan/mnml) runs as
+- **Reference client** — [`mnml`](https://github.com/chris-mclennan/mnml-rs) runs as
   a native tmnl tab; [`examples/hello_client.rs`](examples/hello_client.rs) is a
   minimal template.
 

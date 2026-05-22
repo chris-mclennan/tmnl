@@ -8,8 +8,8 @@ Every terminal renders ANSI byte streams. tmnl does that *and* acts as a clean
 rendering target apps draw to the way a GUI app draws to a window — typed cells,
 true-color, partial-frame diffs, no escape-sequence tax.
 
-[![Crates.io](https://img.shields.io/crates/v/tmnl.svg?logo=rust)](https://crates.io/crates/tmnl)
-[![CI](https://github.com/chris-mclennan/tmnl/actions/workflows/ci.yml/badge.svg)](https://github.com/chris-mclennan/tmnl/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/tmnl-rs.svg?logo=rust)](https://crates.io/crates/tmnl-rs)
+[![CI](https://github.com/chris-mclennan/tmnl-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/chris-mclennan/tmnl-rs/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![Platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](#install)
 
@@ -55,7 +55,7 @@ That second mode is the point. See [`docs/sdk-guide.md`](docs/sdk-guide.md).
 | Source of cells | a real pty + `vt100` parser | an app, over `tmnl-protocol` |
 | The app speaks | ANSI escape codes | typed `Frame`s of cells |
 | Use it for | a normal terminal | building a TUI without the ANSI tax |
-| Reference | your `$SHELL` | [`mnml`](https://github.com/chris-mclennan/mnml), `examples/hello_client.rs` |
+| Reference | your `$SHELL` | [`mnml`](https://github.com/chris-mclennan/mnml-rs), `examples/hello_client.rs` |
 
 Both modes feed the same `Grid`, and the same `wgpu` pipelines draw it — the
 renderer doesn't care where cells came from.
@@ -81,7 +81,7 @@ See [FEATURES.md](FEATURES.md) for the full shipped inventory and
 ## Install
 
 ```bash
-cargo install tmnl
+cargo install tmnl-rs        # the crate is tmnl-rs; the binary it installs is `tmnl`
 ```
 
 tmnl is **macOS-only** for now (winit + wgpu are portable; the `muda` menu bar
@@ -147,8 +147,8 @@ tmnl is one of a small family of terminal-native Rust tools:
 | Project | What it is | |
 |---------|-----------|--|
 | **tmnl** | A GPU-accelerated terminal | ← you are here |
-| [**mnml**](https://github.com/chris-mclennan/mnml) | A terminal IDE | runs as a native tmnl tab |
-| [**mixr**](https://github.com/chris-mclennan/mixr) | A terminal DJ app | runs as a native tmnl tab |
+| [**mnml**](https://github.com/chris-mclennan/mnml-rs) | A terminal IDE | runs as a native tmnl tab |
+| [**mixr**](https://github.com/chris-mclennan/mixr-rs) | A terminal DJ app | runs as a native tmnl tab |
 | [**tmnl-protocol**](https://github.com/chris-mclennan/tmnl-protocol) | The binary wire protocol | native mode's wire format |
 | [**fim-engine**](https://github.com/chris-mclennan/fim-engine) | Embedded code completion | powers tmnl's ⌘I completion |
 
