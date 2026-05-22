@@ -2,6 +2,16 @@
 name = "tmnl"
 version = "0.0.1"
 edition = "2024"
+rust-version = "1.85"
+description = "A GPU-rendered terminal for macOS — and a structured-cell display surface that apps can draw to directly."
+authors = ["Chris McLennan"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/chris-mclennan/tmnl"
+homepage = "https://github.com/chris-mclennan/tmnl"
+readme = "README.md"
+keywords = ["terminal", "wgpu", "gpu", "macos", "tui"]
+categories = ["gui", "command-line-utilities"]
+exclude = [".local/", ".claude/", ".github/", "assets/", "scripts/"]
 
 [dependencies]
 winit = "0.30"

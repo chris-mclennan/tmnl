@@ -1,0 +1,41 @@
+name: Bug report
+description: Something in tmnl isn't working as expected.
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Which mode?
+      options:
+        - Shell mode
+        - Native mode
+        - Both / not sure
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: tmnl version
+      description: The commit SHA, or the release if installed from one.
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      description: e.g. "macOS 15.4 (Apple Silicon)"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / screenshots
+      description: Any relevant output or a screen recording.
+      render: shell

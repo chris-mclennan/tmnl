@@ -1,0 +1,30 @@
+name: Feature request
+description: Suggest an idea or improvement for tmnl.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: The use case or pain point behind the request.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What you'd like tmnl to do.
+    validations:
+      required: true
+  - type: dropdown
+    id: track
+    attributes:
+      label: Which track?
+      description: Shell mode is a normal terminal; native mode is the structured-cell display surface.
+      options:
+        - Shell mode
+        - Native mode / the protocol
+        - Rendering / chrome
+        - Not sure
+    validations:
+      required: true
