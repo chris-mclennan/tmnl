@@ -4142,7 +4142,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
-name = "tmnl"
+name = "tmnl-protocol"
+version = "0.0.1"
+
+[[package]]
+name = "tmnl-rs"
 version = "0.0.1"
 dependencies = [
  "bytemuck",
@@ -4161,10 +4165,6 @@ dependencies = [
  "wgpu",
  "winit",
 ]
-
-[[package]]
-name = "tmnl-protocol"
-version = "0.0.1"
 
 [[package]]
 name = "tokenizers"
