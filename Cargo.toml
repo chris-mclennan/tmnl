@@ -8,6 +8,7 @@ authors = ["Chris McLennan"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/chris-mclennan/tmnl-rs"
 homepage = "https://github.com/chris-mclennan/tmnl-rs"
+documentation = "https://docs.rs/tmnl-rs"
 readme = "README.md"
 keywords = ["terminal", "wgpu", "gpu", "macos", "tui"]
 categories = ["gui", "command-line-utilities"]
