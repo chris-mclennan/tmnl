@@ -43,7 +43,7 @@ muda = "0.16"
 # Config persistence — `~/.config/tmnl/config.toml`.
 toml = { version = "0.8", default-features = false, features = ["parse", "display"] }
 serde = { version = "1", features = ["derive"] }
-dirs = "5"
+dirs = "6"
 
 [profile.release]
 lto = "thin"
