@@ -79,7 +79,11 @@ native mode: a clean, structured rendering target that apps draw to directly.
 
 - [x] **1. Extract the App struct + its `impl`** into `src/app.rs` (commit `e6420df`). The App struct stayed in main.rs (tightly woven with Pane / Tab / Ghost / EditorTabTemplate types + free fns); both `impl App` blocks (1808 lines combined) moved.
 - [x] **2. Extract the winit handler body.** Six per-variant handlers moved (commit `5627b8b`): `handle_resized`, `handle_keyboard_input` (323 lines), `handle_cursor_moved`, `handle_mouse_input`, `handle_mouse_wheel`, `handle_redraw_requested`. `window_event` is now a 35-line dispatcher.
-- [ ] **3. (Optional) further split** `src/app.rs` if it ends > 2 k lines — e.g. `src/app/render.rs` for any per-frame draw bits that didn't already move to `src/render/`.
+- [ ] **3. (Optional) further split** `src/app.rs` if it ends > 2 k lines — e.g. `src/app/render.rs` for any per-frame draw bits that didn't already move to `src/render/`. Notes from the post-Phase-2 review pass:
+      - Replace `use crate::*;` at `src/app.rs:16` with an explicit import list to surface the ~100 symbols the moved impls reach back for. Surfaces real coupling.
+      - `handle_keyboard_input` is the giant of `src/app.rs` (323 lines). Could be split by chord family (cmd-tab-management / cmd-pane-management / hosted-process-forwarding / settings+rename guards). Not urgent — the dispatcher reads top-to-bottom in chord-precedence order which has its own readability logic.
+      - `impl Gpu` in main.rs is split (lines 355 and 949) — pre-existing, not from the refactor. Worth merging when the file is being touched anyway.
+      - `_id: WindowId` parameter at `src/app.rs:78` could carry a one-line comment if single-window is load-bearing.
 
 **Targets vs reality.**
 
