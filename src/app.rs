@@ -82,24 +82,7 @@ impl ApplicationHandler for App {
                 event_loop.exit();
             }
             WindowEvent::Resized(size) => {
-                let resize = {
-                    let Some(gpu) = self.gpu.as_mut() else {
-                        return;
-                    };
-                    gpu.resize(size.width, size.height)
-                };
-                // Always paint a frame after a resize — the surface was
-                // reconfigured (even if cols×rows stayed the same), so
-                // the framebuffer is fresh and would briefly show through
-                // as CLEAR_BG until the next event-driven render. Without
-                // this the window flickers during interactive resizes.
-                if let Some(w) = &self.window {
-                    w.request_redraw();
-                }
-                // Re-lay-out every tab's panes to the new window size.
-                if resize.is_some() {
-                    self.relayout_all_panes();
-                }
+                self.handle_resized(size);
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 if let Some(gpu) = &mut self.gpu {
@@ -110,638 +93,19 @@ impl ApplicationHandler for App {
                 self.mods = m.state();
             }
             WindowEvent::KeyboardInput { event: ke, .. } => {
-                if ke.state != ElementState::Pressed {
-                    return;
-                }
-                // Settings panel swallows keys while open (Esc closes,
-                // Enter saves; everything else either adjusts the
-                // selected field or no-ops).
-                if self.settings.is_some() && self.settings_handle_key(&ke) {
-                    return;
-                }
-                // A tab rename swallows keys while active — Esc cancels,
-                // Enter commits, Backspace deletes, everything else
-                // types into the name.
-                if self.renaming_tab.is_some() && self.rename_handle_key(&ke) {
-                    return;
-                }
-                // Tab-management chords: ⌘T new, ⌘W close, ⌘1..⌘9 jump,
-                // ⌘⇧[ / ⌘⇧] cycle. macOS Terminal / iTerm / Safari
-                // conventions. Cmd = winit's `super_key()`. Intercept
-                // before forwarding to the active tab's Mode so the
-                // chord never reaches the hosted process.
-                if self.mods.super_key()
-                    && let Key::Character(s) = &ke.logical_key
-                {
-                    let c = s.chars().next();
-                    let shift = self.mods.shift_key();
-                    match (c, shift) {
-                        (Some('t'), false) => {
-                            // ⌘T spawns the same kind of tab the window
-                            // launched with — Native when --editor was
-                            // set, shell otherwise.
-                            if self.editor_template.is_some() {
-                                self.new_native_tab();
-                            } else {
-                                self.new_shell_tab();
-                            }
-                            if let Some(w) = &self.window {
-                                w.request_redraw();
-                            }
-                            return;
-                        }
-                        (Some('w'), true) => {
-                            // ⌘⇧W — close the focused split pane. Its
-                            // split collapses so the sibling takes the
-                            // freed space; closing the tab's last pane
-                            // closes the whole tab.
-                            self.close_focused_pane(event_loop);
-                            if let Some(w) = &self.window {
-                                w.request_redraw();
-                            }
-                            return;
-                        }
-                        (Some('d'), false) => {
-                            // ⌘D — split the focused pane right (a fresh
-                            // shell pane to the right). tmnl-level —
-                            // never forwarded to the hosted process.
-                            self.split_active_pane(SplitDir::Vertical);
-                            if let Some(w) = &self.window {
-                                w.request_redraw();
-                            }
-                            return;
-                        }
-                        (Some('d'), true) => {
-                            // ⌘⇧D — split the focused pane down (a fresh
-                            // shell pane below).
-                            self.split_active_pane(SplitDir::Horizontal);
-                            if let Some(w) = &self.window {
-                                w.request_redraw();
-                            }
-                            return;
-                        }
-                        (Some('w'), false) => {
-                            // Native (mnml) tabs: forward ⌘W as ⌃W so the
-                            // host process closes its active buffer/pane
-                            // rather than tmnl killing the whole tab.
-                            // mnml shows a confirmation prompt when it
-                            // would close the last buffer, so an
-                            // accidental ⌘W doesn't drop the user back
-                            // onto the welcome screen or the shell.
-                            // Shell tabs keep the original close-tab
-                            // behavior (no way to recover the shell
-                            // otherwise).
-                            if matches!(
-                                &self.tabs[self.active].focused_pane().kind,
-                                PaneKind::Native { .. }
-                            ) {
-                                let translated_mods = pack_mods_cmd_to_ctrl(self.mods);
-                                if let PaneKind::Native { server, .. } =
-                                    &mut self.tabs[self.active].focused_pane_mut().kind
-                                    && let Some(code) = translate_key(&ke.logical_key, self.mods)
-                                {
-                                    server.send_input(&InputEvent::Key(KeyInput {
-                                        code,
-                                        mods: translated_mods,
-                                        press: true,
-                                    }));
-                                }
-                                return;
-                            }
-                            self.close_active_tab(event_loop);
-                            if let Some(w) = &self.window {
-                                w.request_redraw();
-                            }
-                            return;
-                        }
-                        (Some(d), false) if d.is_ascii_digit() && d != '0' => {
-                            // Native tabs: forward ⌘<N> as ⌥<N> so mnml's
-                            // `tab.goto_N` chord (Alt+1..9) switches mnml
-                            // tab pages instead of tmnl tabs. The user
-                            // can still switch tmnl tabs explicitly with
-                            // ⌘⇧[ / ⌘⇧] (cycle) or via the tab strip.
-                            // Shell tabs keep the original behavior
-                            // because they have no in-app tab pages.
-                            if matches!(
-                                &self.tabs[self.active].focused_pane().kind,
-                                PaneKind::Native { .. }
-                            ) {
-                                if let PaneKind::Native { server, .. } =
-                                    &mut self.tabs[self.active].focused_pane_mut().kind
-                                    && let Some(code) = translate_key(&ke.logical_key, self.mods)
-                                {
-                                    server.send_input(&InputEvent::Key(KeyInput {
-                                        code,
-                                        mods: MOD_ALT,
-                                        press: true,
-                                    }));
-                                }
-                                return;
-                            }
-                            let n = d.to_digit(10).unwrap() as usize - 1;
-                            self.switch_to_tab(n);
-                            if let Some(w) = &self.window {
-                                w.request_redraw();
-                            }
-                            return;
-                        }
-                        (Some('['), true) => {
-                            self.cycle_tab(false);
-                            if let Some(w) = &self.window {
-                                w.request_redraw();
-                            }
-                            return;
-                        }
-                        (Some(']'), true) => {
-                            self.cycle_tab(true);
-                            if let Some(w) = &self.window {
-                                w.request_redraw();
-                            }
-                            return;
-                        }
-                        // Font zoom: ⌘+ / ⌘= zoom in (both share the
-                        // physical key — `=` unmodified, `+` with shift),
-                        // ⌘- zoom out, ⌘0 reset. macOS Terminal / iTerm /
-                        // browser convention.
-                        (Some('='), _) | (Some('+'), _) => {
-                            self.zoom_font(FONT_ZOOM_STEP);
-                            if let Some(w) = &self.window {
-                                w.request_redraw();
-                            }
-                            return;
-                        }
-                        (Some('-'), false) | (Some('_'), _) => {
-                            self.zoom_font(-FONT_ZOOM_STEP);
-                            if let Some(w) = &self.window {
-                                w.request_redraw();
-                            }
-                            return;
-                        }
-                        (Some('0'), false) => {
-                            self.reset_font_zoom();
-                            if let Some(w) = &self.window {
-                                w.request_redraw();
-                            }
-                            return;
-                        }
-                        // Mac-style editing chords → translate to Ctrl-equivalent
-                        // for the hosted Native client (mnml understands Ctrl+Z
-                        // as undo, Ctrl+C/V/X/A/S/F for clipboard/select-all/
-                        // save/find). Only fires for Native tabs — Shell tabs
-                        // are bare terminals where remapping Cmd would break
-                        // ⌘C-as-copy / ⌘V-as-paste in the surrounding OS.
-                        (Some(ch), _)
-                            if matches!(
-                                ch,
-                                // Editing / clipboard chords (existing).
-                                'z' | 'x' | 'c' | 'v' | 'a' | 's' | 'f' | 'n'
-                                // Navigation chords forwarded as ⌃-equivalents
-                                // so mnml's existing standard-mode bindings
-                                // light up under Mac muscle memory:
-                                //   ⌘P → ⌃P → file picker (also ⌘⇧P palette)
-                                //   ⌘B → ⌃B → toggle file tree
-                                //   ⌘G → ⌃G → goto line
-                                //   ⌘/ → ⌃/ → toggle line comment
-                                | 'p' | 'b' | 'g' | '/'
-                            ) && matches!(
-                                &self.tabs[self.active].focused_pane().kind,
-                                PaneKind::Native { .. }
-                            ) =>
-                        {
-                            let translated_mods = pack_mods_cmd_to_ctrl(self.mods);
-                            if let PaneKind::Native { server, .. } =
-                                &mut self.tabs[self.active].focused_pane_mut().kind
-                                && let Some(code) = translate_key(&ke.logical_key, self.mods)
-                            {
-                                server.send_input(&InputEvent::Key(KeyInput {
-                                    code,
-                                    mods: translated_mods,
-                                    press: true,
-                                }));
-                            }
-                            return;
-                        }
-                        _ => {}
-                    }
-                }
-                // ⌘⌥ + Arrow — move focus to the split pane in that
-                // direction. tmnl-level (consumed, never forwarded) so
-                // it works in both Shell and Native tabs.
-                if self.mods.super_key()
-                    && self.mods.alt_key()
-                    && let Key::Named(nk) = &ke.logical_key
-                {
-                    let dir = match nk {
-                        NamedKey::ArrowLeft => Some(FocusDir::Left),
-                        NamedKey::ArrowRight => Some(FocusDir::Right),
-                        NamedKey::ArrowUp => Some(FocusDir::Up),
-                        NamedKey::ArrowDown => Some(FocusDir::Down),
-                        _ => None,
-                    };
-                    if let Some(dir) = dir {
-                        self.focus_dir(dir);
-                        if let Some(w) = &self.window {
-                            w.request_redraw();
-                        }
-                        return;
-                    }
-                }
-                // ⌘I — AI completion of the current command line.
-                // ⌘K — generate a command from a typed description.
-                if self.mods.super_key()
-                    && let Key::Character(s) = &ke.logical_key
-                {
-                    if s.eq_ignore_ascii_case("i") {
-                        self.trigger_ai_completion();
-                        return;
-                    }
-                    if s.eq_ignore_ascii_case("k") {
-                        self.trigger_ai_generate();
-                        return;
-                    }
-                }
-                // Shift+PageUp / Shift+PageDown — scroll shell scrollback.
-                if self.mods.shift_key()
-                    && let Key::Named(nk) = &ke.logical_key
-                    && matches!(
-                        nk,
-                        winit::keyboard::NamedKey::PageUp | winit::keyboard::NamedKey::PageDown
-                    )
-                {
-                    let page = self
-                        .gpu
-                        .as_ref()
-                        .map_or(20, |g| g.grid.rows.saturating_sub(1) as i32);
-                    let up = matches!(nk, winit::keyboard::NamedKey::PageUp);
-                    if let PaneKind::Shell { session: Some(s) } =
-                        &mut self.tabs[self.active].focused_pane_mut().kind
-                    {
-                        s.scroll(if up { page } else { -page });
-                    }
-                    return;
-                }
-                let focused = self.tabs[self.active].focused;
-                match &mut self.tabs[self.active].panes[focused].kind {
-                    PaneKind::Shell { session } => {
-                        if let Some(s) = session.as_mut() {
-                            // Any keystroke cancels an in-flight AI
-                            // request — the command line is changing.
-                            if self.fim_pending.take().is_some() {
-                                self.fim_redraw = true;
-                            }
-                            // An active ghost suggestion intercepts Tab
-                            // (accept); any other key dismisses it, then
-                            // is forwarded to the shell normally.
-                            let mut consumed = false;
-                            if self.ghost.is_some() {
-                                if matches!(
-                                    &ke.logical_key,
-                                    Key::Named(winit::keyboard::NamedKey::Tab)
-                                ) {
-                                    if let Some(g) = self.ghost.take() {
-                                        // Stage 2 replaces the typed
-                                        // description; Stage 1 appends.
-                                        if g.erase > 0 {
-                                            s.write_bytes(&vec![0x7f; g.erase]);
-                                        }
-                                        s.write_bytes(g.text.as_bytes());
-                                    }
-                                    consumed = true;
-                                } else {
-                                    self.ghost = None;
-                                }
-                                self.fim_redraw = true;
-                            }
-                            if !consumed
-                                && let Some(bytes) = winit_key_to_bytes(&ke.logical_key, self.mods)
-                            {
-                                s.scroll_reset(); // typing snaps to the bottom
-                                s.write_bytes(&bytes);
-                            }
-                        }
-                    }
-                    PaneKind::Native { server, .. } => {
-                        if let Some(code) = translate_key(&ke.logical_key, self.mods) {
-                            let input = InputEvent::Key(KeyInput {
-                                code,
-                                mods: pack_mods(self.mods),
-                                press: true,
-                            });
-                            server.send_input(&input);
-                        }
-                    }
-                }
+                self.handle_keyboard_input(event_loop, ke);
             }
             WindowEvent::CursorMoved { position, .. } => {
-                // Snapshot what we need off the GPU up front so the
-                // borrow is released before `relayout_all_panes` (which
-                // needs `&mut self`).
-                let Some((cell, (gcols, grows), chrome_h)) = self.gpu.as_ref().map(|g| {
-                    (
-                        g.pixel_to_cell(position.x, position.y),
-                        (g.grid.cols, g.grid.rows),
-                        (g.inset_px + g.strip_h) as f64,
-                    )
-                }) else {
-                    return;
-                };
-                let prev = self.cursor_cell;
-                self.cursor_cell = cell;
-                self.cursor_px = (position.x, position.y);
-                let (col, row) = cell;
-                let in_chrome = position.y < chrome_h;
-
-                // A divider drag owns the event while it's armed — move
-                // the split's ratio so the divider tracks the cursor.
-                if let Some(idx) = self.dragging_divider {
-                    if !in_chrome && self.buttons_down & (1u8 << BUTTON_LEFT) != 0 {
-                        let area = Rect::new(0, 0, gcols, grows);
-                        self.tabs[self.active]
-                            .layout
-                            .resize_split_at(area, idx, col as u32, row as u32);
-                        self.relayout_all_panes();
-                        if let Some(w) = &self.window {
-                            w.request_redraw();
-                        }
-                    }
-                    return;
-                }
-
-                // Drags that originated in the strip stay in chrome —
-                // don't forward them as terminal drag events.
-                if in_chrome {
-                    // Drag-to-reorder: while a chip drag is armed and the
-                    // cursor crosses into a different chip's rect, swap
-                    // the two tabs.
-                    if let Some(src) = self.dragging_tab
-                        && self.buttons_down & (1u8 << BUTTON_LEFT) != 0
-                        && let Some(gpu) = &self.gpu
-                    {
-                        let dst = gpu
-                            .strip_chip_rects
-                            .iter()
-                            .find(|(x0, x1, _)| position.x >= *x0 as f64 && position.x < *x1 as f64)
-                            .map(|(_, _, idx)| *idx);
-                        if let Some(dst) = dst
-                            && dst != src
-                            && dst < self.tabs.len()
-                        {
-                            self.tabs.swap(src, dst);
-                            if self.active == src {
-                                self.active = dst;
-                            } else if self.active == dst {
-                                self.active = src;
-                            }
-                            self.dragging_tab = Some(dst);
-                            if let Some(w) = &self.window {
-                                w.request_redraw();
-                            }
-                        }
-                    }
-                    return;
-                }
-                // Route hover / drag to the pane under the cursor, in
-                // that pane's local coordinates. A Native client needs
-                // Moved events for hover tooltips / divider highlights;
-                // a plain shell only gets motion under ?1003h but a
-                // Native tab always wants them.
-                if prev != self.cursor_cell
-                    && let Some((id, lc, lr)) = self.pane_under_cursor()
-                {
-                    let held = self.buttons_down != 0;
-                    let mouse = MouseInput {
-                        kind: if held {
-                            MouseKind::Drag
-                        } else {
-                            MouseKind::Moved
-                        },
-                        button: if held {
-                            first_button(self.buttons_down)
-                        } else {
-                            BUTTON_NONE
-                        },
-                        col: lc,
-                        row: lr,
-                        mods: pack_mods(self.mods),
-                    };
-                    if let PaneKind::Native { server, .. } = &self.tabs[self.active].panes[id].kind
-                    {
-                        server.send_input(&InputEvent::Mouse(mouse));
-                    }
-                }
+                self.handle_cursor_moved(position);
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                let b = match button {
-                    MouseButton::Left => BUTTON_LEFT,
-                    MouseButton::Right => BUTTON_RIGHT,
-                    MouseButton::Middle => BUTTON_MIDDLE,
-                    _ => BUTTON_NONE,
-                };
-                let pressed = state == ElementState::Pressed;
-                if pressed {
-                    self.buttons_down |= 1u8 << b;
-                } else {
-                    self.buttons_down &= !(1u8 << b);
-                }
-                // A click anywhere commits an in-progress tab rename, so
-                // the inline-edit chip can't be stranded by a stray
-                // click. (A right-click to start a *new* rename commits
-                // the old one first, then re-enters below.)
-                if pressed && self.renaming_tab.is_some() {
-                    self.commit_rename();
-                }
-                // Strip-region intercept — clicks on tab chips switch
-                // (left) / close (middle). Tested against the cached
-                // pixel cursor against the rects produced by the last
-                // `strip_chip_instances` pass. Runs only on press so
-                // releases don't fire a second time; never forwards
-                // strip clicks to the terminal (return early).
-                if let Some(gpu) = &self.gpu {
-                    let (px, py) = self.cursor_px;
-                    let in_chrome = py < (gpu.inset_px + gpu.strip_h) as f64;
-                    if in_chrome {
-                        if pressed {
-                            // `+` new-tab button sits past the last chip;
-                            // check it first since its rect is disjoint.
-                            let on_plus = gpu
-                                .strip_new_tab_rect
-                                .map(|(x0, x1)| px >= x0 as f64 && px < x1 as f64)
-                                .unwrap_or(false);
-                            if on_plus && button == MouseButton::Left {
-                                if self.editor_template.is_some() {
-                                    self.new_native_tab();
-                                } else {
-                                    self.new_shell_tab();
-                                }
-                                return;
-                            }
-                            // Per-chip `⊗` close badge — left-click on
-                            // the badge closes that specific tab.
-                            // Tested BEFORE the chip rect so the close
-                            // cell isn't also treated as a switch click.
-                            let close_hit = gpu
-                                .strip_chip_close_rects
-                                .iter()
-                                .find(|(x0, x1, _)| px >= *x0 as f64 && px < *x1 as f64)
-                                .map(|(_, _, idx)| *idx);
-                            if let Some(idx) = close_hit
-                                && button == MouseButton::Left
-                            {
-                                self.close_tab_at(idx, event_loop);
-                                return;
-                            }
-                            let hit = gpu
-                                .strip_chip_rects
-                                .iter()
-                                .find(|(x0, x1, _)| px >= *x0 as f64 && px < *x1 as f64)
-                                .map(|(_, _, idx)| *idx);
-                            if let Some(idx) = hit {
-                                match button {
-                                    MouseButton::Left => {
-                                        self.switch_to_tab(idx);
-                                        // Arm a potential drag — a
-                                        // subsequent CursorMoved over
-                                        // a different chip will swap.
-                                        self.dragging_tab = Some(self.active);
-                                    }
-                                    MouseButton::Middle => self.close_tab_at(idx, event_loop),
-                                    // Right-click → rename the tab inline.
-                                    MouseButton::Right => self.start_rename(idx),
-                                    _ => {}
-                                }
-                            }
-                        } else if button == MouseButton::Left {
-                            // Released — end any in-flight drag.
-                            self.dragging_tab = None;
-                        }
-                        return;
-                    }
-                }
-                // Releasing the left button ends any in-flight drag —
-                // chip-reorder or divider-resize.
-                if !pressed && button == MouseButton::Left {
-                    self.dragging_tab = None;
-                    self.dragging_divider = None;
-                }
-                // A left-press on a divider starts a drag-resize of that
-                // split — it owns the gesture, no pane dispatch.
-                if pressed
-                    && button == MouseButton::Left
-                    && let Some(idx) = self.divider_at_cursor()
-                {
-                    self.dragging_divider = Some(idx);
-                    return;
-                }
-                // Body click — focus the pane under the cursor (on
-                // press) and forward the event to it in that pane's
-                // local coordinates. Shell panes don't take mouse input
-                // yet; only Native panes are forwarded to.
-                if let Some((id, lc, lr)) = self.pane_under_cursor() {
-                    if pressed {
-                        self.tabs[self.active].focused = id;
-                    }
-                    if let PaneKind::Native { server, .. } = &self.tabs[self.active].panes[id].kind
-                    {
-                        server.send_input(&InputEvent::Mouse(MouseInput {
-                            kind: if pressed {
-                                MouseKind::Down
-                            } else {
-                                MouseKind::Up
-                            },
-                            button: b,
-                            col: lc,
-                            row: lr,
-                            mods: pack_mods(self.mods),
-                        }));
-                    }
-                }
+                self.handle_mouse_input(event_loop, state, button);
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                // Don't scroll the terminal when the wheel event lands in
-                // the chrome strip — chip-scrolling can come later but
-                // forwarding now would scroll the underlying terminal,
-                // which is surprising when the cursor is on a chip.
-                if let Some(gpu) = &self.gpu {
-                    let (_, py) = self.cursor_px;
-                    if py < (gpu.inset_px + gpu.strip_h) as f64 {
-                        return;
-                    }
-                }
-                let (dx, dy) = match delta {
-                    MouseScrollDelta::LineDelta(x, y) => (x, y),
-                    MouseScrollDelta::PixelDelta(p) => (p.x as f32 / 24.0, p.y as f32 / 24.0),
-                };
-                // Scroll the pane under the cursor (None ⇒ on a divider).
-                let Some((id, col, row)) = self.pane_under_cursor() else {
-                    return;
-                };
-                let mods = pack_mods(self.mods);
-                match &mut self.tabs[self.active].panes[id].kind {
-                    // Shell mode — scroll vt100's scrollback. Skipped
-                    // while a full-screen TUI owns the alt-screen (it
-                    // manages its own view). Wheel up → into history.
-                    PaneKind::Shell { session: Some(s) } if !s.altscreen_active() => {
-                        let lines = (dy * 3.0).round() as i32;
-                        if lines != 0 {
-                            s.scroll(lines);
-                        }
-                    }
-                    // Native mode — forward the scroll to the backing app.
-                    PaneKind::Native { server, .. } => {
-                        if dy.abs() >= dx.abs() {
-                            let kind = if dy > 0.0 {
-                                MouseKind::ScrollUp
-                            } else if dy < 0.0 {
-                                MouseKind::ScrollDown
-                            } else {
-                                return;
-                            };
-                            server.send_input(&InputEvent::Mouse(MouseInput {
-                                kind,
-                                button: BUTTON_NONE,
-                                col,
-                                row,
-                                mods,
-                            }));
-                        } else {
-                            let kind = if dx > 0.0 {
-                                MouseKind::ScrollRight
-                            } else {
-                                MouseKind::ScrollLeft
-                            };
-                            server.send_input(&InputEvent::Mouse(MouseInput {
-                                kind,
-                                button: BUTTON_NONE,
-                                col,
-                                row,
-                                mods,
-                            }));
-                        }
-                    }
-                    _ => {}
-                }
+                self.handle_mouse_wheel(delta);
             }
             WindowEvent::RedrawRequested => {
-                self.tick(event_loop);
-                // Composite the active tab's panes into the window grid
-                // the GPU renders.
-                if let Some(gpu) = self.gpu.as_mut() {
-                    composite(&self.tabs[self.active], &mut gpu.grid);
-                }
-                // Settings modal paints over the current grid right
-                // before GPU render. Because we overlay every frame,
-                // the underlying mnml/shell render keeps refreshing
-                // below it — close the modal and the world reappears
-                // on the next tick.
-                if let (Some(gpu), Some(st)) = (self.gpu.as_mut(), self.settings.as_ref()) {
-                    settings_ui::draw(&mut gpu.grid, st);
-                }
-                if let Some(gpu) = &mut self.gpu {
-                    gpu.render();
-                }
-                if let Some(w) = &self.window {
-                    w.request_redraw();
-                }
+                self.handle_redraw_requested(event_loop);
             }
             _ => {}
         }
@@ -1821,6 +1185,665 @@ impl App {
                     let _ = l.wait_for_exit(std::time::Duration::from_millis(1200));
                 }
             }
+        }
+    }
+
+    fn handle_resized(&mut self, size: winit::dpi::PhysicalSize<u32>) {
+        let resize = {
+            let Some(gpu) = self.gpu.as_mut() else {
+                return;
+            };
+            gpu.resize(size.width, size.height)
+        };
+        // Always paint a frame after a resize — the surface was
+        // reconfigured (even if cols×rows stayed the same), so
+        // the framebuffer is fresh and would briefly show through
+        // as CLEAR_BG until the next event-driven render. Without
+        // this the window flickers during interactive resizes.
+        if let Some(w) = &self.window {
+            w.request_redraw();
+        }
+        // Re-lay-out every tab's panes to the new window size.
+        if resize.is_some() {
+            self.relayout_all_panes();
+        }
+    }
+
+    fn handle_keyboard_input(&mut self, event_loop: &ActiveEventLoop, ke: winit::event::KeyEvent) {
+        if ke.state != ElementState::Pressed {
+            return;
+        }
+        // Settings panel swallows keys while open (Esc closes,
+        // Enter saves; everything else either adjusts the
+        // selected field or no-ops).
+        if self.settings.is_some() && self.settings_handle_key(&ke) {
+            return;
+        }
+        // A tab rename swallows keys while active — Esc cancels,
+        // Enter commits, Backspace deletes, everything else
+        // types into the name.
+        if self.renaming_tab.is_some() && self.rename_handle_key(&ke) {
+            return;
+        }
+        // Tab-management chords: ⌘T new, ⌘W close, ⌘1..⌘9 jump,
+        // ⌘⇧[ / ⌘⇧] cycle. macOS Terminal / iTerm / Safari
+        // conventions. Cmd = winit's `super_key()`. Intercept
+        // before forwarding to the active tab's Mode so the
+        // chord never reaches the hosted process.
+        if self.mods.super_key()
+            && let Key::Character(s) = &ke.logical_key
+        {
+            let c = s.chars().next();
+            let shift = self.mods.shift_key();
+            match (c, shift) {
+                (Some('t'), false) => {
+                    // ⌘T spawns the same kind of tab the window
+                    // launched with — Native when --editor was
+                    // set, shell otherwise.
+                    if self.editor_template.is_some() {
+                        self.new_native_tab();
+                    } else {
+                        self.new_shell_tab();
+                    }
+                    if let Some(w) = &self.window {
+                        w.request_redraw();
+                    }
+                    return;
+                }
+                (Some('w'), true) => {
+                    // ⌘⇧W — close the focused split pane. Its
+                    // split collapses so the sibling takes the
+                    // freed space; closing the tab's last pane
+                    // closes the whole tab.
+                    self.close_focused_pane(event_loop);
+                    if let Some(w) = &self.window {
+                        w.request_redraw();
+                    }
+                    return;
+                }
+                (Some('d'), false) => {
+                    // ⌘D — split the focused pane right (a fresh
+                    // shell pane to the right). tmnl-level —
+                    // never forwarded to the hosted process.
+                    self.split_active_pane(SplitDir::Vertical);
+                    if let Some(w) = &self.window {
+                        w.request_redraw();
+                    }
+                    return;
+                }
+                (Some('d'), true) => {
+                    // ⌘⇧D — split the focused pane down (a fresh
+                    // shell pane below).
+                    self.split_active_pane(SplitDir::Horizontal);
+                    if let Some(w) = &self.window {
+                        w.request_redraw();
+                    }
+                    return;
+                }
+                (Some('w'), false) => {
+                    // Native (mnml) tabs: forward ⌘W as ⌃W so the
+                    // host process closes its active buffer/pane
+                    // rather than tmnl killing the whole tab.
+                    // mnml shows a confirmation prompt when it
+                    // would close the last buffer, so an
+                    // accidental ⌘W doesn't drop the user back
+                    // onto the welcome screen or the shell.
+                    // Shell tabs keep the original close-tab
+                    // behavior (no way to recover the shell
+                    // otherwise).
+                    if matches!(
+                        &self.tabs[self.active].focused_pane().kind,
+                        PaneKind::Native { .. }
+                    ) {
+                        let translated_mods = pack_mods_cmd_to_ctrl(self.mods);
+                        if let PaneKind::Native { server, .. } =
+                            &mut self.tabs[self.active].focused_pane_mut().kind
+                            && let Some(code) = translate_key(&ke.logical_key, self.mods)
+                        {
+                            server.send_input(&InputEvent::Key(KeyInput {
+                                code,
+                                mods: translated_mods,
+                                press: true,
+                            }));
+                        }
+                        return;
+                    }
+                    self.close_active_tab(event_loop);
+                    if let Some(w) = &self.window {
+                        w.request_redraw();
+                    }
+                    return;
+                }
+                (Some(d), false) if d.is_ascii_digit() && d != '0' => {
+                    // Native tabs: forward ⌘<N> as ⌥<N> so mnml's
+                    // `tab.goto_N` chord (Alt+1..9) switches mnml
+                    // tab pages instead of tmnl tabs. The user
+                    // can still switch tmnl tabs explicitly with
+                    // ⌘⇧[ / ⌘⇧] (cycle) or via the tab strip.
+                    // Shell tabs keep the original behavior
+                    // because they have no in-app tab pages.
+                    if matches!(
+                        &self.tabs[self.active].focused_pane().kind,
+                        PaneKind::Native { .. }
+                    ) {
+                        if let PaneKind::Native { server, .. } =
+                            &mut self.tabs[self.active].focused_pane_mut().kind
+                            && let Some(code) = translate_key(&ke.logical_key, self.mods)
+                        {
+                            server.send_input(&InputEvent::Key(KeyInput {
+                                code,
+                                mods: MOD_ALT,
+                                press: true,
+                            }));
+                        }
+                        return;
+                    }
+                    let n = d.to_digit(10).unwrap() as usize - 1;
+                    self.switch_to_tab(n);
+                    if let Some(w) = &self.window {
+                        w.request_redraw();
+                    }
+                    return;
+                }
+                (Some('['), true) => {
+                    self.cycle_tab(false);
+                    if let Some(w) = &self.window {
+                        w.request_redraw();
+                    }
+                    return;
+                }
+                (Some(']'), true) => {
+                    self.cycle_tab(true);
+                    if let Some(w) = &self.window {
+                        w.request_redraw();
+                    }
+                    return;
+                }
+                // Font zoom: ⌘+ / ⌘= zoom in (both share the
+                // physical key — `=` unmodified, `+` with shift),
+                // ⌘- zoom out, ⌘0 reset. macOS Terminal / iTerm /
+                // browser convention.
+                (Some('='), _) | (Some('+'), _) => {
+                    self.zoom_font(FONT_ZOOM_STEP);
+                    if let Some(w) = &self.window {
+                        w.request_redraw();
+                    }
+                    return;
+                }
+                (Some('-'), false) | (Some('_'), _) => {
+                    self.zoom_font(-FONT_ZOOM_STEP);
+                    if let Some(w) = &self.window {
+                        w.request_redraw();
+                    }
+                    return;
+                }
+                (Some('0'), false) => {
+                    self.reset_font_zoom();
+                    if let Some(w) = &self.window {
+                        w.request_redraw();
+                    }
+                    return;
+                }
+                // Mac-style editing chords → translate to Ctrl-equivalent
+                // for the hosted Native client (mnml understands Ctrl+Z
+                // as undo, Ctrl+C/V/X/A/S/F for clipboard/select-all/
+                // save/find). Only fires for Native tabs — Shell tabs
+                // are bare terminals where remapping Cmd would break
+                // ⌘C-as-copy / ⌘V-as-paste in the surrounding OS.
+                (Some(ch), _)
+                    if matches!(
+                        ch,
+                        // Editing / clipboard chords (existing).
+                        'z' | 'x' | 'c' | 'v' | 'a' | 's' | 'f' | 'n'
+                        // Navigation chords forwarded as ⌃-equivalents
+                        // so mnml's existing standard-mode bindings
+                        // light up under Mac muscle memory:
+                        //   ⌘P → ⌃P → file picker (also ⌘⇧P palette)
+                        //   ⌘B → ⌃B → toggle file tree
+                        //   ⌘G → ⌃G → goto line
+                        //   ⌘/ → ⌃/ → toggle line comment
+                        | 'p' | 'b' | 'g' | '/'
+                    ) && matches!(
+                        &self.tabs[self.active].focused_pane().kind,
+                        PaneKind::Native { .. }
+                    ) =>
+                {
+                    let translated_mods = pack_mods_cmd_to_ctrl(self.mods);
+                    if let PaneKind::Native { server, .. } =
+                        &mut self.tabs[self.active].focused_pane_mut().kind
+                        && let Some(code) = translate_key(&ke.logical_key, self.mods)
+                    {
+                        server.send_input(&InputEvent::Key(KeyInput {
+                            code,
+                            mods: translated_mods,
+                            press: true,
+                        }));
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+        // ⌘⌥ + Arrow — move focus to the split pane in that
+        // direction. tmnl-level (consumed, never forwarded) so
+        // it works in both Shell and Native tabs.
+        if self.mods.super_key()
+            && self.mods.alt_key()
+            && let Key::Named(nk) = &ke.logical_key
+        {
+            let dir = match nk {
+                NamedKey::ArrowLeft => Some(FocusDir::Left),
+                NamedKey::ArrowRight => Some(FocusDir::Right),
+                NamedKey::ArrowUp => Some(FocusDir::Up),
+                NamedKey::ArrowDown => Some(FocusDir::Down),
+                _ => None,
+            };
+            if let Some(dir) = dir {
+                self.focus_dir(dir);
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+                return;
+            }
+        }
+        // ⌘I — AI completion of the current command line.
+        // ⌘K — generate a command from a typed description.
+        if self.mods.super_key()
+            && let Key::Character(s) = &ke.logical_key
+        {
+            if s.eq_ignore_ascii_case("i") {
+                self.trigger_ai_completion();
+                return;
+            }
+            if s.eq_ignore_ascii_case("k") {
+                self.trigger_ai_generate();
+                return;
+            }
+        }
+        // Shift+PageUp / Shift+PageDown — scroll shell scrollback.
+        if self.mods.shift_key()
+            && let Key::Named(nk) = &ke.logical_key
+            && matches!(
+                nk,
+                winit::keyboard::NamedKey::PageUp | winit::keyboard::NamedKey::PageDown
+            )
+        {
+            let page = self
+                .gpu
+                .as_ref()
+                .map_or(20, |g| g.grid.rows.saturating_sub(1) as i32);
+            let up = matches!(nk, winit::keyboard::NamedKey::PageUp);
+            if let PaneKind::Shell { session: Some(s) } =
+                &mut self.tabs[self.active].focused_pane_mut().kind
+            {
+                s.scroll(if up { page } else { -page });
+            }
+            return;
+        }
+        let focused = self.tabs[self.active].focused;
+        match &mut self.tabs[self.active].panes[focused].kind {
+            PaneKind::Shell { session } => {
+                if let Some(s) = session.as_mut() {
+                    // Any keystroke cancels an in-flight AI
+                    // request — the command line is changing.
+                    if self.fim_pending.take().is_some() {
+                        self.fim_redraw = true;
+                    }
+                    // An active ghost suggestion intercepts Tab
+                    // (accept); any other key dismisses it, then
+                    // is forwarded to the shell normally.
+                    let mut consumed = false;
+                    if self.ghost.is_some() {
+                        if matches!(&ke.logical_key, Key::Named(winit::keyboard::NamedKey::Tab)) {
+                            if let Some(g) = self.ghost.take() {
+                                // Stage 2 replaces the typed
+                                // description; Stage 1 appends.
+                                if g.erase > 0 {
+                                    s.write_bytes(&vec![0x7f; g.erase]);
+                                }
+                                s.write_bytes(g.text.as_bytes());
+                            }
+                            consumed = true;
+                        } else {
+                            self.ghost = None;
+                        }
+                        self.fim_redraw = true;
+                    }
+                    if !consumed && let Some(bytes) = winit_key_to_bytes(&ke.logical_key, self.mods)
+                    {
+                        s.scroll_reset(); // typing snaps to the bottom
+                        s.write_bytes(&bytes);
+                    }
+                }
+            }
+            PaneKind::Native { server, .. } => {
+                if let Some(code) = translate_key(&ke.logical_key, self.mods) {
+                    let input = InputEvent::Key(KeyInput {
+                        code,
+                        mods: pack_mods(self.mods),
+                        press: true,
+                    });
+                    server.send_input(&input);
+                }
+            }
+        }
+    }
+
+    fn handle_cursor_moved(&mut self, position: winit::dpi::PhysicalPosition<f64>) {
+        // Snapshot what we need off the GPU up front so the
+        // borrow is released before `relayout_all_panes` (which
+        // needs `&mut self`).
+        let Some((cell, (gcols, grows), chrome_h)) = self.gpu.as_ref().map(|g| {
+            (
+                g.pixel_to_cell(position.x, position.y),
+                (g.grid.cols, g.grid.rows),
+                (g.inset_px + g.strip_h) as f64,
+            )
+        }) else {
+            return;
+        };
+        let prev = self.cursor_cell;
+        self.cursor_cell = cell;
+        self.cursor_px = (position.x, position.y);
+        let (col, row) = cell;
+        let in_chrome = position.y < chrome_h;
+
+        // A divider drag owns the event while it's armed — move
+        // the split's ratio so the divider tracks the cursor.
+        if let Some(idx) = self.dragging_divider {
+            if !in_chrome && self.buttons_down & (1u8 << BUTTON_LEFT) != 0 {
+                let area = Rect::new(0, 0, gcols, grows);
+                self.tabs[self.active]
+                    .layout
+                    .resize_split_at(area, idx, col as u32, row as u32);
+                self.relayout_all_panes();
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+            }
+            return;
+        }
+
+        // Drags that originated in the strip stay in chrome —
+        // don't forward them as terminal drag events.
+        if in_chrome {
+            // Drag-to-reorder: while a chip drag is armed and the
+            // cursor crosses into a different chip's rect, swap
+            // the two tabs.
+            if let Some(src) = self.dragging_tab
+                && self.buttons_down & (1u8 << BUTTON_LEFT) != 0
+                && let Some(gpu) = &self.gpu
+            {
+                let dst = gpu
+                    .strip_chip_rects
+                    .iter()
+                    .find(|(x0, x1, _)| position.x >= *x0 as f64 && position.x < *x1 as f64)
+                    .map(|(_, _, idx)| *idx);
+                if let Some(dst) = dst
+                    && dst != src
+                    && dst < self.tabs.len()
+                {
+                    self.tabs.swap(src, dst);
+                    if self.active == src {
+                        self.active = dst;
+                    } else if self.active == dst {
+                        self.active = src;
+                    }
+                    self.dragging_tab = Some(dst);
+                    if let Some(w) = &self.window {
+                        w.request_redraw();
+                    }
+                }
+            }
+            return;
+        }
+        // Route hover / drag to the pane under the cursor, in
+        // that pane's local coordinates. A Native client needs
+        // Moved events for hover tooltips / divider highlights;
+        // a plain shell only gets motion under ?1003h but a
+        // Native tab always wants them.
+        if prev != self.cursor_cell
+            && let Some((id, lc, lr)) = self.pane_under_cursor()
+        {
+            let held = self.buttons_down != 0;
+            let mouse = MouseInput {
+                kind: if held {
+                    MouseKind::Drag
+                } else {
+                    MouseKind::Moved
+                },
+                button: if held {
+                    first_button(self.buttons_down)
+                } else {
+                    BUTTON_NONE
+                },
+                col: lc,
+                row: lr,
+                mods: pack_mods(self.mods),
+            };
+            if let PaneKind::Native { server, .. } = &self.tabs[self.active].panes[id].kind {
+                server.send_input(&InputEvent::Mouse(mouse));
+            }
+        }
+    }
+
+    fn handle_mouse_input(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        state: ElementState,
+        button: MouseButton,
+    ) {
+        let b = match button {
+            MouseButton::Left => BUTTON_LEFT,
+            MouseButton::Right => BUTTON_RIGHT,
+            MouseButton::Middle => BUTTON_MIDDLE,
+            _ => BUTTON_NONE,
+        };
+        let pressed = state == ElementState::Pressed;
+        if pressed {
+            self.buttons_down |= 1u8 << b;
+        } else {
+            self.buttons_down &= !(1u8 << b);
+        }
+        // A click anywhere commits an in-progress tab rename, so
+        // the inline-edit chip can't be stranded by a stray
+        // click. (A right-click to start a *new* rename commits
+        // the old one first, then re-enters below.)
+        if pressed && self.renaming_tab.is_some() {
+            self.commit_rename();
+        }
+        // Strip-region intercept — clicks on tab chips switch
+        // (left) / close (middle). Tested against the cached
+        // pixel cursor against the rects produced by the last
+        // `strip_chip_instances` pass. Runs only on press so
+        // releases don't fire a second time; never forwards
+        // strip clicks to the terminal (return early).
+        if let Some(gpu) = &self.gpu {
+            let (px, py) = self.cursor_px;
+            let in_chrome = py < (gpu.inset_px + gpu.strip_h) as f64;
+            if in_chrome {
+                if pressed {
+                    // `+` new-tab button sits past the last chip;
+                    // check it first since its rect is disjoint.
+                    let on_plus = gpu
+                        .strip_new_tab_rect
+                        .map(|(x0, x1)| px >= x0 as f64 && px < x1 as f64)
+                        .unwrap_or(false);
+                    if on_plus && button == MouseButton::Left {
+                        if self.editor_template.is_some() {
+                            self.new_native_tab();
+                        } else {
+                            self.new_shell_tab();
+                        }
+                        return;
+                    }
+                    // Per-chip `⊗` close badge — left-click on
+                    // the badge closes that specific tab.
+                    // Tested BEFORE the chip rect so the close
+                    // cell isn't also treated as a switch click.
+                    let close_hit = gpu
+                        .strip_chip_close_rects
+                        .iter()
+                        .find(|(x0, x1, _)| px >= *x0 as f64 && px < *x1 as f64)
+                        .map(|(_, _, idx)| *idx);
+                    if let Some(idx) = close_hit
+                        && button == MouseButton::Left
+                    {
+                        self.close_tab_at(idx, event_loop);
+                        return;
+                    }
+                    let hit = gpu
+                        .strip_chip_rects
+                        .iter()
+                        .find(|(x0, x1, _)| px >= *x0 as f64 && px < *x1 as f64)
+                        .map(|(_, _, idx)| *idx);
+                    if let Some(idx) = hit {
+                        match button {
+                            MouseButton::Left => {
+                                self.switch_to_tab(idx);
+                                // Arm a potential drag — a
+                                // subsequent CursorMoved over
+                                // a different chip will swap.
+                                self.dragging_tab = Some(self.active);
+                            }
+                            MouseButton::Middle => self.close_tab_at(idx, event_loop),
+                            // Right-click → rename the tab inline.
+                            MouseButton::Right => self.start_rename(idx),
+                            _ => {}
+                        }
+                    }
+                } else if button == MouseButton::Left {
+                    // Released — end any in-flight drag.
+                    self.dragging_tab = None;
+                }
+                return;
+            }
+        }
+        // Releasing the left button ends any in-flight drag —
+        // chip-reorder or divider-resize.
+        if !pressed && button == MouseButton::Left {
+            self.dragging_tab = None;
+            self.dragging_divider = None;
+        }
+        // A left-press on a divider starts a drag-resize of that
+        // split — it owns the gesture, no pane dispatch.
+        if pressed
+            && button == MouseButton::Left
+            && let Some(idx) = self.divider_at_cursor()
+        {
+            self.dragging_divider = Some(idx);
+            return;
+        }
+        // Body click — focus the pane under the cursor (on
+        // press) and forward the event to it in that pane's
+        // local coordinates. Shell panes don't take mouse input
+        // yet; only Native panes are forwarded to.
+        if let Some((id, lc, lr)) = self.pane_under_cursor() {
+            if pressed {
+                self.tabs[self.active].focused = id;
+            }
+            if let PaneKind::Native { server, .. } = &self.tabs[self.active].panes[id].kind {
+                server.send_input(&InputEvent::Mouse(MouseInput {
+                    kind: if pressed {
+                        MouseKind::Down
+                    } else {
+                        MouseKind::Up
+                    },
+                    button: b,
+                    col: lc,
+                    row: lr,
+                    mods: pack_mods(self.mods),
+                }));
+            }
+        }
+    }
+
+    fn handle_mouse_wheel(&mut self, delta: MouseScrollDelta) {
+        // Don't scroll the terminal when the wheel event lands in
+        // the chrome strip — chip-scrolling can come later but
+        // forwarding now would scroll the underlying terminal,
+        // which is surprising when the cursor is on a chip.
+        if let Some(gpu) = &self.gpu {
+            let (_, py) = self.cursor_px;
+            if py < (gpu.inset_px + gpu.strip_h) as f64 {
+                return;
+            }
+        }
+        let (dx, dy) = match delta {
+            MouseScrollDelta::LineDelta(x, y) => (x, y),
+            MouseScrollDelta::PixelDelta(p) => (p.x as f32 / 24.0, p.y as f32 / 24.0),
+        };
+        // Scroll the pane under the cursor (None ⇒ on a divider).
+        let Some((id, col, row)) = self.pane_under_cursor() else {
+            return;
+        };
+        let mods = pack_mods(self.mods);
+        match &mut self.tabs[self.active].panes[id].kind {
+            // Shell mode — scroll vt100's scrollback. Skipped
+            // while a full-screen TUI owns the alt-screen (it
+            // manages its own view). Wheel up → into history.
+            PaneKind::Shell { session: Some(s) } if !s.altscreen_active() => {
+                let lines = (dy * 3.0).round() as i32;
+                if lines != 0 {
+                    s.scroll(lines);
+                }
+            }
+            // Native mode — forward the scroll to the backing app.
+            PaneKind::Native { server, .. } => {
+                if dy.abs() >= dx.abs() {
+                    let kind = if dy > 0.0 {
+                        MouseKind::ScrollUp
+                    } else if dy < 0.0 {
+                        MouseKind::ScrollDown
+                    } else {
+                        return;
+                    };
+                    server.send_input(&InputEvent::Mouse(MouseInput {
+                        kind,
+                        button: BUTTON_NONE,
+                        col,
+                        row,
+                        mods,
+                    }));
+                } else {
+                    let kind = if dx > 0.0 {
+                        MouseKind::ScrollRight
+                    } else {
+                        MouseKind::ScrollLeft
+                    };
+                    server.send_input(&InputEvent::Mouse(MouseInput {
+                        kind,
+                        button: BUTTON_NONE,
+                        col,
+                        row,
+                        mods,
+                    }));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_redraw_requested(&mut self, event_loop: &ActiveEventLoop) {
+        self.tick(event_loop);
+        // Composite the active tab's panes into the window grid
+        // the GPU renders.
+        if let Some(gpu) = self.gpu.as_mut() {
+            composite(&self.tabs[self.active], &mut gpu.grid);
+        }
+        // Settings modal paints over the current grid right
+        // before GPU render. Because we overlay every frame,
+        // the underlying mnml/shell render keeps refreshing
+        // below it — close the modal and the world reappears
+        // on the next tick.
+        if let (Some(gpu), Some(st)) = (self.gpu.as_mut(), self.settings.as_ref()) {
+            settings_ui::draw(&mut gpu.grid, st);
+        }
+        if let Some(gpu) = &mut self.gpu {
+            gpu.render();
+        }
+        if let Some(w) = &self.window {
+            w.request_redraw();
         }
     }
 }
