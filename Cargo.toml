@@ -27,11 +27,11 @@ env_logger = "0.11"
 log = "0.4"
 fontdue = "0.9"
 bytemuck = { version = "1", features = ["derive"] }
-tmnl-protocol = { path = "../tmnl-protocol" }
+tmnl-protocol = { path = "../tmnl-protocol", version = "0.0.1" }
 # Embedded local AI command completion (qwen2.5-coder via candle). Kept
 # as its own crate so candle's large dependency tree compiles once and
 # tmnl's incremental rebuilds don't recompile it. First build is slow.
-fim-engine = { path = "../fim-engine" }
+fim-engine = { path = "../fim-engine", version = "0.1.0" }
 # Shell mode — host a real pty + parse its output into cells. Versions match
 # what mnml's pty_pane uses so we share one source-of-truth in the workspace.
 vt100 = "0.16"
