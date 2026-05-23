@@ -68,3 +68,19 @@ command line — a backing app renders its own suggestions).
 Shell mode should not become a race to out-feature WezTerm / Ghostty — that race
 is unwinnable. It needs to clear table stakes and stop. The differentiation is
 native mode: a clean, structured rendering target that apps draw to directly.
+
+## Refactor: shrink `main.rs`
+
+**Problem.** `src/main.rs` is **3,724 lines** — the only outlier in tmnl. It mixes the entry point, the App struct, winit event handlers, the wgpu render-loop driver, and glue. The rest of the codebase is well-factored (everything else < 1 k lines), so this is small and contained — much smaller than mnml's parallel refactor.
+
+**Approach.** Pull the App state + the event-loop body into a new `src/app.rs`; `main.rs` becomes just `fn main()` + the winit `EventLoop` bootstrap.
+
+**Phases.**
+
+- [ ] **1. Extract the App struct + its `impl`** into `src/app.rs`. `main.rs` `use crate::app::App;`. Verify build + the existing 92 tests.
+- [ ] **2. Extract the winit handler body** (the bulk of the `EventLoop::run` closure) into `App::handle_event` or similar in `src/app.rs`. `main.rs`'s `EventLoop::run` becomes a thin shim that forwards events to `App`. Verify.
+- [ ] **3. (Optional) further split** `src/app.rs` if it ends > 2 k lines — e.g. `src/app/render.rs` for any per-frame draw bits that didn't already move to `src/render/`.
+
+**Target.** `src/main.rs` < 200 lines; `src/app.rs` < 2 k lines; no behaviour change; tests green; `tmnl --headless` still works.
+
+**Out of scope.** Renaming things, splitting `src/shell.rs` (908 lines — fine), and unrelated reorg.
