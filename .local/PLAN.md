@@ -77,10 +77,18 @@ native mode: a clean, structured rendering target that apps draw to directly.
 
 **Phases.**
 
-- [ ] **1. Extract the App struct + its `impl`** into `src/app.rs`. `main.rs` `use crate::app::App;`. Verify build + the existing 92 tests.
-- [ ] **2. Extract the winit handler body** (the bulk of the `EventLoop::run` closure) into `App::handle_event` or similar in `src/app.rs`. `main.rs`'s `EventLoop::run` becomes a thin shim that forwards events to `App`. Verify.
+- [x] **1. Extract the App struct + its `impl`** into `src/app.rs` (commit `e6420df`). The App struct stayed in main.rs (tightly woven with Pane / Tab / Ghost / EditorTabTemplate types + free fns); both `impl App` blocks (1808 lines combined) moved.
+- [x] **2. Extract the winit handler body.** Six per-variant handlers moved (commit `5627b8b`): `handle_resized`, `handle_keyboard_input` (323 lines), `handle_cursor_moved`, `handle_mouse_input`, `handle_mouse_wheel`, `handle_redraw_requested`. `window_event` is now a 35-line dispatcher.
 - [ ] **3. (Optional) further split** `src/app.rs` if it ends > 2 k lines — e.g. `src/app/render.rs` for any per-frame draw bits that didn't already move to `src/render/`.
 
-**Target.** `src/main.rs` < 200 lines; `src/app.rs` < 2 k lines; no behaviour change; tests green; `tmnl --headless` still works.
+**Targets vs reality.**
+
+| Target | Before | After | Status |
+|--------|--------|-------|--------|
+| `src/main.rs` < 200 lines | 3 724 | 1 915 | **Missed.** Bulk is the App struct + supporting types + free fns. Phase 1 explicitly kept those in main.rs to avoid hauling 10+ types with the impl. Closing the gap means doing Phase 3 (more granular split). |
+| `src/app.rs` < 2 k lines | n/a | 1 850 | ✅ |
+| no behaviour change | — | — | ✅ |
+| tests green | 92 | 92 | ✅ |
+| `tmnl --headless` still works | yes | yes | ✅ (unit tests cover the headless path) |
 
 **Out of scope.** Renaming things, splitting `src/shell.rs` (908 lines — fine), and unrelated reorg.
