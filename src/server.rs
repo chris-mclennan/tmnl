@@ -6,7 +6,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use tmnl_protocol::{
-    Frame, InputEvent, Message, PROTOCOL_VERSION, Resize, read_message, write_message,
+    Frame, InputEvent, Message, PROTOCOL_VERSION, Resize, pack_rgba_u8, read_message,
+    write_message,
 };
 
 pub struct Server {
@@ -119,20 +120,39 @@ fn accept_loop(
         }
         eprintln!("tmnl: client connected");
         let _ = event_tx.send(ServerEvent::ClientConnected);
-        let hello_ok = {
+        let handshake_ok = {
             let mut guard = writer_slot.lock().unwrap();
             match guard.as_mut() {
-                Some(s) => write_message(
-                    s,
-                    &Message::Hello {
-                        version: PROTOCOL_VERSION,
-                    },
-                )
-                .is_ok(),
+                Some(s) => {
+                    let hello = write_message(
+                        s,
+                        &Message::Hello {
+                            version: PROTOCOL_VERSION,
+                        },
+                    );
+                    // Hand the client our chrome colors so it can theme
+                    // its bg / fg / accent to match the window. Without
+                    // this, mixr / mnml / internal-app fall back to their
+                    // own defaults and a darker pane sits inside a
+                    // lighter (or differently-tinted) tmnl window, with
+                    // a visible mismatch ring around the pane edge.
+                    // Values mirror the constants in `main.rs`:
+                    // CLEAR_BG / TEXT_FG / a teal accent from the
+                    // launcher script.
+                    let palette = write_message(
+                        s,
+                        &Message::Palette {
+                            bg: pack_rgba_u8(0x1b, 0x1f, 0x27, 0xff),
+                            fg: pack_rgba_u8(0xdb, 0xde, 0xeb, 0xff),
+                            accent: pack_rgba_u8(0x53, 0xc0, 0xbc, 0xff),
+                        },
+                    );
+                    hello.is_ok() && palette.is_ok()
+                }
                 None => false,
             }
         };
-        if !hello_ok {
+        if !handshake_ok {
             let _ = event_tx.send(ServerEvent::ClientDisconnected);
             *writer_slot.lock().unwrap() = None;
             continue;
@@ -503,8 +523,10 @@ mod tests {
         client.set_read_timeout(Some(TIMEOUT)).unwrap();
         assert!(server.events.recv_timeout(TIMEOUT).is_ok());
         let mut r = BufReader::new(&client);
-        // First message off the wire is the server's Hello.
+        // First two messages off the wire are the server's Hello +
+        // Palette (chrome colors so the client can theme to match).
         assert!(matches!(read_message(&mut r), Ok(Message::Hello { .. })));
+        assert!(matches!(read_message(&mut r), Ok(Message::Palette { .. })));
         server.send_resize(132, 43);
         match read_message(&mut r) {
             Ok(Message::Resize(rz)) => assert_eq!((rz.cols, rz.rows), (132, 43)),
@@ -522,7 +544,9 @@ mod tests {
         client.set_read_timeout(Some(TIMEOUT)).unwrap();
         assert!(server.events.recv_timeout(TIMEOUT).is_ok());
         let mut r = BufReader::new(&client);
+        // Hello + Palette before any test-injected messages.
         assert!(matches!(read_message(&mut r), Ok(Message::Hello { .. })));
+        assert!(matches!(read_message(&mut r), Ok(Message::Palette { .. })));
         server.send_input(&InputEvent::Key(KeyInput {
             code: KeyCode::Enter,
             mods: 0,
