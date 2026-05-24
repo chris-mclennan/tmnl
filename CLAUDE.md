@@ -142,3 +142,18 @@ The **server** binds the Unix socket; the **client** connects to it.
 `~/.config/tmnl/config.toml`, loaded at startup by `config::Config::load`.
 CLI flags + env vars still win (escape hatches for one-off launches); the
 Settings window edits and persists this file.
+
+## Family settings UI convention
+
+tmnl's Settings modal (Cmd+, → `src/settings_ui.rs`) follows the family
+settings UI convention shared with mnml + mixr — `▸` focus marker, `*`
+modified marker (lights when the row differs from `Config::default()`),
+`←→` adjust value, `r` reset focused row, `R` reset all (placeholder
+matching family convention; same as `r` while there's only one
+setting), `Enter` save + close, `Esc` cancel (reverts via the
+`SettingsState.original` snapshot). `⌫` / `Delete` kept as an alias
+for `r` (muscle memory). The full sectioned-list shape (section
+headers, `[bracket]` choices) doesn't apply yet — with one numeric
+setting (`inset`) the modal stays single-row. Numeric-row support is a
+v2 convention extension; the modal will graduate to the full sectioned
+list when tmnl grows more settings (font size, cursor style, …).

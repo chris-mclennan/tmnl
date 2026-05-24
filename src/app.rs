@@ -1096,7 +1096,24 @@ impl App {
                 true
             }
             Key::Named(NamedKey::Backspace) | Key::Named(NamedKey::Delete) => {
-                st.reset();
+                st.reset_row();
+                let edited = st.cfg.clone();
+                self.apply_inset_from_cfg(&edited);
+                true
+            }
+            // `r` — reset focused row (family convention). `⌫` above is
+            // kept as an alias for muscle memory.
+            Key::Character(s) if s.as_str() == "r" => {
+                st.reset_row();
+                let edited = st.cfg.clone();
+                self.apply_inset_from_cfg(&edited);
+                true
+            }
+            // `R` (shift+r) — reset all. Same as `r` while there's only
+            // one setting; keymap matches the family convention so it
+            // doesn't have to change when more settings land.
+            Key::Character(s) if s.as_str() == "R" => {
+                st.reset_all();
                 let edited = st.cfg.clone();
                 self.apply_inset_from_cfg(&edited);
                 true
