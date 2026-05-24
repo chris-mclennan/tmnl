@@ -1448,9 +1448,18 @@ fn main() {
             None
         }
     };
-    // `--mnml` launches mnml in native/integrated mode (UDS blit channel,
-    // wgpu renders, mnml drives input). Future siblings: `--mixr`, etc.
-    let editor_mode = argv.iter().any(|a| a == "--mnml");
+    // `--mnml` / `--mixr` both launch in native/integrated mode (UDS
+    // blit channel, wgpu renders, the spawned app drives input). The
+    // chosen app populates `editor_template` so ⌘T spawns more tabs
+    // of the same flavor.
+    let which_app = if argv.iter().any(|a| a == "--mixr") {
+        Some(launcher::LaunchApp::Mixr)
+    } else if argv.iter().any(|a| a == "--mnml") {
+        Some(launcher::LaunchApp::Mnml)
+    } else {
+        None
+    };
+    let editor_mode = which_app.is_some();
     let no_launch = argv.iter().any(|a| a == "--no-launch");
     let cfg = Config::load();
     // Native mode hosts a TUI directly — always edge-to-edge. Shell
@@ -1467,7 +1476,7 @@ fn main() {
     let mut iter = argv.iter().peekable();
     while let Some(a) = iter.next() {
         match a.as_str() {
-            "--mnml" => {}
+            "--mnml" | "--mixr" => {}
             "--inset" | "--inset-native" | "--inset-shell" => {
                 // Skip the value too if there is one.
                 if iter.peek().is_some_and(|v| !v.starts_with("--")) {
@@ -1481,10 +1490,10 @@ fn main() {
 
     // Capture launch-time defaults for spawning additional Native tabs
     // via ⌘T later. `None` ⇒ shell mode (⌘T opens a shell instead).
-    let editor_template: Option<EditorTabTemplate> = if editor_mode {
+    let editor_template: Option<EditorTabTemplate> = if let Some(app) = which_app {
         let workspace = launcher::resolve_workspace(workspace_arg.as_deref());
-        let command = launcher::resolve_launch_command();
-        let extra_args = launcher::default_extra_args();
+        let command = launcher::resolve_launch_command_for(app);
+        let extra_args = launcher::default_extra_args_for(app);
         Some(EditorTabTemplate {
             command,
             workspace,
@@ -1599,9 +1608,22 @@ fn main() {
     // having to type the path. Skipped in editor mode (the user already
     // told us what to open) + when recents is empty (nothing to offer).
     if !editor_mode {
-        let recents_list = recents::load();
-        if !recents_list.is_empty() {
-            app.welcome = Some(welcome::WelcomeState::open(recents_list));
+        // Welcome list: user's recents on top, then the always-present
+        // built-in launchers (mnml / mixr) so a fresh tmnl install
+        // still has a one-keypress path to native-app tabs.
+        let mut list = recents::load();
+        for built in recents::builtin_entries() {
+            // De-dup: if the user has already launched a built-in,
+            // their (more-specific) recents entry wins.
+            let already = list
+                .iter()
+                .any(|e| e.command == built.command && e.args == built.args);
+            if !already {
+                list.push(built);
+            }
+        }
+        if !list.is_empty() {
+            app.welcome = Some(welcome::WelcomeState::open(list));
         }
     }
     event_loop.run_app(&mut app).unwrap();

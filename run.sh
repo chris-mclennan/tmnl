@@ -23,6 +23,10 @@
 #                                 its own wgpu window. Pass-through args
 #                                 (workspace path, --input, --ascii) go to
 #                                 the spawned mnml.
+#   ./run.sh mixr [args...]       Launch tmnl with mixr as a native tab
+#                                 (`tmnl --mixr`). Same machinery as `mnml`
+#                                 mode but resolves to the mixr binary and
+#                                 defaults to `--dashboard`.
 #   ./run.sh headless             tmnl --headless (no window, scripted stdin).
 #   ./run.sh no-launch            tmnl --mnml --no-launch — editor mode but
 #                                 don't auto-spawn; useful for manually
@@ -55,6 +59,11 @@ case "${1:-default}" in
     shift
     cargo build --release --quiet
     exec ./target/release/tmnl --mnml "$@"
+    ;;
+  mixr)
+    shift
+    cargo build --release --quiet
+    exec ./target/release/tmnl --mixr "$@"
     ;;
   headless)
     cargo build --release --quiet

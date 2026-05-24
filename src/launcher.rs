@@ -146,19 +146,45 @@ impl Drop for Launcher {
     }
 }
 
-/// Resolve the mnml binary path:
-///   1. `$TMNL_LAUNCH_CMD` if set (absolute or PATH-resolvable).
-///   2. `<tmnl-exe-parent>/../../../mnml/target/debug/mnml` — for `cargo run`
-///      sibling-crate dev convenience.
-///   3. `mnml` (PATH lookup).
-pub fn resolve_launch_command() -> PathBuf {
-    if let Ok(v) = std::env::var("TMNL_LAUNCH_CMD")
+/// Which family app `--mnml` / `--mixr` should spawn under tmnl's
+/// editor (native) mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LaunchApp {
+    Mnml,
+    Mixr,
+}
+
+impl LaunchApp {
+    /// Sibling-repo + binary names. mnml lives at
+    /// `<parent>/mnml/target/<profile>/mnml`; mixr at
+    /// `<parent>/mixr-rs/target/<profile>/mixr` (the repo dir's
+    /// `-rs` suffix matches the crates.io package name).
+    fn repo_dir(self) -> &'static str {
+        match self {
+            LaunchApp::Mnml => "mnml",
+            LaunchApp::Mixr => "mixr-rs",
+        }
+    }
+    fn bin_name(self) -> &'static str {
+        match self {
+            LaunchApp::Mnml => "mnml",
+            LaunchApp::Mixr => "mixr",
+        }
+    }
+}
+
+/// Resolve the binary path for `app` (mnml or mixr). `$TMNL_LAUNCH_CMD`
+/// is honoured for `Mnml` only — it dates from the single-app era and
+/// would be ambiguous if we used it for both.
+pub fn resolve_launch_command_for(app: LaunchApp) -> PathBuf {
+    if app == LaunchApp::Mnml
+        && let Ok(v) = std::env::var("TMNL_LAUNCH_CMD")
         && !v.is_empty()
     {
         return PathBuf::from(v);
     }
-    // Walk up the ancestors of our own exe looking for a sibling
-    // `mnml/target/{debug,release}/mnml`. Covers two layouts:
+    // Walk up the ancestors of our own exe looking for the sibling
+    // `<repo>/target/{debug,release}/<bin>`. Covers two layouts:
     //   `tmnl/target/debug/tmnl`              (cargo run)
     //   `tmnl/target/tmnl.app/Contents/MacOS/tmnl`  (built bundle)
     if let Ok(exe) = std::env::current_exe() {
@@ -166,8 +192,12 @@ pub fn resolve_launch_command() -> PathBuf {
         let mut cur: Option<&std::path::Path> = exe.parent();
         let mut hops = 0;
         while let Some(p) = cur {
-            for profile in &["debug", "release"] {
-                let candidate = p.join("mnml").join("target").join(profile).join("mnml");
+            for profile in &["release", "debug"] {
+                let candidate = p
+                    .join(app.repo_dir())
+                    .join("target")
+                    .join(profile)
+                    .join(app.bin_name());
                 if candidate.exists() {
                     return candidate;
                 }
@@ -182,16 +212,23 @@ pub fn resolve_launch_command() -> PathBuf {
             }
         }
     }
-    PathBuf::from("mnml")
+    PathBuf::from(app.bin_name())
 }
 
-pub fn default_extra_args() -> Vec<String> {
+/// Default args passed to the spawned child after `--blit <socket>`.
+/// For mnml this is the keymap (`--input standard`); for mixr it's
+/// `--dashboard` so it lands on the controller view instead of the
+/// Beatport browser. Both can be overridden by `$TMNL_LAUNCH_ARGS`.
+pub fn default_extra_args_for(app: LaunchApp) -> Vec<String> {
     if let Ok(v) = std::env::var("TMNL_LAUNCH_ARGS")
         && !v.trim().is_empty()
     {
         return v.split_whitespace().map(String::from).collect();
     }
-    vec!["--input".into(), "standard".into()]
+    match app {
+        LaunchApp::Mnml => vec!["--input".into(), "standard".into()],
+        LaunchApp::Mixr => vec!["--dashboard".into()],
+    }
 }
 
 pub fn resolve_workspace(arg: Option<&str>) -> PathBuf {

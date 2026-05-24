@@ -83,6 +83,55 @@ pub fn load() -> Vec<Entry> {
     }
 }
 
+/// The built-in launch options that always appear at the bottom of
+/// the welcome list, even when `~/.config/tmnl/recents.toml` is
+/// empty or missing. Lets users run mnml / mixr as native tabs on
+/// a fresh tmnl install without having to type a path or remember
+/// a flag.
+///
+/// Resolution mirrors `tmnl --mnml` / `tmnl --mixr`: walk for a
+/// sibling `<repo>/target/{release,debug}/<bin>`, fall back to PATH.
+pub fn builtin_entries() -> Vec<Entry> {
+    fn resolve(repo: &str, bin: &str) -> PathBuf {
+        if let Ok(exe) = std::env::current_exe() {
+            let root = std::path::Path::new("/");
+            let mut cur: Option<&std::path::Path> = exe.parent();
+            let mut hops = 0;
+            while let Some(p) = cur {
+                for profile in &["release", "debug"] {
+                    let candidate = p.join(repo).join("target").join(profile).join(bin);
+                    if candidate.exists() {
+                        return candidate;
+                    }
+                }
+                if p == root {
+                    break;
+                }
+                cur = p.parent();
+                hops += 1;
+                if hops > 10 {
+                    break;
+                }
+            }
+        }
+        PathBuf::from(bin)
+    }
+    vec![
+        Entry {
+            command: resolve("mnml", "mnml"),
+            args: vec!["--input".into(), "standard".into()],
+            workspace: None,
+            label: Some("mnml — terminal IDE".into()),
+        },
+        Entry {
+            command: resolve("mixr-rs", "mixr"),
+            args: vec!["--dashboard".into()],
+            workspace: None,
+            label: Some("mixr — terminal DJ".into()),
+        },
+    ]
+}
+
 /// Record a launch — pushes `entry` to the front of the recents list
 /// (most-recent-first) and writes the file. Existing entries with
 /// identical `(command, args, workspace)` are removed first so the
