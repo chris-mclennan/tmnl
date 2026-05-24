@@ -57,6 +57,12 @@ open target/tmnl.app              # launch the bundle
 cargo run --bin tmnl -- --headless  # no window; scripted stdin + grid dumps
 ```
 
+The `./run.sh` wrapper has the family-wide dev subcommands
+(`build`/`release`/`test`/`check`/`watch`/`help`) plus tmnl-specific
+launch modes (`mnml [WS]` / `headless` / `no-launch`). Default is shell
+mode — release profile, opens a window with `$SHELL`. See README's
+`run.sh` section for the full list.
+
 ## Verifying shell-mode changes
 
 `--headless` runs a shell session with no GPU window, takes `type` /
@@ -136,6 +142,25 @@ The **server** binds the Unix socket; the **client** connects to it.
   `Hello`, `Resize`, `Input`. Receives `Frame`, `Title`.
 - **The backing app is the client** — connects to the socket. Sends
   `Hello`, `Frame`, `Title`. Receives `Resize`, `Input`.
+
+## Pty-fd handoff (receiver, task #50)
+
+tmnl receives running ptys from native-mode clients via SCM_RIGHTS. A
+dedicated standalone listener (`src/transfer.rs`) binds
+`<TMPDIR>/tmnl-<pid>-transfer.sock` at startup — the path is exported
+via the `TMNL_TRANSFER_SOCKET` env var **before** any thread spawn or
+child `exec` in `main()` (children inherit the env; `Launcher::spawn`
+doesn't strip it), so the mnml client can find the socket. Each
+accepted connection reads exactly one `Message::OpenPaneTransfer` with
+an attached pty master fd via
+`tmnl_protocol::read_message_with_fd`; the fd is wrapped in
+`ShellSession::adopt_fd` and surfaces as a new adopted-shell tab on the
+next `tick`.
+
+The sender side lives in mnml as `:tmnl.pop-pty` (task #49). The
+transfer can't ride the streaming `tmnl-protocol` connection — SCM_RIGHTS
+ancillary data can't be read through a `BufReader` — hence the separate
+single-message socket.
 
 ## Settings persistence
 
