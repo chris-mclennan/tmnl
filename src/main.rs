@@ -9,9 +9,11 @@ mod layout;
 mod menu;
 mod osc133;
 mod pipeline;
+mod recents;
 mod server;
 mod settings_ui;
 mod shell;
+mod welcome;
 
 use tmnl_protocol as protocol;
 
@@ -255,6 +257,10 @@ struct App {
     app_menu: Option<AppMenu>,
     /// Settings modal — `Some` while the user has the panel open.
     settings: Option<SettingsState>,
+    /// Welcome overlay — `Some` while the startup welcome is up.
+    /// Cleared when the user picks a recent (transitions to opening
+    /// it as a native tab) or dismisses with Esc.
+    welcome: Option<welcome::WelcomeState>,
     /// Template for spawning a new Native (editor) tab. Captured at
     /// startup when `--editor` is set; used by ⌘T to spin up another
     /// mnml instance on a fresh socket. `None` ⇒ shell mode (⌘T opens
@@ -1541,6 +1547,7 @@ fn main() {
         altscreen_active: false,
         app_menu: None,
         settings: None,
+        welcome: None,
         editor_template,
         native_tab_nonce: 1,
         dragging_tab: None,
@@ -1552,6 +1559,17 @@ fn main() {
         ghost: None,
         fim_redraw: false,
     };
+    // Show the welcome overlay on a "bare" tmnl launch (no --mnml, not
+    // headless) when the user has a recents file with entries — so they
+    // can re-open their familiar TUI with a single keypress instead of
+    // having to type the path. Skipped in editor mode (the user already
+    // told us what to open) + when recents is empty (nothing to offer).
+    if !editor_mode {
+        let recents_list = recents::load();
+        if !recents_list.is_empty() {
+            app.welcome = Some(welcome::WelcomeState::open(recents_list));
+        }
+    }
     event_loop.run_app(&mut app).unwrap();
     drop(app);
 }

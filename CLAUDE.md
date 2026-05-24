@@ -143,6 +143,28 @@ The **server** binds the Unix socket; the **client** connects to it.
 CLI flags + env vars still win (escape hatches for one-off launches); the
 Settings window edits and persists this file.
 
+## Welcome screen + recents
+
+`~/.config/tmnl/recents.toml` — every native-tab launch (mnml + workspace,
+mixr, internal-app, etc.) is appended to this file by
+`open_pane_with_command`. Capped at `MAX_RECENTS = 20`; de-duped by
+`(command, args, workspace)` tuple so a re-launch bumps the existing
+entry to the top of the list (most-recent-first).
+
+On a bare `tmnl` launch (no `--mnml`, not headless) when recents has
+entries: tmnl shows a centered bordered welcome overlay listing the
+recent launches numbered 1-9. Keys:
+
+  1-9        — open that recent entry as a new native tab
+  ↑/↓ / k/j  — move the selection
+  Enter      — open the focused entry
+  r          — drop the focused entry from recents
+  Esc / n    — dismiss (keep the shell-mode pane underneath)
+
+The overlay is purely additive — the shell-mode pane is already there
+under it, so dismissing drops you straight into the shell. Recently-
+opened TUIs reappear with a single keypress, no path-typing.
+
 ## Family settings UI convention
 
 tmnl's Settings modal (Cmd+, → `src/settings_ui.rs`) follows the family
