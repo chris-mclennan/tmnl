@@ -39,7 +39,10 @@ pub struct WelcomeState {
 
 impl WelcomeState {
     pub fn open(entries: Vec<Entry>) -> Self {
-        Self { entries, selected: 0 }
+        Self {
+            entries,
+            selected: 0,
+        }
     }
 
     pub fn move_selection(&mut self, delta: isize) {
