@@ -1436,9 +1436,8 @@ fn main() {
     // SAFETY: this point in main() runs before any thread spawn
     // (env_logger doesn't spawn one) and before any `Command::spawn`,
     // so `std::env::set_var` is single-threaded here.
-    let transfer_listener = match transfer::TransferListener::start(
-        transfer::default_socket_path(),
-    ) {
+    let transfer_listener = match transfer::TransferListener::start(transfer::default_socket_path())
+    {
         Ok(l) => {
             unsafe { std::env::set_var("TMNL_TRANSFER_SOCKET", &l.socket_path) };
             Some(l)

@@ -71,7 +71,9 @@ struct File {
 /// Load the recents file. Missing / unreadable / malformed ⇒ empty
 /// list (so a corrupted file doesn't kill the welcome screen).
 pub fn load() -> Vec<Entry> {
-    let Some(path) = path() else { return Vec::new() };
+    let Some(path) = path() else {
+        return Vec::new();
+    };
     let Ok(text) = std::fs::read_to_string(&path) else {
         return Vec::new();
     };

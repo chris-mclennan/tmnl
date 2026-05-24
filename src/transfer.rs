@@ -166,14 +166,7 @@ mod tests {
         let mut sv = [-1i32; 2];
         // SAFETY: socketpair(AF_UNIX, SOCK_STREAM, 0, sv) — standard
         // libc call; `sv` is initialized after a non-error return.
-        let r = unsafe {
-            libc::socketpair(
-                libc::AF_UNIX,
-                libc::SOCK_STREAM,
-                0,
-                sv.as_mut_ptr(),
-            )
-        };
+        let r = unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, sv.as_mut_ptr()) };
         assert_eq!(r, 0, "socketpair: {}", std::io::Error::last_os_error());
         let sent_raw = sv[0];
 
@@ -215,4 +208,3 @@ mod tests {
         }
     }
 }
-
