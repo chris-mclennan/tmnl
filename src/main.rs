@@ -60,12 +60,13 @@ const MACOS_TAB_STRIP_PX_MULTI: f32 = 0.0;
 /// region in `CLEAR_BG` instead of `STRIP_BG` when there are no chips,
 /// so it blends invisibly with the surrounding clear color).
 ///
-/// Bumped 24 → 34 → 44 → 48 (2026-05-24) — successive bumps until
-/// the corner-of-the-border text cleared the macOS traffic-light
-/// buttons at default Retina scaling. When a 2nd tab opens this
-/// swaps out for `MACOS_TAB_STRIP_PX_MULTI` and the issue is moot.
+/// Bumped 24 → 34 → 44 → 48 → 52 (2026-05-24) — successive bumps
+/// until the corner-of-the-border text cleared the macOS
+/// traffic-light buttons at default Retina scaling. When a 2nd tab
+/// opens this swaps out for `MACOS_TAB_STRIP_PX_MULTI` and the
+/// issue is moot.
 #[cfg(target_os = "macos")]
-const MACOS_TAB_STRIP_PX_SINGLE: f32 = 48.0;
+const MACOS_TAB_STRIP_PX_SINGLE: f32 = 52.0;
 #[cfg(not(target_os = "macos"))]
 const MACOS_TAB_STRIP_PX_SINGLE: f32 = 0.0;
 /// Single-tab strip height for *shell* mode (no TUI hosted, e.g. a bare
