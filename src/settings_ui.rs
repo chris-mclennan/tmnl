@@ -71,7 +71,15 @@ pub fn draw(grid: &mut Grid, st: &SettingsState) {
         return;
     }
     let w: u32 = 60.min(cols.saturating_sub(4));
-    let h: u32 = 10.min(rows.saturating_sub(4));
+    // Box height bumped 10 → 12 (2026-05-24): the old layout
+    // collapsed when `rows` was small enough to drop `h` below 10,
+    // and the help line (`row + 2`) and hint line (`h - 2`) ended up
+    // painting on the same row — text overlapping the bottom border
+    // visually. With h=12 the rows are reliably spaced.
+    let h: u32 = 12.min(rows.saturating_sub(4));
+    if h < 10 {
+        return;
+    }
     let x0 = (cols - w) / 2;
     let y0 = (rows - h) / 2;
 
@@ -85,9 +93,10 @@ pub fn draw(grid: &mut Grid, st: &SettingsState) {
     let t_x = x0 + (w.saturating_sub(TITLE.chars().count() as u32)) / 2;
     grid.write(t_x, y0, TITLE, ACCENT, BG);
 
-    // Field row — centered vertically inside the box. `▸` matches the
-    // family convention (mnml + mixr).
-    let row = y0 + h / 2;
+    // Field row — fixed near the top of the box (not centered) so help
+    // + hint have a stable gap above the bottom border. `▸` matches
+    // the family convention (mnml + mixr).
+    let row = y0 + 4;
     for c in x0 + 1..x0 + w - 1 {
         grid.put(c, row, ' ', FG, SEL_BG);
     }
@@ -103,13 +112,14 @@ pub fn draw(grid: &mut Grid, st: &SettingsState) {
         grid.write(x0 + w - 3, row, "*", MODIFIED, SEL_BG);
     }
 
-    // Help line just below the field.
+    // Help line just below the field (row + 2).
     let help_x = x0 + (w.saturating_sub(HELP.chars().count() as u32)) / 2;
     grid.write(help_x, row + 2, HELP, FG_DIM, BG);
 
-    // Hint footer along the bottom border row.
+    // Hint footer — one empty row above the bottom border so it
+    // doesn't visually merge with the `─` line.
     let h_x = x0 + (w.saturating_sub(HINT.chars().count() as u32)) / 2;
-    grid.write(h_x, y0 + h - 2, HINT, FG_DIM, BG);
+    grid.write(h_x, y0 + h - 3, HINT, FG_DIM, BG);
 }
 
 fn draw_border(grid: &mut Grid, x: u32, y: u32, w: u32, h: u32) {
