@@ -123,6 +123,14 @@ impl ShellSession {
         // Identify ourselves the way Terminal.app / iTerm2 do, so shell
         // integration snippets and other tools can detect tmnl.
         cmd.env("TERM_PROGRAM", "tmnl");
+        // Themed powerline prompt — sets `MNML_PROMPT_SCRIPT` (path to
+        // the installed `prompt.sh`) + `MNML_CONTEXT=tmnl`. The user
+        // opts in once via a source line in their `.zshrc` / `.bashrc`;
+        // see README. Same script ships in mnml — both write the same
+        // content to `~/.config/mnml/prompt.sh` (idempotent).
+        for (k, v) in crate::shell_prompt::env_vars() {
+            cmd.env(k, v);
+        }
         // Login shell so users' rc files load and the prompt is set up.
         cmd.arg("-l");
         if let Ok(home) = std::env::var("HOME") {

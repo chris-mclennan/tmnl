@@ -51,6 +51,12 @@ dirs = "6"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[dev-dependencies]
+# Sandboxed temp dirs for tests that touch `$HOME` / `$XDG_CONFIG_HOME`
+# — used by `shell_prompt::tests` to avoid littering the real
+# `~/.config/mnml/`.
+tempfile = "3"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
