@@ -422,6 +422,15 @@ impl App {
             .and_then(|s| s.to_str())
             .unwrap_or("app")
             .to_string();
+        // Record this launch in the persistent recents — the welcome
+        // overlay reads from this on the next launch. De-dup + cap +
+        // best-effort write live in `crate::recents`.
+        crate::recents::record(crate::recents::Entry {
+            command: std::path::PathBuf::from(&command),
+            args: args.clone(),
+            workspace: Some(workspace.clone()),
+            label: Some(label.clone()),
+        });
         let cfg = LauncherConfig {
             command: std::path::PathBuf::from(&command),
             workspace,
@@ -1058,6 +1067,124 @@ impl App {
         }
     }
 
+    /// Route a keystroke into the welcome overlay. Returns true if the
+    /// key was consumed (a digit-pick, ↑/↓ selection move, Enter open,
+    /// `r` drop, or `Esc`/`n` dismiss).
+    fn welcome_handle_key(&mut self, ke: &winit::event::KeyEvent) -> bool {
+        if self.welcome.is_none() {
+            return false;
+        }
+        use winit::keyboard::{Key, NamedKey};
+        match &ke.logical_key {
+            Key::Named(NamedKey::Escape) => {
+                self.welcome = None;
+                true
+            }
+            Key::Named(NamedKey::Enter) => {
+                if let Some(st) = self.welcome.as_ref()
+                    && let Some(entry) = st.entries.get(st.selected).cloned()
+                {
+                    self.welcome = None;
+                    self.open_recent_entry(entry);
+                }
+                true
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                if let Some(st) = self.welcome.as_mut() {
+                    st.move_selection(-1);
+                }
+                true
+            }
+            Key::Named(NamedKey::ArrowDown) => {
+                if let Some(st) = self.welcome.as_mut() {
+                    st.move_selection(1);
+                }
+                true
+            }
+            Key::Character(s) => match s.as_str() {
+                "k" => {
+                    if let Some(st) = self.welcome.as_mut() {
+                        st.move_selection(-1);
+                    }
+                    true
+                }
+                "j" => {
+                    if let Some(st) = self.welcome.as_mut() {
+                        st.move_selection(1);
+                    }
+                    true
+                }
+                "n" => {
+                    // Dismiss — drop into the shell pane that's already
+                    // there underneath.
+                    self.welcome = None;
+                    true
+                }
+                "r" => {
+                    // Drop the selected entry from the recents file.
+                    // Re-load so the welcome list stays in sync.
+                    if let Some(st) = self.welcome.as_mut() {
+                        if let Some(entry) = st.entries.get(st.selected).cloned() {
+                            // Remove it from disk via a noop append +
+                            // immediate save with the entry filtered out.
+                            let mut entries = crate::recents::load();
+                            entries.retain(|e| {
+                                !(e.command == entry.command
+                                    && e.args == entry.args
+                                    && e.workspace == entry.workspace)
+                            });
+                            // Save with the rest.
+                            for e in entries.iter().rev() {
+                                crate::recents::record(e.clone());
+                            }
+                            // Re-pull the now-trimmed list.
+                            st.entries = crate::recents::load();
+                            if st.selected >= st.entries.len() && !st.entries.is_empty() {
+                                st.selected = st.entries.len() - 1;
+                            }
+                            // If nothing's left, just close the overlay.
+                            if st.entries.is_empty() {
+                                self.welcome = None;
+                            }
+                        }
+                    }
+                    true
+                }
+                // 1..9 digit picker.
+                d if d.len() == 1 => {
+                    let c = d.chars().next().unwrap();
+                    if let Some(digit) = c.to_digit(10)
+                        && (1..=9).contains(&digit)
+                    {
+                        if let Some(st) = self.welcome.as_ref()
+                            && let Some(idx) = st.pick_by_digit(digit as u8)
+                            && let Some(entry) = st.entries.get(idx).cloned()
+                        {
+                            self.welcome = None;
+                            self.open_recent_entry(entry);
+                        }
+                        true
+                    } else {
+                        // Any other printable — swallow it so it doesn't
+                        // type into the shell underneath. The welcome
+                        // modal is the focus; only its keys matter.
+                        true
+                    }
+                }
+                _ => true,
+            },
+            _ => true,
+        }
+    }
+
+    /// Resolve a `recents::Entry` into an `open_pane_with_command`
+    /// call. Shared between the digit-pick and Enter paths in
+    /// `welcome_handle_key`.
+    fn open_recent_entry(&mut self, entry: crate::recents::Entry) {
+        let command = entry.command.to_string_lossy().into_owned();
+        self.open_pane_with_command(command, entry.args);
+    }
+
     /// Route a keystroke into the Settings modal. Returns true if the
     /// key was consumed (mode-specific handlers should skip it).
     fn settings_handle_key(&mut self, ke: &winit::event::KeyEvent) -> bool {
@@ -1228,6 +1355,12 @@ impl App {
 
     fn handle_keyboard_input(&mut self, event_loop: &ActiveEventLoop, ke: winit::event::KeyEvent) {
         if ke.state != ElementState::Pressed {
+            return;
+        }
+        // Welcome overlay swallows keys while open — first priority so
+        // a quick `1`/`2`/Esc lands before any tab-management chord
+        // tries to interpret the keystroke.
+        if self.welcome.is_some() && self.welcome_handle_key(&ke) {
             return;
         }
         // Settings panel swallows keys while open (Esc closes,
@@ -1855,6 +1988,13 @@ impl App {
         // on the next tick.
         if let (Some(gpu), Some(st)) = (self.gpu.as_mut(), self.settings.as_ref()) {
             settings_ui::draw(&mut gpu.grid, st);
+        }
+        // Welcome overlay — startup-only, dismissed on Esc / pick.
+        // Painted last so it sits above the settings modal too (the
+        // settings panel can't actually be open at startup, but the
+        // layering matches the conceptual stack).
+        if let (Some(gpu), Some(st)) = (self.gpu.as_mut(), self.welcome.as_ref()) {
+            crate::welcome::draw(&mut gpu.grid, st);
         }
         if let Some(gpu) = &mut self.gpu {
             gpu.render();
