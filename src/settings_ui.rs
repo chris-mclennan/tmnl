@@ -1,10 +1,17 @@
 //! Settings modal — a centered bordered overlay painted into the grid
 //! when the user picks `tmnl > Settings…` (⌘,). Keyboard-driven:
-//!   ←→ adjust value · Enter save & close · Esc cancel · ⌫ reset.
+//!   ←→ adjust value · ↵ save · esc cancel · r / ⌫ reset.
 //!
-//! One setting today: pixel inset around the shell-prompt view. TUIs
-//! (native mode + shell-with-altscreen) always get 0 — the user
-//! shouldn't have to think about per-mode overrides.
+//! Family settings UI convention (see CLAUDE.md): tmnl's settings
+//! modal follows the family idiom (`▸` focus marker, `*` modified
+//! marker, `r` reset focused row, `R` reset all, Esc-revert via the
+//! `original` snapshot). The full sectioned-list shape (section
+//! headers, `[bracket]` choices) doesn't apply here yet — with one
+//! numeric setting (`inset`) the modal stays a single-row layout.
+//! Numeric-row support is a v2 convention extension; for now we paint
+//! the value as a number and use `r` to snap it back to default.
+//! When tmnl grows more settings (font size, cursor style, …) this
+//! will graduate to the full sectioned list.
 
 use crate::config::Config;
 use crate::grid::Grid;
@@ -14,6 +21,7 @@ const FG: [f32; 4] = [0.86, 0.87, 0.92, 1.0];
 const FG_DIM: [f32; 4] = [0.48, 0.50, 0.58, 1.0];
 const SEL_BG: [f32; 4] = [0.18, 0.22, 0.30, 1.0];
 const ACCENT: [f32; 4] = [0.93, 0.73, 0.45, 1.0];
+const MODIFIED: [f32; 4] = [0.95, 0.79, 0.30, 1.0];
 
 pub struct SettingsState {
     pub cfg: Config,
@@ -32,13 +40,28 @@ impl SettingsState {
         self.cfg.inset = (self.cfg.inset + delta).clamp(0.0, 64.0);
     }
 
-    pub fn reset(&mut self) {
+    /// `r` (and ⌫) — reset focused row to default. Only one row today,
+    /// so this snaps `inset` back.
+    pub fn reset_row(&mut self) {
         self.cfg.inset = Config::default().inset;
+    }
+
+    /// `R` — reset everything to defaults. Same as `reset_row` while
+    /// there's only one setting; kept distinct so the keymap matches
+    /// the family convention for when more settings land.
+    pub fn reset_all(&mut self) {
+        self.cfg = Config::default();
+    }
+
+    /// `true` when `cfg` differs from `Config::default()` — drives the
+    /// `*` modified marker.
+    pub fn inset_modified(&self) -> bool {
+        (self.cfg.inset - Config::default().inset).abs() > f32::EPSILON
     }
 }
 
 const TITLE: &str = " tmnl Settings ";
-const HINT: &str = "←→ adjust  ⌫ reset  ↵ save  esc cancel";
+const HINT: &str = "←→ adjust  r reset  ↵ save  esc cancel";
 const HELP: &str = "Padding around the shell prompt. TUIs always go edge-to-edge.";
 
 pub fn draw(grid: &mut Grid, st: &SettingsState) {
@@ -62,15 +85,23 @@ pub fn draw(grid: &mut Grid, st: &SettingsState) {
     let t_x = x0 + (w.saturating_sub(TITLE.chars().count() as u32)) / 2;
     grid.write(t_x, y0, TITLE, ACCENT, BG);
 
-    // Field row — centered vertically inside the box.
+    // Field row — centered vertically inside the box. `▸` matches the
+    // family convention (mnml + mixr).
     let row = y0 + h / 2;
     for c in x0 + 1..x0 + w - 1 {
         grid.put(c, row, ' ', FG, SEL_BG);
     }
-    grid.write(x0 + 4, row, "▶ Inset (px)", ACCENT, SEL_BG);
+    grid.write(x0 + 4, row, "▸ Inset (px)", ACCENT, SEL_BG);
     let val = format!("{:>3}", st.cfg.inset as i32);
-    let val_col = x0 + w - 4 - val.chars().count() as u32;
+    // `*` modified marker — appended after the value when the row
+    // differs from `Config::default()`.
+    let modified = st.inset_modified();
+    let suffix_width = if modified { 6 } else { 4 }; // " *" adds 2 cells of margin
+    let val_col = x0 + w - suffix_width - val.chars().count() as u32;
     grid.write(val_col, row, &val, FG, SEL_BG);
+    if modified {
+        grid.write(x0 + w - 3, row, "*", MODIFIED, SEL_BG);
+    }
 
     // Help line just below the field.
     let help_x = x0 + (w.saturating_sub(HELP.chars().count() as u32)) / 2;
