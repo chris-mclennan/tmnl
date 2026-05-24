@@ -184,6 +184,20 @@ fn reader_loop(
                     break;
                 }
             }
+            // `OpenPaneTransfer` requires SCM_RIGHTS fd-passing on the
+            // same `sendmsg` call — incompatible with the BufReader on
+            // this stream (which would consume past the cmsg boundary).
+            // Senders use a dedicated connection + `send_message_with_fd`
+            // / `read_message_with_fd` (see DESIGN-FD-HANDOFF.md in
+            // tmnl-protocol). Receiving one here means the sender used
+            // the wrong API on the wrong stream — log + drop.
+            Ok(Message::OpenPaneTransfer { command, args: _ }) => {
+                log::warn!(
+                    "OpenPaneTransfer received on streaming connection — \
+                     this requires SCM_RIGHTS via send_message_with_fd \
+                     on a dedicated socket; ignoring (command={command:?})"
+                );
+            }
             Err(e) => {
                 if e.kind() != std::io::ErrorKind::UnexpectedEof {
                     log::warn!("read error: {e:?}");

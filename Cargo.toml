@@ -28,7 +28,7 @@ env_logger = "0.11"
 log = "0.4"
 fontdue = "0.9"
 bytemuck = { version = "1", features = ["derive"] }
-tmnl-protocol = { path = "../tmnl-protocol", version = "0.0.1" }
+tmnl-protocol = { path = "../tmnl-protocol", version = "0.0.2" }
 # Embedded local AI command completion (qwen2.5-coder via candle). Kept
 # as its own crate so candle's large dependency tree compiles once and
 # tmnl's incremental rebuilds don't recompile it. First build is slow.
