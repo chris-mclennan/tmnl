@@ -7,6 +7,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
+#[cfg(unix)]
+use std::os::unix::io::{AsRawFd, OwnedFd, RawFd};
+
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
@@ -37,9 +40,24 @@ impl vt100::Callbacks for TitleSink {
 pub struct ShellSession {
     parser: Arc<Mutex<vt100::Parser<TitleSink>>>,
     writer: Box<dyn Write + Send>,
-    master: Box<dyn MasterPty + Send>,
+    /// Cross-platform pty master — `Some` for sessions we spawned
+    /// ourselves via portable-pty. `None` for sessions whose master fd
+    /// we adopted via the pty-fd handoff (the original spawner's
+    /// process owns the portable_pty::MasterPty; we just hold a dup
+    /// of its raw fd in `adopted_fd`).
+    master: Option<Box<dyn MasterPty + Send>>,
+    /// Adopted pty master file descriptor — only `Some` when this
+    /// session was constructed via [`Self::adopt_fd`]. We keep it as
+    /// an [`std::fs::File`] so [`Drop`] on `ShellSession` closes the
+    /// duplicated fd. Resize goes through `ioctl(TIOCSWINSZ)` on this
+    /// instead of `MasterPty::resize` (we don't own a MasterPty).
+    #[cfg(unix)]
+    adopted_fd: Option<std::fs::File>,
     reader: Option<JoinHandle<()>>,
-    child: Box<dyn Child + Send + Sync>,
+    /// `Some` for spawn-path sessions whose child we own. `None` for
+    /// adopted sessions — the child still belongs to the sender's
+    /// process group. [`Drop`] only kills the child for owned ones.
+    child: Option<Box<dyn Child + Send + Sync>>,
     exited: Arc<Mutex<bool>>,
     last_size: (u16, u16),
     bytes_seen: Arc<AtomicU64>,
@@ -125,66 +143,21 @@ impl ShellSession {
         let exited = Arc::new(Mutex::new(false));
         let bytes_seen = Arc::new(AtomicU64::new(0));
 
-        let mut reader_handle = pair
+        let reader_handle = pair
             .master
             .try_clone_reader()
             .map_err(|e| format!("clone pty reader: {e}"))?;
-        let r_parser = Arc::clone(&parser);
-        let r_exited = Arc::clone(&exited);
-        let r_bytes = Arc::clone(&bytes_seen);
         let attention_requested = Arc::new(AtomicBool::new(false));
-        let r_attention = Arc::clone(&attention_requested);
         let integration = Arc::new(Mutex::new(osc133::State::default()));
-        let r_integration = Arc::clone(&integration);
-        let reader = thread::Builder::new()
-            .name("tmnl-shell-reader".into())
-            .spawn(move || {
-                let mut buf = [0u8; 8192];
-                // Spans an OSC parse across read boundaries — if a chunk
-                // ends mid-sequence, carry the prefix forward.
-                let mut osc_carry: Vec<u8> = Vec::new();
-                let mut osc133_scanner = osc133::Scanner::new();
-                loop {
-                    match reader_handle.read(&mut buf) {
-                        Ok(0) | Err(_) => {
-                            if let Ok(mut e) = r_exited.lock() {
-                                *e = true;
-                            }
-                            return;
-                        }
-                        Ok(n) => {
-                            scan_osc_1337(&buf[..n], &mut osc_carry, &r_attention);
-                            let marks = osc133_scanner.scan(&buf[..n]);
-                            // Feed vt100 the chunk, split at each OSC 133
-                            // mark so the cursor can be sampled there.
-                            let mut events: Vec<(osc133::Mark, (u16, u16))> = Vec::new();
-                            if let Ok(mut p) = r_parser.lock() {
-                                if marks.is_empty() {
-                                    p.process(&buf[..n]);
-                                } else {
-                                    let mut seg = 0;
-                                    for (off, mark) in marks {
-                                        let off = off.min(n);
-                                        p.process(&buf[seg..off]);
-                                        seg = off;
-                                        events.push((mark, p.screen().cursor_position()));
-                                    }
-                                    p.process(&buf[seg..n]);
-                                }
-                            }
-                            if !events.is_empty()
-                                && let Ok(mut st) = r_integration.lock()
-                            {
-                                for (mark, cursor) in events {
-                                    st.apply(mark, cursor);
-                                }
-                            }
-                            r_bytes.fetch_add(n as u64, Ordering::Relaxed);
-                        }
-                    }
-                }
-            })
-            .map_err(|e| format!("spawn reader thread: {e}"))?;
+        let reader = spawn_reader_thread(
+            reader_handle,
+            "tmnl-shell-reader",
+            Arc::clone(&parser),
+            Arc::clone(&exited),
+            Arc::clone(&bytes_seen),
+            Arc::clone(&attention_requested),
+            Arc::clone(&integration),
+        )?;
 
         let writer = pair
             .master
@@ -194,9 +167,11 @@ impl ShellSession {
         Ok(ShellSession {
             parser,
             writer,
-            master: pair.master,
+            master: Some(pair.master),
+            #[cfg(unix)]
+            adopted_fd: None,
             reader: Some(reader),
-            child,
+            child: Some(child),
             exited,
             last_size: (rows, cols),
             bytes_seen,
@@ -207,6 +182,89 @@ impl ShellSession {
             integration,
             scroll_dirty: false,
             shell_name,
+            fg_proc_cache: None,
+            last_fg_poll: None,
+        })
+    }
+
+    /// Construct a `ShellSession` that wraps an already-open pty
+    /// master file descriptor (e.g. one transferred via SCM_RIGHTS
+    /// from mnml's pty-pane handoff). The fd's ownership transfers
+    /// to the returned session — its [`Drop`] closes the file.
+    ///
+    /// Unlike [`Self::spawn`], the caller does not own the spawned
+    /// child process — that lives in whichever process originally
+    /// opened the pty. tmnl just reads/writes to the master + treats
+    /// EOF as the session ending.
+    ///
+    /// `label` is used as the tab name (typically the basename of
+    /// the original program, e.g. `claude` / `htop` / `vim`). Same
+    /// fallback chain as the spawn path: OSC title → fg-proc-name →
+    /// this label.
+    #[cfg(unix)]
+    pub fn adopt_fd(
+        fd: OwnedFd,
+        rows: u16,
+        cols: u16,
+        default_fg: [f32; 4],
+        default_bg: [f32; 4],
+        label: &str,
+    ) -> Result<Self, String> {
+        let (rows, cols) = (rows.max(4), cols.max(20));
+        // Wrap as `std::fs::File` — both Read + Write + Send, and its
+        // Drop closes the fd. Resize is via ioctl on this fd, not
+        // through portable-pty (which doesn't expose adopt-fd).
+        let file: std::fs::File = fd.into();
+        // Make sure the adopted pty matches tmnl's current grid size
+        // before the reader thread starts — pre-emptive resize so the
+        // first frame doesn't render at the sender's last-known size.
+        let _ = ioctl_set_winsize(file.as_raw_fd(), rows, cols);
+
+        let reader_file = file
+            .try_clone()
+            .map_err(|e| format!("clone adopted fd for reader: {e}"))?;
+        let writer_file = file
+            .try_clone()
+            .map_err(|e| format!("clone adopted fd for writer: {e}"))?;
+
+        let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
+            rows,
+            cols,
+            SCROLLBACK,
+            TitleSink::default(),
+        )));
+        let exited = Arc::new(Mutex::new(false));
+        let bytes_seen = Arc::new(AtomicU64::new(0));
+        let attention_requested = Arc::new(AtomicBool::new(false));
+        let integration = Arc::new(Mutex::new(osc133::State::default()));
+
+        let reader = spawn_reader_thread(
+            Box::new(reader_file),
+            "tmnl-shell-adopted-reader",
+            Arc::clone(&parser),
+            Arc::clone(&exited),
+            Arc::clone(&bytes_seen),
+            Arc::clone(&attention_requested),
+            Arc::clone(&integration),
+        )?;
+
+        Ok(ShellSession {
+            parser,
+            writer: Box::new(writer_file),
+            master: None,
+            adopted_fd: Some(file),
+            reader: Some(reader),
+            child: None,
+            exited,
+            last_size: (rows, cols),
+            bytes_seen,
+            last_applied_bytes: 0,
+            default_bg,
+            default_fg,
+            attention_requested,
+            integration,
+            scroll_dirty: false,
+            shell_name: label.to_string(),
             fg_proc_cache: None,
             last_fg_poll: None,
         })
@@ -238,7 +296,10 @@ impl ShellSession {
             .unwrap_or(true);
         if due {
             self.last_fg_poll = Some(now);
-            if let Some(shell_pid) = self.child.process_id() {
+            // Spawn-owned sessions know the shell's pid. Adopted ones
+            // don't (the child lives in another process); skip the
+            // poll + leave fg_proc_cache at None.
+            if let Some(shell_pid) = self.child.as_ref().and_then(|c| c.process_id()) {
                 self.fg_proc_cache = poll_child_proc(shell_pid, &self.shell_name);
             }
         }
@@ -304,6 +365,88 @@ impl ShellSession {
 
 /// Run `ps -ax -o ppid=,comm=` once and return the first child of
 /// `parent_pid` whose comm differs from the shell's own name. The
+/// Spawn the reader thread that feeds an incoming byte stream into a
+/// shared vt100 parser + OSC scanners. Shared by both [`ShellSession::spawn`]
+/// (cross-platform pty master) and [`ShellSession::adopt_fd`] (raw fd
+/// adopted via SCM_RIGHTS handoff). The thread terminates on EOF /
+/// read error and flips `exited` to `true`.
+fn spawn_reader_thread(
+    mut reader: Box<dyn Read + Send>,
+    name: &str,
+    parser: Arc<Mutex<vt100::Parser<TitleSink>>>,
+    exited: Arc<Mutex<bool>>,
+    bytes_seen: Arc<AtomicU64>,
+    attention: Arc<AtomicBool>,
+    integration: Arc<Mutex<osc133::State>>,
+) -> Result<JoinHandle<()>, String> {
+    thread::Builder::new()
+        .name(name.to_string())
+        .spawn(move || {
+            let mut buf = [0u8; 8192];
+            let mut osc_carry: Vec<u8> = Vec::new();
+            let mut osc133_scanner = osc133::Scanner::new();
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) | Err(_) => {
+                        if let Ok(mut e) = exited.lock() {
+                            *e = true;
+                        }
+                        return;
+                    }
+                    Ok(n) => {
+                        scan_osc_1337(&buf[..n], &mut osc_carry, &attention);
+                        let marks = osc133_scanner.scan(&buf[..n]);
+                        let mut events: Vec<(osc133::Mark, (u16, u16))> = Vec::new();
+                        if let Ok(mut p) = parser.lock() {
+                            if marks.is_empty() {
+                                p.process(&buf[..n]);
+                            } else {
+                                let mut seg = 0;
+                                for (off, mark) in marks {
+                                    let off = off.min(n);
+                                    p.process(&buf[seg..off]);
+                                    seg = off;
+                                    events.push((mark, p.screen().cursor_position()));
+                                }
+                                p.process(&buf[seg..n]);
+                            }
+                        }
+                        if !events.is_empty()
+                            && let Ok(mut st) = integration.lock()
+                        {
+                            for (mark, cursor) in events {
+                                st.apply(mark, cursor);
+                            }
+                        }
+                        bytes_seen.fetch_add(n as u64, Ordering::Relaxed);
+                    }
+                }
+            }
+        })
+        .map_err(|e| format!("spawn reader thread: {e}"))
+}
+
+/// Resize an adopted pty by ioctl. The kernel propagates the resize
+/// to the slave + delivers SIGWINCH to the foreground process group
+/// — same effect as `MasterPty::resize` for the spawn path.
+#[cfg(unix)]
+fn ioctl_set_winsize(fd: RawFd, rows: u16, cols: u16) -> std::io::Result<()> {
+    let ws = libc::winsize {
+        ws_row: rows,
+        ws_col: cols,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // SAFETY: TIOCSWINSZ is a tty ioctl that reads a `winsize`. `fd`
+    // is borrowed from a live File, so it is valid for the call.
+    let r = unsafe { libc::ioctl(fd, libc::TIOCSWINSZ, &ws) };
+    if r < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
 /// match is approximate — for most cases (one foreground program at a
 /// time) it's accurate; multi-child backgrounds picks the first row,
 /// which is usually-but-not-always the foreground. Acceptable for a
@@ -355,12 +498,21 @@ impl ShellSession {
             return;
         }
         self.last_size = (rows, cols);
-        let _ = self.master.resize(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        });
+        // Spawn-owned: route through portable-pty so MasterPty's
+        // platform-specific size handling fires. Adopted: ioctl
+        // straight on the raw fd (we don't own a MasterPty).
+        if let Some(m) = self.master.as_ref() {
+            let _ = m.resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            });
+        }
+        #[cfg(unix)]
+        if let Some(fd) = self.adopted_fd.as_ref() {
+            let _ = ioctl_set_winsize(fd.as_raw_fd(), rows, cols);
+        }
         if let Ok(mut p) = self.parser.lock() {
             p.screen_mut().set_size(rows, cols);
         }
@@ -556,8 +708,14 @@ impl ShellSession {
 
 impl Drop for ShellSession {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        // Only kill the child we spawned ourselves. Adopted sessions
+        // share the pty master with the original sender; killing the
+        // child via this side would be wrong (we don't even know the
+        // pid) and the kernel handles teardown when both fds close.
+        if let Some(c) = self.child.as_mut() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
         if let Some(h) = self.reader.take() {
             let _ = h.join();
         }

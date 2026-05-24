@@ -4157,6 +4157,7 @@ dependencies = [
  "env_logger",
  "fim-engine",
  "fontdue",
+ "libc",
  "log",
  "muda",
  "pollster",
