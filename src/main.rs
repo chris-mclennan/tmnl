@@ -13,6 +13,7 @@ mod recents;
 mod server;
 mod settings_ui;
 mod shell;
+mod shell_prompt;
 mod transfer;
 mod welcome;
 

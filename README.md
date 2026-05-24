@@ -167,6 +167,24 @@ modal. Follows the family settings UI convention — `▸` focus marker,
 
 Persisted to `~/.config/tmnl/config.toml`.
 
+## Themed shell prompt (optional)
+
+When tmnl spawns a shell (default shell mode) it installs a small
+powerline-style prompt script at `~/.config/mnml/prompt.sh` and
+exports `$MNML_PROMPT_SCRIPT` + `MNML_CONTEXT=tmnl`. The same
+script is shared with mnml — both write the same content, so
+turning it on in one place themes both. To enable, add one line to
+your `~/.zshrc` (or `.bashrc`):
+
+```sh
+[ -n "$MNML_PROMPT_SCRIPT" ] && source "$MNML_PROMPT_SCRIPT"
+```
+
+Outside tmnl / mnml shells the env var is unset and the line is a
+no-op. The prompt shows `cwd · git branch (± when dirty) · exit
+code (only when non-zero) · clock · context-chip`. Pure bash/zsh
++ ANSI — no external binary required.
+
 ## Pty-fd handoff (receiver)
 
 tmnl is a receiver for SCM_RIGHTS pty-fd transfers — a child native-mode
