@@ -1426,6 +1426,28 @@ fn main() {
         headless::run();
         return;
     }
+
+    // Start the pty-fd transfer listener BEFORE anything that spawns
+    // threads or child processes — children inherit the env, so
+    // `TMNL_TRANSFER_SOCKET` must be set first or `:tmnl.pop-pty`
+    // from inside mnml toasts "not running under tmnl" even when it
+    // *is*. Audit caught this regression.
+    //
+    // SAFETY: this point in main() runs before any thread spawn
+    // (env_logger doesn't spawn one) and before any `Command::spawn`,
+    // so `std::env::set_var` is single-threaded here.
+    let transfer_listener = match transfer::TransferListener::start(
+        transfer::default_socket_path(),
+    ) {
+        Ok(l) => {
+            unsafe { std::env::set_var("TMNL_TRANSFER_SOCKET", &l.socket_path) };
+            Some(l)
+        }
+        Err(e) => {
+            eprintln!("tmnl: pty-fd transfer listener disabled: {e}");
+            None
+        }
+    };
     // `--mnml` launches mnml in native/integrated mode (UDS blit channel,
     // wgpu renders, mnml drives input). Future siblings: `--mixr`, etc.
     let editor_mode = argv.iter().any(|a| a == "--mnml");
@@ -1566,22 +1588,10 @@ fn main() {
         fim_next_id: 0,
         ghost: None,
         fim_redraw: false,
-        transfer_listener: match transfer::TransferListener::start(
-            transfer::default_socket_path(),
-        ) {
-            Ok(l) => {
-                // Children (mnml under blit, mixr under blit, …) read
-                // this to know where to send pty-fd handoffs.
-                // SAFETY: single-threaded init path — env::set_var is
-                // safe here because no other thread reads env yet.
-                unsafe { std::env::set_var("TMNL_TRANSFER_SOCKET", &l.socket_path) };
-                Some(l)
-            }
-            Err(e) => {
-                eprintln!("tmnl: pty-fd transfer listener disabled: {e}");
-                None
-            }
-        },
+        // Listener started above, before Server::start + Launcher::spawn,
+        // so children inherit the env var. Moved during the audit-pass
+        // bugfix; do not relocate back into this initializer.
+        transfer_listener,
     };
     // Show the welcome overlay on a "bare" tmnl launch (no --mnml, not
     // headless) when the user has a recents file with entries — so they
