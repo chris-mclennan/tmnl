@@ -51,7 +51,7 @@ const FONT_PX: f32 = 14.0;
 /// Multi-tab chrome height — when there's more than one tab, the
 /// strip is tall enough to hold a row of chips plus generous padding.
 #[cfg(target_os = "macos")]
-const MACOS_TAB_STRIP_PX_MULTI: f32 = 68.0;
+const MACOS_TAB_STRIP_PX_MULTI: f32 = 64.0;
 #[cfg(not(target_os = "macos"))]
 const MACOS_TAB_STRIP_PX_MULTI: f32 = 0.0;
 /// Single-tab chrome height — a small breathing-room band above the
