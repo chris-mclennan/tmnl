@@ -60,13 +60,13 @@ const MACOS_TAB_STRIP_PX_MULTI: f32 = 0.0;
 /// region in `CLEAR_BG` instead of `STRIP_BG` when there are no chips,
 /// so it blends invisibly with the surrounding clear color).
 ///
-/// Bumped from 24 → 34 (2026-05-24) because 24px wasn't quite enough
-/// to clear the macOS traffic-light buttons (~28-36px tall) — visible
-/// content was kissing the dots on borderful TUIs (mixr's controller
-/// panel). When a 2nd tab opens this swaps out for the larger
-/// `MACOS_TAB_STRIP_PX_MULTI` and the issue is moot.
+/// Bumped 24 → 34 → 44 (2026-05-24) — 34 still left the corner-of-the
+/// -border text overlapping the macOS traffic-light buttons at default
+/// Retina scaling; 44 lands the content comfortably under them. When a
+/// 2nd tab opens this swaps out for `MACOS_TAB_STRIP_PX_MULTI` and the
+/// issue is moot.
 #[cfg(target_os = "macos")]
-const MACOS_TAB_STRIP_PX_SINGLE: f32 = 34.0;
+const MACOS_TAB_STRIP_PX_SINGLE: f32 = 44.0;
 #[cfg(not(target_os = "macos"))]
 const MACOS_TAB_STRIP_PX_SINGLE: f32 = 0.0;
 /// Single-tab strip height for *shell* mode (no TUI hosted, e.g. a bare
