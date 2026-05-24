@@ -12,7 +12,7 @@
 //! [[entry]]
 //! command   = "/usr/local/bin/mnml"
 //! args      = ["--input", "vim"]
-//! workspace = "/Users/chris/Projects/foo"
+//! workspace = "/Users/me/Projects/foo"
 //! label     = "mnml — foo"      # display hint; defaults to command's filename
 //! ```
 
@@ -163,7 +163,7 @@ mod tests {
         let e = Entry {
             command: PathBuf::from("/usr/local/bin/mnml"),
             args: vec![],
-            workspace: Some(PathBuf::from("/Users/chris/Projects/foo")),
+            workspace: Some(PathBuf::from("/Users/me/Projects/foo")),
             label: None,
         };
         let s = e.summary();

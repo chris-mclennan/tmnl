@@ -146,7 +146,7 @@ Recents are appended on every native-tab launch, de-duped by
 [[entry]]
 command   = "/usr/local/bin/mnml"
 args      = ["--input", "vim"]
-workspace = "/Users/chris/Projects/foo"
+workspace = "/Users/me/Projects/foo"
 label     = "mnml — foo"
 ```
 

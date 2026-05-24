@@ -11,7 +11,8 @@
 #   ./run.sh build [args]         cargo build [args]
 #   ./run.sh release [args]       cargo build --release [args]
 #   ./run.sh test [args]          cargo test [args]
-#   ./run.sh check                cargo clippy --all-targets
+#   ./run.sh check                cargo fmt --check + cargo clippy
+#                                 --all-targets  (matches CI)
 #   ./run.sh watch                cargo watch -x build  (needs cargo-watch)
 #   ./run.sh help                 show this
 #
@@ -38,7 +39,10 @@ case "${1:-default}" in
   build)   shift; exec cargo build "$@" ;;
   release) shift; exec cargo build --release "$@" ;;
   test)    shift; exec cargo test "$@" ;;
-  check)   exec cargo clippy --all-targets ;;
+  check)
+    cargo fmt --check || exit 1
+    exec cargo clippy --all-targets
+    ;;
   watch)
     if ! command -v cargo-watch >/dev/null 2>&1; then
       echo "[run.sh] cargo-watch not installed — \`cargo install cargo-watch\`" >&2
