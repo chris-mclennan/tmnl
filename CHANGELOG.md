@@ -12,6 +12,28 @@ The roadmap lives in [`.local/PLAN.md`](.local/PLAN.md).
 tmnl has not yet had a tagged release. The `0.0.1` line below summarises the
 capabilities present in the current `master`.
 
+### Added
+
+- **Welcome screen + recents** — bare-launch overlay listing recent native-tab
+  launches from `~/.config/tmnl/recents.toml`; `1`–`9` open, `r` drops, `Esc`
+  dismisses into the shell pane.
+- **Pty-fd handoff receiver** — SCM_RIGHTS listener at
+  `<TMPDIR>/tmnl-<pid>-transfer.sock`, exported via `TMNL_TRANSFER_SOCKET`;
+  accepts `Message::OpenPaneTransfer` from child clients (e.g. mnml's
+  `:tmnl.pop-pty`) and presents the received fd as a new adopted-shell tab.
+- **`run.sh`** — family-wide dev subcommands (`build` / `release` / `test` /
+  `check` / `watch` / `help`) plus tmnl-specific modes (`mnml [WS]` /
+  `headless` / `no-launch`).
+
+### Changed
+
+- **Settings modal** — retrofitted to the family settings UI convention
+  (`▸` focus marker, `*` modified marker, `r` reset row, `R` reset all,
+  `Esc` cancels via the opened-state snapshot).
+- **`tmnl-protocol`** bumped to `0.0.2`; tmnl now handles
+  `Message::OpenPaneTransfer`.
+- **`dirs`** bumped to `6` to match the rest of the family.
+
 ## [0.0.1]
 
 ### Added

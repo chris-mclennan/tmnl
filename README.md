@@ -102,6 +102,82 @@ fine for iterating on rendering or shell behaviour.
 
 tmnl builds on stable Rust (MSRV **1.85**, edition 2024).
 
+### `run.sh`
+
+A wrapper with family-wide dev subcommands (shared with `mnml`, `mixr-rs`,
+`internal-app`) plus tmnl-specific launch modes:
+
+```bash
+./run.sh                  # shell mode (default) — release build, opens a window
+./run.sh build [args]     # cargo build [args]
+./run.sh release [args]   # cargo build --release [args]
+./run.sh test [args]      # cargo test [args]
+./run.sh check            # cargo clippy --all-targets
+./run.sh watch            # cargo watch -x build (needs cargo-watch)
+./run.sh help             # print the full mode list
+
+./run.sh mnml [WS]        # `tmnl --mnml` — editor mode; binds a UDS, spawns
+                          # mnml with --blit <socket>. Pass-through args
+                          # (workspace, --input vim, --ascii) go to mnml.
+./run.sh headless         # `tmnl --headless` (no window; scripted stdin).
+./run.sh no-launch        # `tmnl --mnml --no-launch` — editor mode, no
+                          # auto-spawn (for attaching a debug-built mnml).
+```
+
+## Welcome screen
+
+On a bare launch (no `--mnml`, not headless), if
+`~/.config/tmnl/recents.toml` has entries, tmnl shows a centered bordered
+overlay listing recent native-tab launches (mnml workspaces, mixr,
+internal-app, …) so you can re-open one with a single keypress.
+
+| Key | Action |
+|-----|--------|
+| `1`–`9`    | Open that recent entry as a new native tab |
+| `↑` / `↓` / `k` / `j` | Move the selection |
+| `Enter`    | Open the focused entry |
+| `r`        | Drop the focused entry from recents |
+| `Esc` / `n`| Dismiss (the shell-mode pane is already underneath) |
+
+Recents are appended on every native-tab launch, de-duped by
+`(command, args, workspace)`, capped at 20. File shape:
+
+```toml
+[[entry]]
+command   = "/usr/local/bin/mnml"
+args      = ["--input", "vim"]
+workspace = "/Users/chris/Projects/foo"
+label     = "mnml — foo"
+```
+
+## Settings overlay
+
+`Cmd+,` (also tmnl → Settings… in the menu bar) opens an in-grid settings
+modal. Follows the family settings UI convention — `▸` focus marker,
+`*` modified marker on rows that differ from defaults.
+
+| Key | Action |
+|-----|--------|
+| `←` / `→`  | Adjust the focused row's value |
+| `↑` / `↓`  | Move between rows |
+| `r` / `⌫`  | Reset the focused row to its default |
+| `R`        | Reset all rows to defaults |
+| `Enter`    | Save and close |
+| `Esc`      | Cancel — reverts to the opened-state snapshot |
+
+Persisted to `~/.config/tmnl/config.toml`.
+
+## Pty-fd handoff (receiver)
+
+tmnl is a receiver for SCM_RIGHTS pty-fd transfers — a child native-mode
+client (e.g. `mnml` via `:tmnl.pop-pty`) can hand the master fd of a
+running pty into tmnl, where it lands as a new adopted shell tab.
+
+Mechanism: tmnl binds a dedicated transfer socket at
+`<TMPDIR>/tmnl-<pid>-transfer.sock` and exports the path via the
+`TMNL_TRANSFER_SOCKET` env var; children inherit it and connect there
+to send one `Message::OpenPaneTransfer` with the fd attached.
+
 ## Native mode / the SDK
 
 An app becomes a tmnl "backing app" by speaking the

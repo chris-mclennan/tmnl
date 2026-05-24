@@ -37,6 +37,10 @@ daily driver — without turning into a race to out-feature WezTerm / Ghostty.
   cells instead of ANSI escape codes.
 - **Partial-frame updates** — `DiffRun` puts only changed cell-runs on the wire.
 - **App-set tab titles** — via `Message::Title`.
+- **Pty-fd handoff (receiver)** — a separate SCM_RIGHTS listener at
+  `<TMPDIR>/tmnl-<pid>-transfer.sock` (exported via `TMNL_TRANSFER_SOCKET`)
+  accepts `Message::OpenPaneTransfer` with an attached pty master fd from
+  child clients; the fd becomes a new adopted-shell tab.
 - **Reference client** — [`mnml`](https://github.com/chris-mclennan/mnml-rs) runs as
   a native tmnl tab; [`examples/hello_client.rs`](examples/hello_client.rs) is a
   minimal template.
@@ -46,7 +50,11 @@ daily driver — without turning into a race to out-feature WezTerm / Ghostty.
 - **Native tabs.**
 - **Native macOS menu bar** — tmnl / Shell / Edit / View / Window / Help.
 - **Mac-style editing chords** — `⌘Z` / `X` / `C` / `V` / `A` / `S` / `F` / `N`.
-- **In-grid settings modal** — persisted to `~/.config/tmnl/config.toml`.
+- **In-grid settings modal** (`⌘,`) — follows the family settings UI convention
+  (`▸` focus / `*` modified / `←→` adjust / `r` reset row / `R` reset all /
+  `Enter` save / `Esc` cancel); persisted to `~/.config/tmnl/config.toml`.
+- **Welcome screen** — on a bare launch, lists recent native-tab launches from
+  `~/.config/tmnl/recents.toml`; `1`–`9` re-opens.
 
 ## Tooling
 

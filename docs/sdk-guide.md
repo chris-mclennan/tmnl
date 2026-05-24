@@ -72,6 +72,8 @@ you, over any `Write` / `Read`. Wrap the read half in a `BufReader`.
 | `Frame(Frame)` | app → tmnl | The cells to draw. Your main output. |
 | `Title(String)` | app → tmnl | Tab-chip label for this connection. ≤ 4096 bytes. |
 | `Quit` | either way | Graceful shutdown. Stop and close the socket. |
+| `OpenPane { command, args }` | app → tmnl | Request that tmnl spawn `command` as a new sibling native tab. |
+| `OpenPaneTransfer { command, args }` + attached fd | app → tmnl | Hand a running pty's master fd to tmnl (SCM_RIGHTS) to be adopted as a new shell tab. Sent over the dedicated transfer socket at `$TMNL_TRANSFER_SOCKET`, not the streaming connection. |
 
 ## Cells, colors, and the grid
 
