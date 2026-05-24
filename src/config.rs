@@ -12,23 +12,41 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 pub struct Config {
     /// Pixel inset around the shell-prompt view (apple-terminal style
-    /// padding so the prompt doesn't hug the window edge). Full-screen
-    /// TUIs always render edge-to-edge — native mode (mnml / mixr) and
-    /// shell mode with the xterm alt-screen active both bypass this.
+    /// padding so the prompt doesn't hug the window edge). Applied
+    /// only in shell mode while a full-screen TUI is NOT active —
+    /// `inset_native` covers native-mode + alt-screen TUIs.
     pub inset: f32,
+    /// Pixel inset around native-mode TUIs (mnml / mixr / etc.) and
+    /// shell-mode children that have switched to the xterm alt-screen.
+    ///
+    /// **Defaults to 0** — design rule is the hosted TUI itself
+    /// decides what to do with the full-screen space (push elements
+    /// to the edge, or add its own internal padding where its panel
+    /// borders need breathing room). Set to 1 for the "customary"
+    /// minimal padding, or higher for more if you'd rather the host
+    /// own the margin than the TUI.
+    pub inset_native: f32,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { inset: 20.0 }
+        Self {
+            inset: 20.0,
+            inset_native: 0.0,
+        }
     }
 }
 
 impl Config {
-    /// Inset to use right now. TUIs always get 0; only the shell prompt
-    /// gets the configured padding.
+    /// Inset to use right now. Returns the configured `inset_native`
+    /// when a TUI has taken over (native mode or alt-screen), otherwise
+    /// the configured `inset` (shell-prompt padding).
     pub fn active_inset(&self, tui_active: bool) -> f32 {
-        if tui_active { 0.0 } else { self.inset.max(0.0) }
+        if tui_active {
+            self.inset_native.max(0.0)
+        } else {
+            self.inset.max(0.0)
+        }
     }
 
     /// Load `~/.config/tmnl/config.toml`. Missing file ⇒ defaults; parse
@@ -79,21 +97,33 @@ mod tests {
         assert_eq!(Config::default().inset, 20.0);
     }
 
+    /// `Config { .. }` with both `inset` + `inset_native` set; trims
+    /// boilerplate in the assertions below.
+    fn cfg(inset: f32, inset_native: f32) -> Config {
+        Config {
+            inset,
+            inset_native,
+        }
+    }
+
     #[test]
-    fn active_inset_is_zero_under_a_tui() {
-        // Native mode / alt-screen ⇒ edge-to-edge, no padding.
-        assert_eq!(Config { inset: 20.0 }.active_inset(true), 0.0);
+    fn active_inset_uses_inset_native_under_a_tui() {
+        // Native mode / alt-screen ⇒ the `inset_native` value (0 by
+        // default; user can configure a small breathing-room band).
+        assert_eq!(cfg(20.0, 0.0).active_inset(true), 0.0);
+        assert_eq!(cfg(20.0, 1.0).active_inset(true), 1.0);
     }
 
     #[test]
     fn active_inset_uses_the_config_for_the_shell_prompt() {
-        assert_eq!(Config { inset: 14.0 }.active_inset(false), 14.0);
+        assert_eq!(cfg(14.0, 0.0).active_inset(false), 14.0);
     }
 
     #[test]
     fn active_inset_clamps_a_negative_config() {
         // A bogus negative inset can't push content off-window.
-        assert_eq!(Config { inset: -5.0 }.active_inset(false), 0.0);
+        assert_eq!(cfg(-5.0, 0.0).active_inset(false), 0.0);
+        assert_eq!(cfg(20.0, -5.0).active_inset(true), 0.0);
     }
 
     #[test]
@@ -101,6 +131,7 @@ mod tests {
         // `#[serde(default)]` ⇒ a missing field takes the default.
         let c: Config = toml::from_str("").expect("empty toml parses");
         assert_eq!(c.inset, 20.0);
+        assert_eq!(c.inset_native, 0.0);
     }
 
     #[test]
@@ -110,9 +141,16 @@ mod tests {
     }
 
     #[test]
+    fn toml_parses_an_explicit_inset_native() {
+        let c: Config = toml::from_str("inset_native = 2.0").expect("toml parses");
+        assert_eq!(c.inset_native, 2.0);
+    }
+
+    #[test]
     fn toml_round_trips_through_serialize() {
-        let text = toml::to_string_pretty(&Config { inset: 31.0 }).expect("serialize");
+        let text = toml::to_string_pretty(&cfg(31.0, 4.0)).expect("serialize");
         let back: Config = toml::from_str(&text).expect("re-parse");
         assert_eq!(back.inset, 31.0);
+        assert_eq!(back.inset_native, 4.0);
     }
 }

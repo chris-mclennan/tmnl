@@ -1262,12 +1262,106 @@ impl App {
         }
     }
 
-    /// Resolve a `recents::Entry` into an `open_pane_with_command`
-    /// call. Shared between the digit-pick and Enter paths in
-    /// `welcome_handle_key`.
+    /// Resolve a `recents::Entry` into a "replace the active tab's
+    /// focused pane with this native client" action. Shared between
+    /// the digit-pick and Enter paths in `welcome_handle_key`.
+    ///
+    /// Why replace instead of split: the welcome screen runs on
+    /// startup against a fresh shell tab. The user picking mixr
+    /// expects "open mixr" — same window, no leftover split with the
+    /// throwaway shell on the side. mnml's `mixr.show` (which DOES
+    /// want a split next to the editor) goes through a different
+    /// path — `open_pane_with_command`.
     fn open_recent_entry(&mut self, entry: crate::recents::Entry) {
         let command = entry.command.to_string_lossy().into_owned();
-        self.open_pane_with_command(command, entry.args);
+        self.replace_focused_pane_with_native(command, entry.args);
+    }
+
+    /// Swap the active tab's focused pane for a freshly-launched
+    /// native pane running `command args…`. Used by the welcome
+    /// screen — see [`Self::open_recent_entry`].
+    fn replace_focused_pane_with_native(&mut self, command: String, args: Vec<String>) {
+        let (cols, rows) = match self.gpu.as_ref() {
+            Some(gpu) => (gpu.grid.cols, gpu.grid.rows),
+            None => return,
+        };
+        let socket_path = native_tab_socket_path(self.native_tab_nonce);
+        self.native_tab_nonce = self.native_tab_nonce.saturating_add(1);
+        let server = match Server::start(socket_path.clone()) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("tmnl: replace-pane server start failed: {e}");
+                return;
+            }
+        };
+        let workspace = self
+            .editor_template
+            .as_ref()
+            .map(|t| t.workspace.clone())
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+        let label = std::path::Path::new(&command)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("app")
+            .to_string();
+        // Record the launch in the persistent recents — same as the
+        // split-mode `open_pane_with_command`.
+        crate::recents::record(crate::recents::Entry {
+            command: std::path::PathBuf::from(&command),
+            args: args.clone(),
+            workspace: Some(workspace.clone()),
+            label: Some(label.clone()),
+        });
+        let cfg = LauncherConfig {
+            command: std::path::PathBuf::from(&command),
+            workspace,
+            socket: socket_path.clone(),
+            extra_args: args,
+        };
+        let mut l = Launcher::new(cfg);
+        let launcher = match l.spawn() {
+            Ok(()) => Some(l),
+            Err(e) => {
+                eprintln!(
+                    "tmnl: replace-pane launch failed ({e}); start it manually with --blit {}",
+                    socket_path.display()
+                );
+                None
+            }
+        };
+        let mut grid = grid::Grid::new(cols, rows, CLEAR_BG);
+        paint_idle(&mut grid, ConnState::Waiting, &socket_path);
+        let pane = Pane {
+            kind: PaneKind::Native {
+                server,
+                conn: ConnState::Waiting,
+                launcher,
+                client_title: None,
+            },
+            grid,
+            last_cursor: None,
+            label,
+            attention: false,
+            last_status: None,
+        };
+        // Drop the old pane in place; the layout slot keeps its
+        // existing id so the tab tree stays intact. The old pane's
+        // Drop handles cleanup (ShellSession terminates the shell,
+        // Native sends Quit + waits).
+        let tab = &mut self.tabs[self.active];
+        let id = tab.focused;
+        if id < tab.panes.len() {
+            tab.panes[id] = pane;
+        } else {
+            // Shouldn't happen — `focused` is always a valid index.
+            // Fall back to push if it ever does.
+            tab.panes.push(pane);
+            tab.focused = tab.panes.len() - 1;
+        }
+        // Update the tab label too — it usually follows the focused
+        // pane's label.
+        tab.label = tab.panes[tab.focused].label.clone();
+        self.relayout_all_panes();
     }
 
     /// Route a keystroke into the Settings modal. Returns true if the

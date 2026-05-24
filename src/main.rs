@@ -59,8 +59,14 @@ const MACOS_TAB_STRIP_PX_MULTI: f32 = 0.0;
 /// lights, but no visible chrome strip (the strip pipeline paints this
 /// region in `CLEAR_BG` instead of `STRIP_BG` when there are no chips,
 /// so it blends invisibly with the surrounding clear color).
+///
+/// Bumped from 24 → 34 (2026-05-24) because 24px wasn't quite enough
+/// to clear the macOS traffic-light buttons (~28-36px tall) — visible
+/// content was kissing the dots on borderful TUIs (mixr's controller
+/// panel). When a 2nd tab opens this swaps out for the larger
+/// `MACOS_TAB_STRIP_PX_MULTI` and the issue is moot.
 #[cfg(target_os = "macos")]
-const MACOS_TAB_STRIP_PX_SINGLE: f32 = 24.0;
+const MACOS_TAB_STRIP_PX_SINGLE: f32 = 34.0;
 #[cfg(not(target_os = "macos"))]
 const MACOS_TAB_STRIP_PX_SINGLE: f32 = 0.0;
 /// Single-tab strip height for *shell* mode (no TUI hosted, e.g. a bare
@@ -1097,9 +1103,21 @@ fn env_f32(key: &str) -> Option<f32> {
 /// TUIs always render at 0 regardless — only the shell-prompt view
 /// uses this value.
 fn resolve_inset(argv: &[String], cfg: &Config) -> f32 {
-    arg_f32(argv, "--inset")
+    arg_f32(argv, "--inset-shell")
+        .or_else(|| arg_f32(argv, "--inset"))
         .or_else(|| env_f32("TMNL_INSET"))
         .unwrap_or(cfg.inset)
+        .max(0.0)
+}
+
+/// Resolve the pixel inset for native-mode TUIs (mnml / mixr) +
+/// alt-screen shell children. CLI `--inset-native` wins, then
+/// `$TMNL_INSET_NATIVE`, then `cfg.inset_native`. 0 ⇒ historic
+/// edge-to-edge.
+fn resolve_inset_native(argv: &[String], cfg: &Config) -> f32 {
+    arg_f32(argv, "--inset-native")
+        .or_else(|| env_f32("TMNL_INSET_NATIVE"))
+        .unwrap_or(cfg.inset_native)
         .max(0.0)
 }
 
@@ -1462,11 +1480,16 @@ fn main() {
     let editor_mode = which_app.is_some();
     let no_launch = argv.iter().any(|a| a == "--no-launch");
     let cfg = Config::load();
-    // Native mode hosts a TUI directly — always edge-to-edge. Shell
-    // mode starts at the configured value; the alt-screen detector
-    // flips to 0 when a TUI takes over.
+    // Inset selection:
+    //   * Native mode (mnml / mixr) → `inset_native` so a TUI with
+    //     its own borders doesn't hug the macOS window chrome /
+    //     traffic-light buttons. Was hardcoded 0.0; users complained
+    //     mixr's outer panel borders ran into the window edge.
+    //   * Shell mode → `inset` (the apple-terminal-style prompt
+    //     padding). The alt-screen detector swaps to `inset_native`
+    //     once a full-screen TUI takes over the shell.
     let inset_px = if editor_mode {
-        0.0
+        resolve_inset_native(&argv, &cfg)
     } else {
         resolve_inset(&argv, &cfg)
     };
