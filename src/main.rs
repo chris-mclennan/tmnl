@@ -13,6 +13,7 @@ mod recents;
 mod server;
 mod settings_ui;
 mod shell;
+mod transfer;
 mod welcome;
 
 use tmnl_protocol as protocol;
@@ -296,6 +297,13 @@ struct App {
     /// Set when `ghost` changes; forces one shell-grid repaint so the
     /// suggestion appears (or, when cleared, disappears).
     fim_redraw: bool,
+    /// Pty-fd handoff receiver — dedicated SCM_RIGHTS listener (task
+    /// #50). `None` if the listener failed to start (rare; only when
+    /// the socket path is unbindable). Children inherit the socket
+    /// path via the `TMNL_TRANSFER_SOCKET` env var injected in
+    /// `Launcher::spawn`. Drained on each tick into a fresh adopted
+    /// shell tab.
+    transfer_listener: Option<transfer::TransferListener>,
 }
 
 #[derive(Clone)]
@@ -1558,6 +1566,22 @@ fn main() {
         fim_next_id: 0,
         ghost: None,
         fim_redraw: false,
+        transfer_listener: match transfer::TransferListener::start(
+            transfer::default_socket_path(),
+        ) {
+            Ok(l) => {
+                // Children (mnml under blit, mixr under blit, …) read
+                // this to know where to send pty-fd handoffs.
+                // SAFETY: single-threaded init path — env::set_var is
+                // safe here because no other thread reads env yet.
+                unsafe { std::env::set_var("TMNL_TRANSFER_SOCKET", &l.socket_path) };
+                Some(l)
+            }
+            Err(e) => {
+                eprintln!("tmnl: pty-fd transfer listener disabled: {e}");
+                None
+            }
+        },
     };
     // Show the welcome overlay on a "bare" tmnl launch (no --mnml, not
     // headless) when the user has a recents file with entries — so they

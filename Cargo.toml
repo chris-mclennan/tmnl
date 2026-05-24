@@ -44,6 +44,12 @@ muda = "0.16"
 toml = { version = "0.8", default-features = false, features = ["parse", "display"] }
 serde = { version = "1", features = ["derive"] }
 dirs = "6"
+# Used by the pty-fd handoff receiver — `ioctl(TIOCSWINSZ)` on adopted
+# pty masters (resizing them via portable-pty's MasterPty trait isn't
+# possible because we don't construct the master, we adopt it from the
+# sender). Unix-only; tmnl is mac-first anyway.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [profile.release]
 lto = "thin"

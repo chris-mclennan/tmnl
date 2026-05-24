@@ -182,6 +182,88 @@ impl App {
         self.active = self.tabs.len() - 1;
     }
 
+    /// Drain pending pty-fd handoffs from the transfer listener (task
+    /// #50). Each handoff lights up a new adopted-shell tab — same
+    /// rendering pipeline as a spawned shell, just adopting the master
+    /// fd handed to us via SCM_RIGHTS instead of opening one ourselves.
+    /// No-op when the listener failed to start at boot.
+    fn drain_transfer_events(&mut self) {
+        let Some(listener) = self.transfer_listener.as_ref() else {
+            return;
+        };
+        // Collect events first so we don't hold an &self borrow across
+        // the mutating `adopt_pty_into_new_tab` calls.
+        let mut events: Vec<transfer::TransferEvent> = Vec::new();
+        while let Ok(ev) = listener.events.try_recv() {
+            events.push(ev);
+        }
+        for ev in events {
+            match ev {
+                #[cfg(unix)]
+                transfer::TransferEvent::OpenPaneTransfer { command, args, fd } => {
+                    self.adopt_pty_into_new_tab(command, args, fd);
+                }
+                #[cfg(not(unix))]
+                _ => {}
+            }
+        }
+    }
+
+    /// Create a new tab whose pane owns an adopted pty master fd —
+    /// produced by mnml's pop-out path (task #49). The pane uses the
+    /// shell pipeline (`PaneKind::Shell`) since the cell-grid renderer
+    /// is identical whether tmnl spawned the child or merely adopted
+    /// its master fd from a sibling process.
+    ///
+    /// Label preference: basename of `command` (e.g. `claude` from
+    /// `/usr/local/bin/claude`). If somehow empty, falls back to
+    /// `"adopted"`.
+    #[cfg(unix)]
+    fn adopt_pty_into_new_tab(
+        &mut self,
+        command: String,
+        _args: Vec<String>,
+        fd: std::os::unix::io::OwnedFd,
+    ) {
+        let (cols, rows) = match self.gpu.as_ref() {
+            Some(gpu) => (gpu.grid.cols, gpu.grid.rows),
+            None => return,
+        };
+        let label = std::path::Path::new(&command)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "adopted".to_string());
+        match ShellSession::adopt_fd(fd, rows as u16, cols as u16, TEXT_FG, CLEAR_BG, &label) {
+            Ok(s) => {
+                let pane = Pane {
+                    kind: PaneKind::Shell { session: Some(s) },
+                    grid: grid::Grid::new(cols, rows, CLEAR_BG),
+                    last_cursor: None,
+                    label: label.clone(),
+                    attention: false,
+                    last_status: None,
+                };
+                self.tabs.push(Tab {
+                    layout: Layout::Leaf(0),
+                    panes: vec![pane],
+                    focused: 0,
+                    label,
+                    custom_name: None,
+                });
+                self.active = self.tabs.len() - 1;
+                self.on_tab_focused();
+                self.relayout_all_panes();
+            }
+            Err(e) => {
+                eprintln!("tmnl: pty-fd adoption failed: {e}");
+                // `fd` already consumed by the failed call's
+                // `OwnedFd::into::<File>` — no further cleanup needed.
+            }
+        }
+    }
+
     /// Append a fresh shell tab and switch to it. The new tab's pane
     /// owns its own grid, sized to the current window; spawn failures
     /// leave the existing active tab in place and toast to stderr.
@@ -656,6 +738,9 @@ impl App {
         // the next render reflects whatever the menu changed.
         self.drain_menu_events(event_loop);
         self.poll_fim();
+        // Drain pending pty-fd handoffs (task #50). Each handoff
+        // produces a new adopted-shell tab in the focused window.
+        self.drain_transfer_events();
 
         if self.gpu.is_none() {
             return;
