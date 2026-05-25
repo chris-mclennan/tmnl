@@ -16,6 +16,8 @@
     <string>APPL</string>
     <key>CFBundleExecutable</key>
     <string>tmnl</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleSignature</key>
     <string>????</string>
     <key>LSMinimumSystemVersion</key>

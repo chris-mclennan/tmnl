@@ -10,20 +10,16 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  check:
-    name: fmt · clippy · test
-    # tmnl is macOS-only (native menu bar + .app bundle).
+  # Strict checks on macOS — fmt + clippy + test. macOS is the primary
+  # development target; new code must be clean on this platform first.
+  mac-strict:
+    name: macOS · fmt · clippy · test
     runs-on: macos-latest
     steps:
-      # tmnl depends on sibling crates by path (../tmnl-protocol, ../fim-engine),
-      # so check them out alongside this repo for the path deps to resolve.
       - name: Checkout tmnl
         uses: actions/checkout@v4
         with:
           path: tmnl
-      # `token:` lets CI check out the private sibling repos. Once the
-      # whole family is public, the default token works — drop the
-      # `token:` lines and the SIBLING_CHECKOUT_TOKEN secret then.
       - name: Checkout tmnl-protocol
         uses: actions/checkout@v4
         with:
@@ -58,3 +54,55 @@ jobs:
       - name: test
         working-directory: tmnl
         run: cargo test
+
+  # Cross-platform build verification — Linux + Windows. Loose checks
+  # for now: `cargo build` only, no clippy-as-error, no tests (which
+  # need a display server for winit). Goal is to catch compile breakage
+  # on the other targets so wife + coworkers running tmnl on Linux or
+  # Windows aren't surprised by a "doesn't compile" merge.
+  cross-build:
+    name: ${{ matrix.os }} · build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout tmnl
+        uses: actions/checkout@v4
+        with:
+          path: tmnl
+      - name: Checkout tmnl-protocol
+        uses: actions/checkout@v4
+        with:
+          repository: chris-mclennan/tmnl-protocol
+          path: tmnl-protocol
+          token: ${{ secrets.SIBLING_CHECKOUT_TOKEN }}
+      - name: Checkout fim-engine
+        uses: actions/checkout@v4
+        with:
+          repository: chris-mclennan/fim-engine
+          path: fim-engine
+          token: ${{ secrets.SIBLING_CHECKOUT_TOKEN }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # Linux deps for winit / wgpu (X11 headers, system libs).
+      - name: Install Linux build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev libxcursor-dev libxrandr-dev libxi-dev libxkbcommon-dev \
+            libgl1-mesa-dev libwayland-dev libudev-dev libfontconfig1-dev pkg-config
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tmnl
+          key: ${{ matrix.os }}
+
+      - name: cargo build
+        working-directory: tmnl
+        run: cargo build --release
