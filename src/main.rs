@@ -344,6 +344,15 @@ struct Gpu {
     /// to route strip-region mouse clicks (left → switch_to_tab,
     /// middle → close_tab_at).
     strip_chip_rects: Vec<(f32, f32, usize)>,
+    /// Pixel rects of the four palette-cluster hit-targets in the
+    /// chrome strip — `(x0, x1, y0, y1)`. Order: back, forward,
+    /// search-chip, dropdown-chevron. Click on each sends a different
+    /// key combo to mnml (Ctrl+PageUp / Ctrl+PageDown / Ctrl+Shift+P /
+    /// Ctrl+R) so the native client's existing keybindings fire.
+    strip_palette_back_rect: Option<(f32, f32, f32, f32)>,
+    strip_palette_fwd_rect: Option<(f32, f32, f32, f32)>,
+    strip_palette_chip_rect: Option<(f32, f32, f32, f32)>,
+    strip_palette_dropdown_rect: Option<(f32, f32, f32, f32)>,
     /// Pixel-x extents `(x0, x1, tab_idx)` of the trailing `⊗` close
     /// badge on each non-active chip. Click → `close_tab_at`. Active
     /// chip has no close badge (the user closes the active tab via
@@ -453,6 +462,10 @@ impl Gpu {
             strip_pipeline,
             strip_chips: Vec::new(),
             strip_chip_rects: Vec::new(),
+            strip_palette_back_rect: None,
+            strip_palette_fwd_rect: None,
+            strip_palette_chip_rect: None,
+            strip_palette_dropdown_rect: None,
             strip_chip_close_rects: Vec::new(),
             strip_new_tab_rect: None,
             // Default to the minimal (single-tab) chrome height; App
@@ -692,6 +705,141 @@ impl Gpu {
         out
     }
 
+    /// VS Code-style command-palette cluster in the chrome strip —
+    /// `[←][→]  [ 🔍  search files, run commands…  ▾ ]`. Three
+    /// clickable regions are stored as separate rects:
+    ///   * `strip_palette_back_rect` → `Ctrl+PageUp`  (buffer.prev)
+    ///   * `strip_palette_fwd_rect`  → `Ctrl+PageDown` (buffer.next)
+    ///   * `strip_palette_chip_rect` → `Ctrl+Shift+P` (palette)
+    ///   * `strip_palette_dropdown_rect` → `Ctrl+R`   (picker.recent)
+    /// Glyphs are Codicons (`nf-cod-*`) — same family VS Code uses,
+    /// so the look matches. Renders only when the strip is visible.
+    fn strip_palette_chip_instances(&mut self) -> Vec<pipeline::Instance> {
+        use crate::atlas::style_from_attrs;
+        self.strip_palette_back_rect = None;
+        self.strip_palette_fwd_rect = None;
+        self.strip_palette_chip_rect = None;
+        self.strip_palette_dropdown_rect = None;
+        if self.strip_h <= 0.0 {
+            return Vec::new();
+        }
+        let cell_w = self.atlas.cell_w;
+        let cell_h = self.atlas.cell_h;
+        let label_y_px = ((self.strip_h - cell_h) * 0.5).max(0.0);
+        let inset_y_total = self.inset_px + self.strip_h;
+        let base_y = (label_y_px - inset_y_total) / cell_h;
+
+        // Build the cluster as a flat char vec so we can render each
+        // glyph at a known column index AND map column ranges back to
+        // hit-rects. The slot indices below are 0-based char offsets.
+        //   back:  cells 0..3   (" ← ")
+        //   fwd:   cells 3..6   (" → ")
+        //   gap:   cells 6..9   (3 spaces, unclickable)
+        //   chip:  cells 9..(9+chip_body_w)
+        //   drop:  next 3 cells
+        // Glyphs: EA9B nf-cod-arrow-left, EA9C nf-cod-arrow-right,
+        //         F0349 nf-md-magnify, EAB4 nf-cod-chevron-down.
+        let back_text = " \u{EA9B} ";
+        let fwd_text = " \u{EA9C} ";
+        let gap_text = "   ";
+        let chip_body = "  \u{F0349}  search files, run commands…  ";
+        let dropdown_text = " \u{EAB4} ";
+
+        let back_cells = back_text.chars().count();
+        let fwd_cells = fwd_text.chars().count();
+        let gap_cells = gap_text.chars().count();
+        let chip_body_cells = chip_body.chars().count();
+        let dropdown_cells = dropdown_text.chars().count();
+        let total_cells = back_cells + fwd_cells + gap_cells + chip_body_cells + dropdown_cells;
+        let total_w_px = total_cells as f32 * cell_w;
+        let window_w_px = self.config.width as f32;
+        if window_w_px < Self::CHIP_START_X_PX + total_w_px + 40.0 {
+            return Vec::new();
+        }
+        let start_x_px = (window_w_px - total_w_px) / 2.0;
+        let start_col = (start_x_px - self.inset_px) / cell_w;
+
+        // Chrome colors — buttons sit on the strip bg (same as the
+        // chip body so the cluster reads as one continuous group);
+        // chip body is slightly lifted so it reads as the dominant
+        // search affordance.
+        const BTN_BG: [f32; 4] = [0.13, 0.15, 0.18, 1.0];
+        const CHIP_BG: [f32; 4] = [0.18, 0.20, 0.24, 1.0];
+        const BTN_FG: [f32; 4] = [0.70, 0.72, 0.78, 1.0];
+        const CHIP_FG: [f32; 4] = [0.55, 0.58, 0.65, 1.0];
+
+        let mut out: Vec<pipeline::Instance> = Vec::new();
+        let mut push = |out: &mut Vec<pipeline::Instance>,
+                        col: f32,
+                        ch: char,
+                        fg: [f32; 4],
+                        bg: [f32; 4],
+                        atlas: &mut crate::atlas::Atlas,
+                        queue: &wgpu::Queue| {
+            let g = atlas.glyph(ch, style_from_attrs(0), queue);
+            out.push(pipeline::Instance {
+                cell_pos: [col, base_y],
+                fg,
+                bg,
+                uv_min: g.uv_min,
+                uv_max: g.uv_max,
+                glyph_offset: g.offset,
+                glyph_size: g.size,
+                attrs: 0,
+                _pad: 0,
+            });
+        };
+
+        let mut col = start_col;
+        // Back arrow.
+        for ch in back_text.chars() {
+            push(&mut out, col, ch, BTN_FG, BTN_BG, &mut self.atlas, &self.queue);
+            col += 1.0;
+        }
+        // Forward arrow.
+        for ch in fwd_text.chars() {
+            push(&mut out, col, ch, BTN_FG, BTN_BG, &mut self.atlas, &self.queue);
+            col += 1.0;
+        }
+        // Gap — render strip-bg spaces so the chip looks visually
+        // detached from the arrows.
+        const STRIP_BG_LOCAL: [f32; 4] = [0.13, 0.15, 0.18, 1.0];
+        for ch in gap_text.chars() {
+            push(&mut out, col, ch, BTN_FG, STRIP_BG_LOCAL, &mut self.atlas, &self.queue);
+            col += 1.0;
+        }
+        // Chip body.
+        for ch in chip_body.chars() {
+            push(&mut out, col, ch, CHIP_FG, CHIP_BG, &mut self.atlas, &self.queue);
+            col += 1.0;
+        }
+        // Dropdown.
+        for ch in dropdown_text.chars() {
+            push(&mut out, col, ch, CHIP_FG, CHIP_BG, &mut self.atlas, &self.queue);
+            col += 1.0;
+        }
+
+        // Map cells back to pixel rects.
+        let cells_x = |c0: usize, c_count: usize| -> (f32, f32) {
+            let x0 = start_x_px + c0 as f32 * cell_w;
+            (x0, x0 + c_count as f32 * cell_w)
+        };
+        let y0 = 0.0;
+        let y1 = self.strip_h;
+        let (bx0, bx1) = cells_x(0, back_cells);
+        let (fx0, fx1) = cells_x(back_cells, fwd_cells);
+        let (cx0, cx1) = cells_x(back_cells + fwd_cells + gap_cells, chip_body_cells);
+        let (dx0, dx1) = cells_x(
+            back_cells + fwd_cells + gap_cells + chip_body_cells,
+            dropdown_cells,
+        );
+        self.strip_palette_back_rect = Some((bx0, bx1, y0, y1));
+        self.strip_palette_fwd_rect = Some((fx0, fx1, y0, y1));
+        self.strip_palette_chip_rect = Some((cx0, cx1, y0, y1));
+        self.strip_palette_dropdown_rect = Some((dx0, dx1, y0, y1));
+        out
+    }
+
     /// Paint the trailing `+` new-tab button at `plus_x_px` and record
     /// its pixel-x extent on `strip_new_tab_rect`. The chrome is a
     /// single glyph (`+`) padded left/right with two spaces so the
@@ -824,6 +972,7 @@ impl Gpu {
         // pipeline via fractional `cell_pos` values — they land in the
         // strip area above the grid).
         instances.extend(self.strip_chip_instances());
+        instances.extend(self.strip_palette_chip_instances());
         self.pipeline
             .ensure_capacity(&self.device, instances.len() as u64);
         self.pipeline.upload(&self.queue, &instances);

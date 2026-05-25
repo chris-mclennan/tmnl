@@ -1992,6 +1992,62 @@ impl App {
             let in_chrome = py < (gpu.inset_px + gpu.strip_h) as f64;
             if in_chrome {
                 if pressed {
+                    // Palette cluster (centered in strip) — four hit
+                    // rects, each sends a different key combo to the
+                    // active native tab so mnml's existing keybindings
+                    // fire. Tested before the tab-chip rects so the
+                    // cluster can safely overlap tabs visually.
+                    let hits = |rect: Option<(f32, f32, f32, f32)>| -> bool {
+                        rect.map(|(x0, x1, y0, y1)| {
+                            px >= x0 as f64
+                                && px < x1 as f64
+                                && py >= y0 as f64
+                                && py < y1 as f64
+                        })
+                        .unwrap_or(false)
+                    };
+                    let palette_key: Option<KeyInput> = if hits(gpu.strip_palette_back_rect) {
+                        // Back → Ctrl+PageUp (buffer.prev).
+                        Some(KeyInput {
+                            code: KeyCode::PageUp,
+                            mods: MOD_CTRL,
+                            press: true,
+                        })
+                    } else if hits(gpu.strip_palette_fwd_rect) {
+                        // Forward → Ctrl+PageDown (buffer.next).
+                        Some(KeyInput {
+                            code: KeyCode::PageDown,
+                            mods: MOD_CTRL,
+                            press: true,
+                        })
+                    } else if hits(gpu.strip_palette_chip_rect) {
+                        // Search chip → Ctrl+Shift+P (palette).
+                        Some(KeyInput {
+                            code: KeyCode::Char('P'),
+                            mods: MOD_CTRL | MOD_SHIFT,
+                            press: true,
+                        })
+                    } else if hits(gpu.strip_palette_dropdown_rect) {
+                        // Dropdown chevron → Ctrl+R (recent files).
+                        Some(KeyInput {
+                            code: KeyCode::Char('R'),
+                            mods: MOD_CTRL,
+                            press: true,
+                        })
+                    } else {
+                        None
+                    };
+                    if let Some(key) = palette_key
+                        && button == MouseButton::Left
+                    {
+                        if let Some(active) = self.tabs.get(self.active)
+                            && let PaneKind::Native { server, .. } =
+                                &active.panes[active.focused].kind
+                        {
+                            server.send_input(&InputEvent::Key(key));
+                        }
+                        return;
+                    }
                     // `+` new-tab button sits past the last chip;
                     // check it first since its rect is disjoint.
                     let on_plus = gpu

@@ -38,8 +38,19 @@ fn discover_font_chains() -> [Vec<FontSpec>; 4] {
     font_dirs.push(PathBuf::from("/Library/Fonts"));
 
     // Nerd Font families to try, in priority order. "Mono" variants enforce
-    // strict single-cell width — required for our grid model.
+    // strict single-cell width — required for our grid model. The `-mnml`
+    // suffix is the family patched with Claude/Codex glyphs at U+F8B0 /
+    // U+F8B1 (`scripts/patch_nerd_font.py` in the mnml repo); preferring
+    // it means native tmnl ships those custom glyphs, falling back to the
+    // upstream JetBrainsMono Nerd Font when the patched variant isn't
+    // installed.
     let nerd_families: &[(&str, &str, &str, &str)] = &[
+        (
+            "JetBrainsMonoNerdFontMono-Regular-mnml.ttf",
+            "JetBrainsMonoNerdFontMono-Bold.ttf",
+            "JetBrainsMonoNerdFontMono-Italic.ttf",
+            "JetBrainsMonoNerdFontMono-BoldItalic.ttf",
+        ),
         (
             "JetBrainsMonoNerdFontMono-Regular.ttf",
             "JetBrainsMonoNerdFontMono-Bold.ttf",
