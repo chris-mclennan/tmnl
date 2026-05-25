@@ -6,8 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use tmnl_protocol::{
-    Frame, InputEvent, Message, PROTOCOL_VERSION, Resize, pack_rgba_u8, read_message,
-    write_message,
+    Frame, InputEvent, Message, PROTOCOL_VERSION, Resize, pack_rgba_u8, read_message, write_message,
 };
 
 pub struct Server {

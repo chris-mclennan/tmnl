@@ -712,8 +712,9 @@ impl Gpu {
     ///   * `strip_palette_fwd_rect`  → `Ctrl+PageDown` (buffer.next)
     ///   * `strip_palette_chip_rect` → `Ctrl+Shift+P` (palette)
     ///   * `strip_palette_dropdown_rect` → `Ctrl+R`   (picker.recent)
-    /// Glyphs are Codicons (`nf-cod-*`) — same family VS Code uses,
-    /// so the look matches. Renders only when the strip is visible.
+    ///
+    /// Glyphs are Codicons (`nf-cod-*`) — same family VS Code uses, so
+    /// the look matches. Renders only when the strip is visible.
     fn strip_palette_chip_instances(&mut self) -> Vec<pipeline::Instance> {
         use crate::atlas::style_from_attrs;
         self.strip_palette_back_rect = None;
@@ -769,13 +770,13 @@ impl Gpu {
         const CHIP_FG: [f32; 4] = [0.55, 0.58, 0.65, 1.0];
 
         let mut out: Vec<pipeline::Instance> = Vec::new();
-        let mut push = |out: &mut Vec<pipeline::Instance>,
-                        col: f32,
-                        ch: char,
-                        fg: [f32; 4],
-                        bg: [f32; 4],
-                        atlas: &mut crate::atlas::Atlas,
-                        queue: &wgpu::Queue| {
+        let push = |out: &mut Vec<pipeline::Instance>,
+                    col: f32,
+                    ch: char,
+                    fg: [f32; 4],
+                    bg: [f32; 4],
+                    atlas: &mut crate::atlas::Atlas,
+                    queue: &wgpu::Queue| {
             let g = atlas.glyph(ch, style_from_attrs(0), queue);
             out.push(pipeline::Instance {
                 cell_pos: [col, base_y],
@@ -793,29 +794,69 @@ impl Gpu {
         let mut col = start_col;
         // Back arrow.
         for ch in back_text.chars() {
-            push(&mut out, col, ch, BTN_FG, BTN_BG, &mut self.atlas, &self.queue);
+            push(
+                &mut out,
+                col,
+                ch,
+                BTN_FG,
+                BTN_BG,
+                &mut self.atlas,
+                &self.queue,
+            );
             col += 1.0;
         }
         // Forward arrow.
         for ch in fwd_text.chars() {
-            push(&mut out, col, ch, BTN_FG, BTN_BG, &mut self.atlas, &self.queue);
+            push(
+                &mut out,
+                col,
+                ch,
+                BTN_FG,
+                BTN_BG,
+                &mut self.atlas,
+                &self.queue,
+            );
             col += 1.0;
         }
         // Gap — render strip-bg spaces so the chip looks visually
         // detached from the arrows.
         const STRIP_BG_LOCAL: [f32; 4] = [0.13, 0.15, 0.18, 1.0];
         for ch in gap_text.chars() {
-            push(&mut out, col, ch, BTN_FG, STRIP_BG_LOCAL, &mut self.atlas, &self.queue);
+            push(
+                &mut out,
+                col,
+                ch,
+                BTN_FG,
+                STRIP_BG_LOCAL,
+                &mut self.atlas,
+                &self.queue,
+            );
             col += 1.0;
         }
         // Chip body.
         for ch in chip_body.chars() {
-            push(&mut out, col, ch, CHIP_FG, CHIP_BG, &mut self.atlas, &self.queue);
+            push(
+                &mut out,
+                col,
+                ch,
+                CHIP_FG,
+                CHIP_BG,
+                &mut self.atlas,
+                &self.queue,
+            );
             col += 1.0;
         }
         // Dropdown.
         for ch in dropdown_text.chars() {
-            push(&mut out, col, ch, CHIP_FG, CHIP_BG, &mut self.atlas, &self.queue);
+            push(
+                &mut out,
+                col,
+                ch,
+                CHIP_FG,
+                CHIP_BG,
+                &mut self.atlas,
+                &self.queue,
+            );
             col += 1.0;
         }
 

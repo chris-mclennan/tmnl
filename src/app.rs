@@ -1999,10 +1999,7 @@ impl App {
                     // cluster can safely overlap tabs visually.
                     let hits = |rect: Option<(f32, f32, f32, f32)>| -> bool {
                         rect.map(|(x0, x1, y0, y1)| {
-                            px >= x0 as f64
-                                && px < x1 as f64
-                                && py >= y0 as f64
-                                && py < y1 as f64
+                            px >= x0 as f64 && px < x1 as f64 && py >= y0 as f64 && py < y1 as f64
                         })
                         .unwrap_or(false)
                     };
