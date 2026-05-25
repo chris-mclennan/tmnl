@@ -30,9 +30,18 @@ esac
 
 APP="target/tmnl.app"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "target/$PROFILE/tmnl" "$APP/Contents/MacOS/tmnl"
 cp scripts/Info.plist "$APP/Contents/Info.plist"
+
+# App icon. Build it on demand if `AppIcon.icns` is missing — the
+# Swift renderer (`scripts/icon/gen_icon.swift`) draws from scratch
+# with no external image-tool dependency.
+if [ ! -f scripts/icon/AppIcon.icns ]; then
+    echo "building app icon…"
+    (cd scripts/icon && ./build.sh) >/dev/null
+fi
+cp scripts/icon/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 # Strip the quarantine bit set by some build environments so Finder doesn't
 # Gatekeeper-block the first launch. Best-effort.

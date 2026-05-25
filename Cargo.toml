@@ -32,7 +32,10 @@ tmnl-protocol = { path = "../tmnl-protocol", version = "0.0.2" }
 # Embedded local AI command completion (qwen2.5-coder via candle). Kept
 # as its own crate so candle's large dependency tree compiles once and
 # tmnl's incremental rebuilds don't recompile it. First build is slow.
-fim-engine = { path = "../fim-engine", version = "0.1.0" }
+# Default-features off to drop the `metal` feature (Apple GPU via objc2),
+# re-enabled via the per-target block below only on macOS — keeps Linux
+# and Windows builds from pulling in a transitively Apple-only graph.
+fim-engine = { path = "../fim-engine", version = "0.1.0", default-features = false }
 # Shell mode — host a real pty + parse its output into cells. Versions match
 # what mnml's pty_pane uses so we share one source-of-truth in the workspace.
 vt100 = "0.16"
@@ -50,6 +53,12 @@ dirs = "6"
 # sender). Unix-only; tmnl is mac-first anyway.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# Apple GPU inference path for fim-engine — opted into only on macOS so
+# Linux + Windows builds compile without the `objc2` Apple-only crate
+# graph (candle-core/metal pulls that in).
+[target.'cfg(target_os = "macos")'.dependencies]
+fim-engine = { path = "../fim-engine", version = "0.1.0", features = ["metal"] }
 
 [dev-dependencies]
 # Sandboxed temp dirs for tests that touch `$HOME` / `$XDG_CONFIG_HOME`
