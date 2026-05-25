@@ -58,11 +58,19 @@ case "${1:-default}" in
   mnml)
     shift
     cargo build --release --quiet
+    if [ -d ../mnml ]; then
+      (cd ../mnml && cargo build --release --quiet) || \
+        echo "[run.sh] warning: mnml release build failed; tmnl will fall back to stale binary" >&2
+    fi
     exec ./target/release/tmnl --mnml "$@"
     ;;
   mixr)
     shift
     cargo build --release --quiet
+    if [ -d ../mixr-rs ]; then
+      (cd ../mixr-rs && cargo build --release --quiet) || \
+        echo "[run.sh] warning: mixr release build failed; tmnl will fall back to stale binary" >&2
+    fi
     exec ./target/release/tmnl --mixr "$@"
     ;;
   headless)
