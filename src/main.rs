@@ -52,8 +52,11 @@ const FONT_PX: f32 = 14.0;
 /// strip is tall enough to hold a row of chips plus generous padding.
 #[cfg(target_os = "macos")]
 const MACOS_TAB_STRIP_PX_MULTI: f32 = 64.0;
+// Linux + Windows: no traffic-light row above us (the WM owns the
+// title bar), so the strip just needs height for the chip row +
+// palette cluster + a little breathing room.
 #[cfg(not(target_os = "macos"))]
-const MACOS_TAB_STRIP_PX_MULTI: f32 = 0.0;
+const MACOS_TAB_STRIP_PX_MULTI: f32 = 32.0;
 /// Single-tab chrome height — a small breathing-room band above the
 /// grid so the first row of content isn't kissing the macOS traffic
 /// lights, but no visible chrome strip (the strip pipeline paints this
@@ -68,7 +71,7 @@ const MACOS_TAB_STRIP_PX_MULTI: f32 = 0.0;
 #[cfg(target_os = "macos")]
 const MACOS_TAB_STRIP_PX_SINGLE: f32 = 52.0;
 #[cfg(not(target_os = "macos"))]
-const MACOS_TAB_STRIP_PX_SINGLE: f32 = 0.0;
+const MACOS_TAB_STRIP_PX_SINGLE: f32 = 32.0;
 /// Single-tab strip height for *shell* mode (no TUI hosted, e.g. a bare
 /// `zsh` prompt). Larger than the TUI value so the prompt's first row
 /// doesn't sit right under the macOS traffic lights. The strip pipeline
@@ -76,7 +79,7 @@ const MACOS_TAB_STRIP_PX_SINGLE: f32 = 0.0;
 #[cfg(target_os = "macos")]
 const MACOS_TAB_STRIP_PX_SHELL: f32 = 42.0;
 #[cfg(not(target_os = "macos"))]
-const MACOS_TAB_STRIP_PX_SHELL: f32 = 0.0;
+const MACOS_TAB_STRIP_PX_SHELL: f32 = 24.0;
 // Frame background — fills (a) the top pad reserved for the macOS
 // traffic-light buttons, (b) the letterbox gutter at the bottom when
 // the window height isn't a clean row multiple, and (c) any sub-cell
