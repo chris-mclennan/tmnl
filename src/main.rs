@@ -751,7 +751,33 @@ impl Gpu {
         // matches the gap between the back and forward buttons.
         // (Was 3 cells of strip-bg; visually too wide.)
         let gap_text = "";
-        let chip_body = "  \u{F0349}  search files, run commands…  ";
+        // Chip label: prefer the active tab's title (e.g. mnml's
+        // workspace name) over the static placeholder so the chip
+        // matches what mnml's inline-mode palette bar shows. Falls
+        // back to the placeholder when no native tab has sent a title
+        // yet (welcome screen / shell mode). Padded to a constant
+        // 24-cell width so the chip stays the same size regardless of
+        // label length; long titles truncate with `…`.
+        const CHIP_LABEL_W: usize = 24;
+        let active_label = self
+            .strip_chips
+            .iter()
+            .find(|(_, active, _)| *active)
+            .map(|(label, _, _)| label.clone())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "search files, run commands…".to_string());
+        let label = if active_label.chars().count() > CHIP_LABEL_W {
+            let mut s: String = active_label.chars().take(CHIP_LABEL_W - 1).collect();
+            s.push('…');
+            s
+        } else {
+            let need = CHIP_LABEL_W - active_label.chars().count();
+            let mut s = active_label;
+            s.extend(std::iter::repeat_n(' ', need));
+            s
+        };
+        let chip_body = format!("  \u{F0349}  {label}  ");
+        let chip_body = chip_body.as_str();
         let dropdown_text = " \u{EAB4} ";
 
         let back_cells = back_text.chars().count();
