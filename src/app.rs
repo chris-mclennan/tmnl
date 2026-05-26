@@ -1274,13 +1274,28 @@ impl App {
     /// path — `open_pane_with_command`.
     fn open_recent_entry(&mut self, entry: crate::recents::Entry) {
         let command = entry.command.to_string_lossy().into_owned();
-        self.replace_focused_pane_with_native(command, entry.args);
+        // Honor the per-entry workspace — that's the whole point of
+        // pinning a recent at a specific repo. Without this, picking
+        // entry 2 (`mnml ~/Projects/tmnl`) opens mnml at whatever
+        // editor_template / current_dir resolves to (`/` when tmnl.app
+        // is launched from /Applications), which surfaces as the
+        // "mnml opened in the wrong folder" bug.
+        self.replace_focused_pane_with_native(command, entry.args, entry.workspace);
     }
 
     /// Swap the active tab's focused pane for a freshly-launched
     /// native pane running `command args…`. Used by the welcome
     /// screen — see [`Self::open_recent_entry`].
-    fn replace_focused_pane_with_native(&mut self, command: String, args: Vec<String>) {
+    fn replace_focused_pane_with_native(
+        &mut self,
+        command: String,
+        args: Vec<String>,
+        // Per-call override — set by `open_recent_entry` to honor the
+        // recents entry's pinned workspace. When `None`, falls back to
+        // the editor_template's workspace (the path tmnl was launched
+        // with) and finally current_dir.
+        workspace_override: Option<std::path::PathBuf>,
+    ) {
         let (cols, rows) = match self.gpu.as_ref() {
             Some(gpu) => (gpu.grid.cols, gpu.grid.rows),
             None => return,
@@ -1294,10 +1309,8 @@ impl App {
                 return;
             }
         };
-        let workspace = self
-            .editor_template
-            .as_ref()
-            .map(|t| t.workspace.clone())
+        let workspace = workspace_override
+            .or_else(|| self.editor_template.as_ref().map(|t| t.workspace.clone()))
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
         let label = std::path::Path::new(&command)
             .file_name()
