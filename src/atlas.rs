@@ -31,11 +31,44 @@ fn discover_font_chains() -> [Vec<FontSpec>; 4] {
     let mut italic: Vec<FontSpec> = Vec::new();
     let mut bold_italic: Vec<FontSpec> = Vec::new();
 
+    // Per-OS font-search-path conventions. macOS uses `~/Library/Fonts`
+    // and `/Library/Fonts`; Linux follows `XDG_DATA_HOME` / freedesktop
+    // (`~/.local/share/fonts`, `/usr/share/fonts`, `/usr/local/share/fonts`,
+    // `~/.fonts` for the legacy path); Windows uses `%LOCALAPPDATA%\
+    // Microsoft\Windows\Fonts` plus `C:\Windows\Fonts`. We probe all of
+    // them — the first family that matches wins, so adding paths is
+    // harmless on platforms where they don't exist.
     let mut font_dirs: Vec<PathBuf> = Vec::new();
-    if let Ok(home) = std::env::var("HOME") {
-        font_dirs.push(PathBuf::from(&home).join("Library/Fonts"));
+    let home = std::env::var("HOME").ok();
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(h) = &home {
+            font_dirs.push(PathBuf::from(h).join("Library/Fonts"));
+        }
+        font_dirs.push(PathBuf::from("/Library/Fonts"));
     }
-    font_dirs.push(PathBuf::from("/Library/Fonts"));
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
+            font_dirs.push(PathBuf::from(xdg).join("fonts"));
+        } else if let Some(h) = &home {
+            font_dirs.push(PathBuf::from(h).join(".local/share/fonts"));
+        }
+        if let Some(h) = &home {
+            font_dirs.push(PathBuf::from(h).join(".fonts"));
+        }
+        font_dirs.push(PathBuf::from("/usr/local/share/fonts"));
+        font_dirs.push(PathBuf::from("/usr/share/fonts"));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            font_dirs.push(PathBuf::from(local).join("Microsoft/Windows/Fonts"));
+        }
+        if let Ok(win) = std::env::var("WINDIR") {
+            font_dirs.push(PathBuf::from(win).join("Fonts"));
+        }
+    }
 
     // Nerd Font families to try, in priority order. "Mono" variants enforce
     // strict single-cell width — required for our grid model. The `-mnml`
@@ -99,15 +132,72 @@ fn discover_font_chains() -> [Vec<FontSpec>; 4] {
         }
     }
 
-    // System-font backstop. Keep these so mnml's plain ASCII still renders
-    // even if no Nerd Font is installed.
-    regular.push(FontSpec::file("/System/Library/Fonts/SFNSMono.ttf"));
-    regular.push(FontSpec::ttc("/System/Library/Fonts/Menlo.ttc", 0));
-    regular.push(FontSpec::file("/System/Library/Fonts/Monaco.ttf"));
-    bold.push(FontSpec::ttc("/System/Library/Fonts/Menlo.ttc", 1));
-    italic.push(FontSpec::file("/System/Library/Fonts/SFNSMonoItalic.ttf"));
-    italic.push(FontSpec::ttc("/System/Library/Fonts/Menlo.ttc", 2));
-    bold_italic.push(FontSpec::ttc("/System/Library/Fonts/Menlo.ttc", 3));
+    // System-font backstop — keeps plain ASCII rendering even if no
+    // Nerd Font is installed. Tries the common monospaced ttf locations
+    // on each platform; `FontSpec::file` is a path-existence-checked
+    // load so misses are silent and harmless.
+    #[cfg(target_os = "macos")]
+    {
+        regular.push(FontSpec::file("/System/Library/Fonts/SFNSMono.ttf"));
+        regular.push(FontSpec::ttc("/System/Library/Fonts/Menlo.ttc", 0));
+        regular.push(FontSpec::file("/System/Library/Fonts/Monaco.ttf"));
+        bold.push(FontSpec::ttc("/System/Library/Fonts/Menlo.ttc", 1));
+        italic.push(FontSpec::file("/System/Library/Fonts/SFNSMonoItalic.ttf"));
+        italic.push(FontSpec::ttc("/System/Library/Fonts/Menlo.ttc", 2));
+        bold_italic.push(FontSpec::ttc("/System/Library/Fonts/Menlo.ttc", 3));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // DejaVu Sans Mono ships with most distros (Ubuntu, Fedora,
+        // Arch). Liberation Mono is the Red Hat / RHEL fallback.
+        // Noto Mono is GNOME's default and lands on a lot of modern
+        // installs. Paths cover the common locations even though
+        // fontconfig usually finds them anyway — direct-path loads
+        // sidestep the need to depend on fontconfig at all.
+        regular.push(FontSpec::file(
+            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+        ));
+        regular.push(FontSpec::file("/usr/share/fonts/dejavu/DejaVuSansMono.ttf"));
+        regular.push(FontSpec::file(
+            "/usr/share/fonts/liberation/LiberationMono-Regular.ttf",
+        ));
+        regular.push(FontSpec::file(
+            "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+        ));
+        regular.push(FontSpec::file(
+            "/usr/share/fonts/noto/NotoSansMono-Regular.ttf",
+        ));
+        bold.push(FontSpec::file(
+            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
+        ));
+        bold.push(FontSpec::file(
+            "/usr/share/fonts/liberation/LiberationMono-Bold.ttf",
+        ));
+        italic.push(FontSpec::file(
+            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Oblique.ttf",
+        ));
+        italic.push(FontSpec::file(
+            "/usr/share/fonts/liberation/LiberationMono-Italic.ttf",
+        ));
+        bold_italic.push(FontSpec::file(
+            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-BoldOblique.ttf",
+        ));
+        bold_italic.push(FontSpec::file(
+            "/usr/share/fonts/liberation/LiberationMono-BoldItalic.ttf",
+        ));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // Consolas ships with every Windows since Vista and is the
+        // default monospaced font for Windows Terminal / VS Code on
+        // Windows. Cascadia Mono is bundled with newer installs.
+        regular.push(FontSpec::file("C:/Windows/Fonts/consola.ttf"));
+        regular.push(FontSpec::file("C:/Windows/Fonts/CascadiaMono.ttf"));
+        regular.push(FontSpec::file("C:/Windows/Fonts/lucon.ttf"));
+        bold.push(FontSpec::file("C:/Windows/Fonts/consolab.ttf"));
+        italic.push(FontSpec::file("C:/Windows/Fonts/consolai.ttf"));
+        bold_italic.push(FontSpec::file("C:/Windows/Fonts/consolaz.ttf"));
+    }
 
     [regular, bold, italic, bold_italic]
 }
