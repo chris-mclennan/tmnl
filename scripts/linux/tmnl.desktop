@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=tmnl
+GenericName=Terminal
+Comment=A GPU-rendered terminal — and a structured-cell display surface
+Exec=tmnl
+Icon=tmnl
+Terminal=false
+Categories=Development;System;TerminalEmulator;
+Keywords=terminal;shell;tmnl;mnml;
+StartupNotify=true
+StartupWMClass=tmnl
