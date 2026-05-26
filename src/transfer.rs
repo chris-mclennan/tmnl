@@ -13,14 +13,24 @@
 //! path is exported to children via the `TMNL_TRANSFER_SOCKET` env
 //! var (set in [`crate::launcher::Launcher`]) so they don't have to
 //! guess.
+//!
+//! **Unix-only.** SCM_RIGHTS fd-passing has no portable Windows
+//! analogue (Windows has `DuplicateHandle` but it goes through a
+//! different syscall path and doesn't fit this single-message-with-
+//! ancillary-data shape). The Windows build provides stubs that
+//! return `Unsupported` so callers can keep their match arms — the
+//! pop-pty / pop-pane feature simply isn't available on Windows.
 
 #[cfg(unix)]
 use std::os::unix::io::{FromRawFd, OwnedFd};
+#[cfg(unix)]
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, channel};
+#[cfg(unix)]
 use std::thread;
 
+#[cfg(unix)]
 use tmnl_protocol::{Message, read_message_with_fd};
 
 /// Events surfaced from the transfer listener to the app's tick loop.
@@ -49,6 +59,7 @@ pub struct TransferListener {
 }
 
 impl TransferListener {
+    #[cfg(unix)]
     pub fn start(socket_path: PathBuf) -> std::io::Result<Self> {
         let _ = std::fs::remove_file(&socket_path);
         let listener = UnixListener::bind(&socket_path)?;
@@ -63,8 +74,21 @@ impl TransferListener {
             events: rx,
         })
     }
+
+    /// Windows stub — SCM_RIGHTS / fd-passing has no portable Windows
+    /// equivalent, so the transfer listener simply doesn't exist on
+    /// Windows. Returns an `Unsupported` error; callers in `main.rs`
+    /// handle the failure as "pop-pty isn't available here."
+    #[cfg(windows)]
+    pub fn start(_socket_path: PathBuf) -> std::io::Result<Self> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "pty-fd handoff is Unix-only (SCM_RIGHTS)",
+        ))
+    }
 }
 
+#[cfg(unix)]
 impl Drop for TransferListener {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.socket_path);
@@ -74,6 +98,7 @@ impl Drop for TransferListener {
 /// `<TMPDIR>/tmnl-<pid>-transfer.sock` — one transfer socket per
 /// tmnl process, lives next to the main server socket. Identical
 /// shape so consumers can find both via `TMPDIR + pid`.
+#[cfg(unix)]
 pub fn default_socket_path() -> PathBuf {
     let tmp = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
     let pid = std::process::id();
@@ -84,6 +109,15 @@ pub fn default_socket_path() -> PathBuf {
     PathBuf::from(format!("{s}tmnl-{pid}-transfer.sock"))
 }
 
+/// Windows stub — there's no transfer-socket file on Windows. The
+/// returned path is intentionally unused (the `start()` call that
+/// would consume it errors out before binding).
+#[cfg(windows)]
+pub fn default_socket_path() -> PathBuf {
+    PathBuf::from("tmnl-transfer-unsupported")
+}
+
+#[cfg(unix)]
 fn accept_loop(listener: UnixListener, tx: Sender<TransferEvent>) {
     for incoming in listener.incoming() {
         let stream = match incoming {

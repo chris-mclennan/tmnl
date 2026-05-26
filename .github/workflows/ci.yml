@@ -65,12 +65,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Windows omitted from the matrix until tmnl's UDS-based blit
-        # IPC (`server.rs` / `transfer.rs`, std::os::unix::net) is
-        # ported to named-pipes or TCP-localhost — that's a real port,
-        # not a cfg-gate. Linux uses the same UDS code path as macOS
-        # so it just needs the right system packages.
-        os: [ubuntu-latest]
+        # `server.rs` IPC: UDS on Unix, TCP-localhost on Windows.
+        # `transfer.rs` (SCM_RIGHTS pty-fd handoff): Unix-only, with
+        # an `Unsupported` stub on Windows so `main.rs` compiles
+        # uniformly. Both targets in the matrix now.
+        os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout tmnl
