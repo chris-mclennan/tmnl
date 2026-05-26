@@ -745,7 +745,12 @@ impl Gpu {
         //         F0349 nf-md-magnify, EAB4 nf-cod-chevron-down.
         let back_text = " \u{EA9B} ";
         let fwd_text = " \u{EA9C} ";
-        let gap_text = "   ";
+        // No explicit strip-bg gap between the nav cluster and the chip
+        // — the buttons' built-in `" glyph "` padding + the chip's
+        // built-in leading "  " already provide a balanced spacing that
+        // matches the gap between the back and forward buttons.
+        // (Was 3 cells of strip-bg; visually too wide.)
+        let gap_text = "";
         let chip_body = "  \u{F0349}  search files, run commands…  ";
         let dropdown_text = " \u{EAB4} ";
 
