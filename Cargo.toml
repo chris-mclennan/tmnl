@@ -54,6 +54,15 @@ dirs = "6"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# Windows AF_UNIX support — Windows 10 (build 17063, late 2017) and
+# newer have native AF_UNIX, but Rust's `std::os::unix::net::*` is
+# gated to `cfg(unix)`. `uds_windows` wraps the Windows winapi calls
+# behind a `UnixListener` / `UnixStream` API that matches std's
+# shape, so `server.rs` can stay one code path: file-path-addressed
+# sockets on every platform.
+[target.'cfg(windows)'.dependencies]
+uds_windows = "1.1"
+
 # Apple GPU inference path for fim-engine — opted into only on macOS so
 # Linux + Windows builds compile without the `objc2` Apple-only crate
 # graph (candle-core/metal pulls that in).

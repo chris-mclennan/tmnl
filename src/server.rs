@@ -4,18 +4,17 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-// Cross-platform blit IPC. On Unix (macOS + Linux) we use Unix-domain
-// sockets at a file path — same code as before this port. On Windows
-// we fall back to TCP-localhost — Windows has no UDS-equivalent in
-// std (named pipes need `std::os::windows::*` ceremony that's enough
-// scope for its own port). The TCP path binds to `127.0.0.1:0`, asks
-// the OS for an ephemeral port, then serializes the resulting
-// `host:port` as the `socket_path` string so callers + the spawned
-// child process can address it the same way they do on Unix.
-#[cfg(windows)]
-use std::net::{TcpListener as Listener, TcpStream as Stream};
+// Cross-platform blit IPC: file-path Unix-domain sockets on every
+// platform. Unix uses `std::os::unix::net`; Windows uses the
+// `uds_windows` crate (a thin wrapper around Windows' native AF_UNIX
+// support, available since Win10 1803). The API surface matches std's
+// shape so the rest of this module stays platform-agnostic —
+// `Listener::bind(path)`, `Stream::try_clone()`, `Read`/`Write` on the
+// stream, all behave the same on both.
 #[cfg(unix)]
 use std::os::unix::net::{UnixListener as Listener, UnixStream as Stream};
+#[cfg(windows)]
+use uds_windows::{UnixListener as Listener, UnixStream as Stream};
 
 use tmnl_protocol::{
     Frame, InputEvent, Message, PROTOCOL_VERSION, Resize, pack_rgba_u8, read_message, write_message,
@@ -45,44 +44,25 @@ pub enum ServerEvent {
     },
 }
 
-/// Bind a listener at the caller-supplied address. On Unix that's a
-/// file path; on Windows the string is parsed as a `host:port` pair
-/// (the caller can pass `127.0.0.1:0` and read the OS-assigned port
-/// back via `local_addr` — see `Server::start_ephemeral` below).
-#[cfg(unix)]
+/// Bind a UDS listener at the file path. Identical shape on Unix
+/// (std `UnixListener`) and Windows (`uds_windows::UnixListener`);
+/// the unlink-then-bind dance handles a stale socket file from a
+/// crashed previous run.
 fn bind_listener(socket_path: &std::path::Path) -> std::io::Result<Listener> {
     let _ = std::fs::remove_file(socket_path);
     Listener::bind(socket_path)
 }
-#[cfg(windows)]
-fn bind_listener(socket_path: &std::path::Path) -> std::io::Result<Listener> {
-    // `socket_path` is reused as a string-form endpoint on Windows;
-    // strings like `127.0.0.1:54321` go straight to `TcpListener::bind`.
-    let s = socket_path.to_string_lossy();
-    Listener::bind(s.as_ref())
-}
 
-/// Best-effort cleanup of the listener address when the server drops.
-/// Unix: unlink the socket file. Windows: nothing to clean up.
-#[cfg(unix)]
+/// Best-effort cleanup of the listener's socket file when the server
+/// drops. Filesystem unlink works on every platform now that we use
+/// file-path UDS everywhere.
 fn remove_endpoint(socket_path: &std::path::Path) {
     let _ = std::fs::remove_file(socket_path);
 }
-#[cfg(windows)]
-fn remove_endpoint(_socket_path: &std::path::Path) {}
 
 impl Server {
     pub fn start(socket_path: PathBuf) -> std::io::Result<Self> {
         let listener = bind_listener(&socket_path)?;
-        // On Windows the caller typically passes `127.0.0.1:0` so the
-        // OS picks an ephemeral port; read the actual port back and
-        // rewrite `socket_path` so callers (and the spawned child)
-        // address it correctly. No-op on Unix.
-        #[cfg(windows)]
-        let socket_path = match listener.local_addr() {
-            Ok(addr) => PathBuf::from(addr.to_string()),
-            Err(_) => socket_path,
-        };
         let (frame_tx, frame_rx) = channel::<Frame>();
         let (event_tx, event_rx) = channel::<ServerEvent>();
         let writer: Arc<Mutex<Option<Stream>>> = Arc::new(Mutex::new(None));
@@ -275,50 +255,18 @@ fn reader_loop(
     let _ = event_tx.send(ServerEvent::ClientDisconnected);
 }
 
-#[cfg(unix)]
+/// `<tempdir>/tmnl-<pid>.sock`. Cross-platform: `std::env::temp_dir()`
+/// resolves to `$TMPDIR` (or `/tmp`) on Unix and `%TEMP%` on Windows.
 pub fn default_socket_path() -> PathBuf {
-    let tmp = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
     let pid = std::process::id();
-    PathBuf::from(format!("{}tmnl-{}.sock", strip_trailing_slash(&tmp), pid))
-}
-
-/// Windows: no UDS-equivalent in std, so we use TCP-localhost. The
-/// returned string is `127.0.0.1:0` — a request for an ephemeral
-/// port. `Server::start` rewrites the path to the actual bound
-/// address after the listener resolves the port.
-#[cfg(windows)]
-pub fn default_socket_path() -> PathBuf {
-    PathBuf::from("127.0.0.1:0")
+    std::env::temp_dir().join(format!("tmnl-{pid}.sock"))
 }
 
 /// Unique socket path for a non-initial Native tab in the same tmnl
 /// process. `nonce` is a per-tab counter (`App.native_tab_nonce`).
-#[cfg(unix)]
 pub fn native_tab_socket_path(nonce: u32) -> PathBuf {
-    let tmp = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
     let pid = std::process::id();
-    PathBuf::from(format!(
-        "{}tmnl-{}-{}.sock",
-        strip_trailing_slash(&tmp),
-        pid,
-        nonce
-    ))
-}
-
-/// Windows: each native tab gets its own ephemeral TCP-localhost
-/// listener; the `nonce` is unused since the OS picks distinct ports.
-#[cfg(windows)]
-pub fn native_tab_socket_path(_nonce: u32) -> PathBuf {
-    PathBuf::from("127.0.0.1:0")
-}
-
-#[cfg(unix)]
-fn strip_trailing_slash(s: &str) -> String {
-    let mut out = s.to_string();
-    if !out.ends_with('/') {
-        out.push('/');
-    }
-    out
+    std::env::temp_dir().join(format!("tmnl-{pid}-{nonce}.sock"))
 }
 
 #[cfg(test)]
