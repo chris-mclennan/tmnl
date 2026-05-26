@@ -11,7 +11,7 @@ true-color, partial-frame diffs, no escape-sequence tax.
 [![Crates.io](https://img.shields.io/crates/v/tmnl-rs.svg?logo=rust)](https://crates.io/crates/tmnl-rs)
 [![CI](https://github.com/chris-mclennan/tmnl-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/chris-mclennan/tmnl-rs/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
-[![Platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](#install)
+[![Platform: macOS · Linux](https://img.shields.io/badge/platform-macOS%20%C2%B7%20Linux-lightgrey.svg)](#install)
 
 </div>
 
@@ -46,7 +46,8 @@ true-color, partial-frame diffs, no escape-sequence tax.
 
 That second mode is the point. See [`docs/sdk-guide.md`](docs/sdk-guide.md).
 
-> **Status:** `v0.0.1` — early, and macOS-only. Expect sharp edges.
+> **Status:** `v0.0.1` — early. macOS is the primary target; Linux compiles
+> and runs (chrome-light); Windows port is in progress. Expect sharp edges.
 
 ## The two modes
 
@@ -84,8 +85,24 @@ See [FEATURES.md](FEATURES.md) for the full shipped inventory and
 cargo install tmnl-rs        # the crate is tmnl-rs; the binary it installs is `tmnl`
 ```
 
-tmnl is **macOS-only** for now (winit + wgpu are portable; the `muda` menu bar
-and `.app` bundle are not). Linux is the likely next target.
+### Platform support
+
+* **macOS** is the primary target. Full chrome — native menu bar, traffic-light
+  inset, `.app` bundle, `cargo install` works. `scripts/build-app.sh release`
+  produces `target/tmnl.app` for drag-into-/Applications distribution.
+* **Linux** compiles + runs as of `a3d9c7b`. Distro fonts auto-discovered
+  (DejaVu Sans Mono / Liberation Mono / Noto Mono); install JetBrainsMono Nerd
+  Font into `~/.local/share/fonts/` for the full icon set. Build deps:
+  ```bash
+  sudo apt install libgtk-3-dev libglib2.0-dev libxdo-dev \
+      libx11-dev libxcursor-dev libxrandr-dev libxi-dev libxkbcommon-dev \
+      libgl1-mesa-dev libwayland-dev libudev-dev libfontconfig1-dev pkg-config
+  cargo install --git https://github.com/chris-mclennan/tmnl-rs tmnl-rs
+  ```
+  No `.app` bundle (irrelevant on Linux); a `.desktop` entry is on the roadmap.
+* **Windows** doesn't compile yet — tmnl's blit IPC uses `std::os::unix::net`
+  (UDS sockets) which has no Windows analogue without porting to named-pipes
+  or TCP-localhost. Tracked as the next cross-platform task.
 
 ## Build & run
 
