@@ -1,9 +1,21 @@
 use std::io::BufReader;
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
+
+// Cross-platform blit IPC. On Unix (macOS + Linux) we use Unix-domain
+// sockets at a file path — same code as before this port. On Windows
+// we fall back to TCP-localhost — Windows has no UDS-equivalent in
+// std (named pipes need `std::os::windows::*` ceremony that's enough
+// scope for its own port). The TCP path binds to `127.0.0.1:0`, asks
+// the OS for an ephemeral port, then serializes the resulting
+// `host:port` as the `socket_path` string so callers + the spawned
+// child process can address it the same way they do on Unix.
+#[cfg(windows)]
+use std::net::{TcpListener as Listener, TcpStream as Stream};
+#[cfg(unix)]
+use std::os::unix::net::{UnixListener as Listener, UnixStream as Stream};
 
 use tmnl_protocol::{
     Frame, InputEvent, Message, PROTOCOL_VERSION, Resize, pack_rgba_u8, read_message, write_message,
@@ -13,7 +25,7 @@ pub struct Server {
     pub socket_path: PathBuf,
     pub frame_rx: Receiver<Frame>,
     pub events: Receiver<ServerEvent>,
-    writer: Arc<Mutex<Option<UnixStream>>>,
+    writer: Arc<Mutex<Option<Stream>>>,
 }
 
 #[derive(Debug)]
@@ -33,13 +45,47 @@ pub enum ServerEvent {
     },
 }
 
+/// Bind a listener at the caller-supplied address. On Unix that's a
+/// file path; on Windows the string is parsed as a `host:port` pair
+/// (the caller can pass `127.0.0.1:0` and read the OS-assigned port
+/// back via `local_addr` — see `Server::start_ephemeral` below).
+#[cfg(unix)]
+fn bind_listener(socket_path: &std::path::Path) -> std::io::Result<Listener> {
+    let _ = std::fs::remove_file(socket_path);
+    Listener::bind(socket_path)
+}
+#[cfg(windows)]
+fn bind_listener(socket_path: &std::path::Path) -> std::io::Result<Listener> {
+    // `socket_path` is reused as a string-form endpoint on Windows;
+    // strings like `127.0.0.1:54321` go straight to `TcpListener::bind`.
+    let s = socket_path.to_string_lossy();
+    Listener::bind(s.as_ref())
+}
+
+/// Best-effort cleanup of the listener address when the server drops.
+/// Unix: unlink the socket file. Windows: nothing to clean up.
+#[cfg(unix)]
+fn remove_endpoint(socket_path: &std::path::Path) {
+    let _ = std::fs::remove_file(socket_path);
+}
+#[cfg(windows)]
+fn remove_endpoint(_socket_path: &std::path::Path) {}
+
 impl Server {
     pub fn start(socket_path: PathBuf) -> std::io::Result<Self> {
-        let _ = std::fs::remove_file(&socket_path);
-        let listener = UnixListener::bind(&socket_path)?;
+        let listener = bind_listener(&socket_path)?;
+        // On Windows the caller typically passes `127.0.0.1:0` so the
+        // OS picks an ephemeral port; read the actual port back and
+        // rewrite `socket_path` so callers (and the spawned child)
+        // address it correctly. No-op on Unix.
+        #[cfg(windows)]
+        let socket_path = match listener.local_addr() {
+            Ok(addr) => PathBuf::from(addr.to_string()),
+            Err(_) => socket_path,
+        };
         let (frame_tx, frame_rx) = channel::<Frame>();
         let (event_tx, event_rx) = channel::<ServerEvent>();
-        let writer: Arc<Mutex<Option<UnixStream>>> = Arc::new(Mutex::new(None));
+        let writer: Arc<Mutex<Option<Stream>>> = Arc::new(Mutex::new(None));
         let writer_clone = writer.clone();
         thread::spawn(move || {
             accept_loop(listener, frame_tx, event_tx, writer_clone);
@@ -83,15 +129,15 @@ impl Drop for Server {
         // save_session_on_quit, and exits cleanly before the kill
         // arrives.
         self.send_quit();
-        let _ = std::fs::remove_file(&self.socket_path);
+        remove_endpoint(&self.socket_path);
     }
 }
 
 fn accept_loop(
-    listener: UnixListener,
+    listener: Listener,
     frame_tx: Sender<Frame>,
     event_tx: Sender<ServerEvent>,
-    writer_slot: Arc<Mutex<Option<UnixStream>>>,
+    writer_slot: Arc<Mutex<Option<Stream>>>,
 ) {
     for incoming in listener.incoming() {
         let stream = match incoming {
@@ -166,10 +212,10 @@ fn accept_loop(
 }
 
 fn reader_loop(
-    stream: UnixStream,
+    stream: Stream,
     frame_tx: Sender<Frame>,
     event_tx: Sender<ServerEvent>,
-    writer_slot: Arc<Mutex<Option<UnixStream>>>,
+    writer_slot: Arc<Mutex<Option<Stream>>>,
 ) {
     let mut r = BufReader::new(stream);
     loop {
@@ -229,14 +275,25 @@ fn reader_loop(
     let _ = event_tx.send(ServerEvent::ClientDisconnected);
 }
 
+#[cfg(unix)]
 pub fn default_socket_path() -> PathBuf {
     let tmp = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
     let pid = std::process::id();
     PathBuf::from(format!("{}tmnl-{}.sock", strip_trailing_slash(&tmp), pid))
 }
 
+/// Windows: no UDS-equivalent in std, so we use TCP-localhost. The
+/// returned string is `127.0.0.1:0` — a request for an ephemeral
+/// port. `Server::start` rewrites the path to the actual bound
+/// address after the listener resolves the port.
+#[cfg(windows)]
+pub fn default_socket_path() -> PathBuf {
+    PathBuf::from("127.0.0.1:0")
+}
+
 /// Unique socket path for a non-initial Native tab in the same tmnl
 /// process. `nonce` is a per-tab counter (`App.native_tab_nonce`).
+#[cfg(unix)]
 pub fn native_tab_socket_path(nonce: u32) -> PathBuf {
     let tmp = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
     let pid = std::process::id();
@@ -248,6 +305,14 @@ pub fn native_tab_socket_path(nonce: u32) -> PathBuf {
     ))
 }
 
+/// Windows: each native tab gets its own ephemeral TCP-localhost
+/// listener; the `nonce` is unused since the OS picks distinct ports.
+#[cfg(windows)]
+pub fn native_tab_socket_path(_nonce: u32) -> PathBuf {
+    PathBuf::from("127.0.0.1:0")
+}
+
+#[cfg(unix)]
 fn strip_trailing_slash(s: &str) -> String {
     let mut out = s.to_string();
     if !out.ends_with('/') {
@@ -469,7 +534,7 @@ mod tests {
     fn client_connect_surfaces_an_event_and_a_hello() {
         let path = unique_socket();
         let server = Server::start(path.clone()).expect("server start");
-        let client = UnixStream::connect(&path).expect("client connect");
+        let client = Stream::connect(&path).expect("client connect");
         client.set_read_timeout(Some(TIMEOUT)).unwrap();
         assert!(matches!(
             server.events.recv_timeout(TIMEOUT),
@@ -487,7 +552,7 @@ mod tests {
     fn server_receives_a_frame_from_the_client() {
         let path = unique_socket();
         let server = Server::start(path.clone()).expect("server start");
-        let mut client = UnixStream::connect(&path).expect("client connect");
+        let mut client = Stream::connect(&path).expect("client connect");
         assert!(server.events.recv_timeout(TIMEOUT).is_ok()); // ClientConnected
         write_message(&mut client, &Message::Frame(sample_frame())).expect("send frame");
         let got = server.frame_rx.recv_timeout(TIMEOUT).expect("frame");
@@ -499,7 +564,7 @@ mod tests {
     fn server_receives_a_title_from_the_client() {
         let path = unique_socket();
         let server = Server::start(path.clone()).expect("server start");
-        let mut client = UnixStream::connect(&path).expect("client connect");
+        let mut client = Stream::connect(&path).expect("client connect");
         assert!(server.events.recv_timeout(TIMEOUT).is_ok()); // ClientConnected
         write_message(&mut client, &Message::Title("editing".to_string())).expect("send title");
         loop {
@@ -518,7 +583,7 @@ mod tests {
     fn server_forwards_resize_and_quit_to_the_client() {
         let path = unique_socket();
         let server = Server::start(path.clone()).expect("server start");
-        let client = UnixStream::connect(&path).expect("client connect");
+        let client = Stream::connect(&path).expect("client connect");
         client.set_read_timeout(Some(TIMEOUT)).unwrap();
         assert!(server.events.recv_timeout(TIMEOUT).is_ok());
         let mut r = BufReader::new(&client);
@@ -539,7 +604,7 @@ mod tests {
     fn server_forwards_input_to_the_client() {
         let path = unique_socket();
         let server = Server::start(path.clone()).expect("server start");
-        let client = UnixStream::connect(&path).expect("client connect");
+        let client = Stream::connect(&path).expect("client connect");
         client.set_read_timeout(Some(TIMEOUT)).unwrap();
         assert!(server.events.recv_timeout(TIMEOUT).is_ok());
         let mut r = BufReader::new(&client);
@@ -561,7 +626,7 @@ mod tests {
     fn dropping_the_client_surfaces_a_disconnect() {
         let path = unique_socket();
         let server = Server::start(path.clone()).expect("server start");
-        let client = UnixStream::connect(&path).expect("client connect");
+        let client = Stream::connect(&path).expect("client connect");
         assert!(server.events.recv_timeout(TIMEOUT).is_ok()); // ClientConnected
         drop(client);
         loop {
@@ -577,11 +642,11 @@ mod tests {
     fn a_second_client_is_rejected() {
         let path = unique_socket();
         let server = Server::start(path.clone()).expect("server start");
-        let _client1 = UnixStream::connect(&path).expect("client 1 connect");
+        let _client1 = Stream::connect(&path).expect("client 1 connect");
         assert!(server.events.recv_timeout(TIMEOUT).is_ok()); // ClientConnected
         // The single-client server accepts a second connection only to
         // drop it — so client 2 gets no Hello, just a closed socket.
-        let client2 = UnixStream::connect(&path).expect("client 2 connect");
+        let client2 = Stream::connect(&path).expect("client 2 connect");
         client2.set_read_timeout(Some(TIMEOUT)).unwrap();
         let mut r = BufReader::new(&client2);
         assert!(read_message(&mut r).is_err());
