@@ -1,0 +1,127 @@
+# Builds downloadable tmnl binaries for the non-macOS targets and
+# uploads them as workflow artifacts. Trigger via:
+#
+#   - the Actions tab → "release-artifacts" → "Run workflow"  (manual)
+#   - a published GitHub release  (automatic, also attaches to release)
+#
+# Artifacts (each run produces both):
+#   tmnl-x86_64-pc-windows-msvc.zip   →  tmnl.exe
+#   tmnl-x86_64-unknown-linux-gnu.tar.gz  →  tmnl
+#
+# The matching `.sha256` companion files ship next to each archive.
+#
+# macOS lives in `scripts/build-app.sh` (produces `target/tmnl.app`)
+# and isn't included here yet — `cargo install tmnl-rs` from crates.io
+# is the path for macOS until we wire .app packaging into CI.
+
+name: release-artifacts
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.os }} · build + upload
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: tmnl-x86_64-pc-windows-msvc.zip
+            binary: tmnl.exe
+          - os: ubuntu-latest
+            artifact: tmnl-x86_64-unknown-linux-gnu.tar.gz
+            binary: tmnl
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout tmnl
+        uses: actions/checkout@v4
+        with:
+          path: tmnl
+      - name: Checkout tmnl-protocol
+        uses: actions/checkout@v4
+        with:
+          repository: chris-mclennan/tmnl-protocol
+          path: tmnl-protocol
+          token: ${{ secrets.SIBLING_CHECKOUT_TOKEN }}
+      - name: Checkout fim-engine
+        uses: actions/checkout@v4
+        with:
+          repository: chris-mclennan/fim-engine
+          path: fim-engine
+          token: ${{ secrets.SIBLING_CHECKOUT_TOKEN }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # Linux deps for winit / wgpu (X11 + Wayland headers, system
+      # libs) plus GTK headers required by `muda` (native menu bar).
+      # Matches ci.yml's cross-build job — keep these in sync if the
+      # dep set changes.
+      - name: Install Linux build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev libxcursor-dev libxrandr-dev libxi-dev libxkbcommon-dev \
+            libgl1-mesa-dev libwayland-dev libudev-dev libfontconfig1-dev pkg-config \
+            libglib2.0-dev libgtk-3-dev libxdo-dev
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tmnl
+          key: release-${{ matrix.os }}
+
+      - name: Build release binary
+        working-directory: tmnl
+        run: cargo build --release --bin tmnl
+
+      - name: Stage artifact (Windows)
+        if: runner.os == 'Windows'
+        working-directory: tmnl
+        shell: pwsh
+        run: |
+          $stage = "stage"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item "target/release/tmnl.exe" "$stage/tmnl.exe"
+          $zip = "${{ matrix.artifact }}"
+          Compress-Archive -Path "$stage/*" -DestinationPath $zip -Force
+          $hash = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
+          "$hash  $zip" | Out-File -Encoding ascii "$zip.sha256"
+
+      - name: Stage artifact (Linux)
+        if: runner.os == 'Linux'
+        working-directory: tmnl
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p stage
+          cp target/release/tmnl stage/tmnl
+          chmod +x stage/tmnl
+          tar -czf "${{ matrix.artifact }}" -C stage tmnl
+          sha256sum "${{ matrix.artifact }}" > "${{ matrix.artifact }}.sha256"
+
+      - name: Upload as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            tmnl/${{ matrix.artifact }}
+            tmnl/${{ matrix.artifact }}.sha256
+          retention-days: 30
+
+      - name: Upload to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            tmnl/${{ matrix.artifact }}
+            tmnl/${{ matrix.artifact }}.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
