@@ -19,6 +19,12 @@ pr-run-mode = "upload"
 # (`../tmnl-protocol`, `../fim-engine`). Once those repos go
 # public, the SIBLING_CHECKOUT_TOKEN secret can be dropped.
 github-build-setup = "build-setup.yml"
+# Permit manual edits to the generated CI file — `dist plan` would
+# otherwise refuse to run when release.yml drifts from what `dist
+# generate` would produce. We hand-add a sibling-clone step to the
+# `plan` job (cargo-dist only auto-injects `github-build-setup`
+# into build jobs), so the file is intentionally out of sync.
+allow-dirty = ["ci"]
 # Path that installers should place binaries in
 install-path = "CARGO_HOME"
 # Whether to install an updater program
