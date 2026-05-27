@@ -1,0 +1,25 @@
+# Injected by `dist` into every build job's `steps:` array, before
+# the actual build runs. Clones tmnl's private sibling repos to the
+# layout that tmnl's `Cargo.toml` path-deps expect:
+#
+#   <workspace>/tmnl            (this repo, checked out by dist)
+#   <workspace>/tmnl-protocol   (cloned here)
+#   <workspace>/fim-engine      (cloned here)
+#
+# Once tmnl-protocol + fim-engine are public, the SIBLING_CHECKOUT_TOKEN
+# secret can be dropped and these become anonymous clones.
+- name: Clone private sibling repos
+  shell: bash
+  env:
+    GH_TOKEN: ${{ secrets.SIBLING_CHECKOUT_TOKEN }}
+  run: |
+    set -euo pipefail
+    cd ..
+    if [ ! -d tmnl-protocol ]; then
+      git clone --depth=1 \
+        "https://x-access-token:${GH_TOKEN}@github.com/chris-mclennan/tmnl-protocol.git"
+    fi
+    if [ ! -d fim-engine ]; then
+      git clone --depth=1 \
+        "https://x-access-token:${GH_TOKEN}@github.com/chris-mclennan/fim-engine.git"
+    fi
