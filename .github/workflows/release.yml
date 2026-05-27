@@ -70,6 +70,28 @@ jobs:
         with:
           name: cargo-dist-cache
           path: ~/.cargo/bin/dist
+      # MANUAL EDIT — cargo-dist's `github-build-setup` only injects
+      # into build jobs, not into the plan job. `dist plan` runs
+      # `cargo metadata` which traverses path-deps, so without the
+      # siblings on disk it fails with "No such file or directory".
+      # Mirrors `.github/workflows/build-setup.yml`. Keep these two
+      # in sync. Will be clobbered by `dist init`/`dist generate` —
+      # re-apply if regenerated.
+      - name: Clone private sibling repos
+        shell: bash
+        env:
+          SIBLING_TOKEN: ${{ secrets.SIBLING_CHECKOUT_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd ..
+          if [ ! -d tmnl-protocol ]; then
+            git clone --depth=1 \
+              "https://x-access-token:${SIBLING_TOKEN}@github.com/chris-mclennan/tmnl-protocol.git"
+          fi
+          if [ ! -d fim-engine ]; then
+            git clone --depth=1 \
+              "https://x-access-token:${SIBLING_TOKEN}@github.com/chris-mclennan/fim-engine.git"
+          fi
       # sure would be cool if github gave us proper conditionals...
       # so here's a doubly-nested ternary-via-truthiness to try to provide the best possible
       # functionality based on whether this is a pull_request, and whether it's from a fork.
