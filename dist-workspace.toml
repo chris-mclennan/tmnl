@@ -18,7 +18,10 @@ pr-run-mode = "upload"
 # sibling repos that tmnl's Cargo.toml references by path
 # (`../tmnl-protocol`, `../fim-engine`). Once those repos go
 # public, the SIBLING_CHECKOUT_TOKEN secret can be dropped.
-github-build-setup = "build-setup.yml"
+# Lives at `.github/build-setup.yml` (one dir above `.github/workflows/`)
+# so GitHub doesn't try to interpret it as a standalone workflow. dist
+# resolves the path relative to `.github/workflows/`.
+github-build-setup = "../build-setup.yml"
 # Permit manual edits to the generated CI file — `dist plan` would
 # otherwise refuse to run when release.yml drifts from what `dist
 # generate` would produce. We hand-add a sibling-clone step to the
