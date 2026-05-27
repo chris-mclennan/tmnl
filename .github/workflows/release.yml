@@ -233,6 +233,24 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+      # MANUAL EDIT — same sibling-clone the plan/build jobs need.
+      # `dist build --artifacts=global` runs `cargo metadata` which
+      # traverses path-deps. Keep in sync with `.github/build-setup.yml`.
+      - name: Clone private sibling repos
+        shell: bash
+        env:
+          SIBLING_TOKEN: ${{ secrets.SIBLING_CHECKOUT_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd ..
+          if [ ! -d tmnl-protocol ]; then
+            git clone --depth=1 \
+              "https://x-access-token:${SIBLING_TOKEN}@github.com/chris-mclennan/tmnl-protocol.git"
+          fi
+          if [ ! -d fim-engine ]; then
+            git clone --depth=1 \
+              "https://x-access-token:${SIBLING_TOKEN}@github.com/chris-mclennan/fim-engine.git"
+          fi
       - name: Install cached dist
         uses: actions/download-artifact@v8
         with:
