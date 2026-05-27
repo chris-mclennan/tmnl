@@ -1659,8 +1659,66 @@ fn tick_secondary_pane(pane: &mut Pane, visible: bool) {
     }
 }
 
+/// When tmnl.app is double-clicked from /Applications, macOS launches
+/// it with the bare LaunchServices environment — no `~/.zshrc` /
+/// `~/.bash_profile` exports, so `PATH` is the system default and any
+/// user-set vars (`BITBUCKET_ACCESS_TOKEN`, `OPENAI_API_KEY`, etc.)
+/// aren't there. Children we spawn (mnml, mixr, shells) inherit this
+/// stripped env, breaking integrations that rely on those exports
+/// + tools installed outside `/usr/bin`.
+///
+/// Detection: if `current_exe()` lives inside an `.app` bundle AND
+/// stdin isn't a tty (parent process is `launchd`, not a shell), we
+/// assume we need to backfill. Run the user's login shell with
+/// `-l -c env` to dump its environment and re-export each var onto
+/// our own process so subsequent spawns inherit the full shell env.
+///
+/// No-op when launched from a shell — there `PATH` already has the
+/// user's customizations and re-running zshrc would just slow startup.
+fn load_login_shell_env_if_needed() {
+    use std::ffi::OsString;
+    use std::process::Command;
+
+    let in_app_bundle = std::env::current_exe()
+        .map(|p| {
+            p.to_string_lossy()
+                .contains(".app/Contents/MacOS/")
+        })
+        .unwrap_or(false);
+    if !in_app_bundle {
+        return;
+    }
+    let shell: OsString = std::env::var_os("SHELL").unwrap_or_else(|| "/bin/zsh".into());
+    // `-l` = login shell, sources zprofile/bash_profile/etc.
+    // `-i` would also work but is slower (sources rc files too).
+    let Ok(output) = Command::new(&shell).arg("-l").arg("-c").arg("env").output() else {
+        return;
+    };
+    if !output.status.success() {
+        return;
+    }
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
+        // Skip a handful of vars where overwriting our own values would
+        // confuse later code (`PWD`, `OLDPWD` reflect the shell's cwd,
+        // not ours; `_` is the shell's "previous command" sentinel).
+        if matches!(k, "PWD" | "OLDPWD" | "_" | "SHLVL") {
+            continue;
+        }
+        // SAFETY: this runs at the top of main() before any thread
+        // spawn or subprocess, so `set_var` is single-threaded.
+        unsafe { std::env::set_var(k, v) };
+    }
+}
+
 fn main() {
     env_logger::init();
+    // Backfill the login-shell env when launched from /Applications —
+    // PATH + user-set tokens otherwise aren't available to the
+    // children we spawn. See doc comment on the function.
+    load_login_shell_env_if_needed();
     let argv: Vec<String> = std::env::args().skip(1).collect();
     // Headless mode — no window, scripted stdin, text grid dumps (see
     // `src/headless.rs`). Branches out before any winit / wgpu / AppKit
