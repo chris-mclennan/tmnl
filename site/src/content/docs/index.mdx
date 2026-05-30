@@ -1,0 +1,48 @@
+---
+title: tmnl
+description: A GPU-rendered terminal — and a structured-cell display surface that apps can draw to directly.
+template: splash
+hero:
+  tagline: A GPU-rendered terminal. And a display surface that native apps can draw to directly.
+  actions:
+    - text: Install
+      link: /install/
+      icon: right-arrow
+    - text: GitHub
+      link: https://github.com/chris-mclennan/tmnl-rs
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## What is tmnl
+
+tmnl is a native terminal emulator written in Rust, using `wgpu` and `winit`. It runs on macOS, Linux, and Windows.
+
+Beyond rendering regular shell sessions, tmnl exposes a **structured-cell display surface** — apps can connect over a Unix socket (or named pipe on Windows) and stream their UI as a grid of cells, rather than ANSI-encoded text. This is the protocol `mnml` and `mixr` use to render as native tabs.
+
+<CardGrid stagger>
+  <Card title="GPU-rendered" icon="rocket">
+    `wgpu` backend — DirectX 12 on Windows, Metal on macOS, Vulkan on Linux. Smooth at high refresh rates with low CPU.
+  </Card>
+  <Card title="Cell streaming protocol" icon="puzzle">
+    Apps render directly into tmnl's display via `tmnl-protocol` — no ANSI parsing, no escape-code dance.
+  </Card>
+  <Card title="Cross-platform installers" icon="setting">
+    `.msi` for Windows, `.pkg` for macOS, shell installer for Linux. One install command per platform.
+  </Card>
+  <Card title="Pty-fd handoff" icon="random">
+    Pop a running shell out of an embedded pane (e.g. inside mnml) into its own tmnl tab — SCM_RIGHTS fd transfer, no state loss.
+  </Card>
+</CardGrid>
+
+## The family
+
+tmnl is one of three small Rust tools that work together:
+
+- **[mnml](https://mnml.sh)** — a NvChad-style terminal IDE (vim or standard editing, LSP, git, fuzzy everything, baked-in HTTP client)
+- **[mixr](https://mixr.sh)** — a music app
+- **tmnl** — the host that lets mnml and mixr render as native tabs
+
+You don't need all three. tmnl works fine as just a terminal emulator. But if you install mnml or mixr alongside, tmnl becomes the launcher and they appear as siblings to your shell tabs.
