@@ -121,8 +121,8 @@ tmnl builds on stable Rust (MSRV **1.85**, edition 2024).
 
 ### `run.sh`
 
-A wrapper with family-wide dev subcommands (shared with `mnml`, `mixr-rs`,
-`internal-app`) plus tmnl-specific launch modes:
+A wrapper with family-wide dev subcommands (shared with `mnml` and `mixr-rs`)
+plus tmnl-specific launch modes:
 
 ```bash
 ./run.sh                  # shell mode (default) — release build, opens a window
@@ -146,7 +146,7 @@ A wrapper with family-wide dev subcommands (shared with `mnml`, `mixr-rs`,
 On a bare launch (no `--mnml`, not headless), if
 `~/.config/tmnl/recents.toml` has entries, tmnl shows a centered bordered
 overlay listing recent native-tab launches (mnml workspaces, mixr,
-internal-app, …) so you can re-open one with a single keypress.
+other blit-host apps, …) so you can re-open one with a single keypress.
 
 | Key | Action |
 |-----|--------|
