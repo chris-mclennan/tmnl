@@ -47,7 +47,7 @@ fim-engine = { path = "../fim-engine", version = "0.1.0", default-features = fal
 vt100 = "0.16"
 portable-pty = "0.8"
 # Native macOS menu bar (tmnl / Shell / Edit / View / Window / Help).
-# Same crate version as mixr-rs so we share one source-of-truth.
+# Same crate version as mixr so we share one source-of-truth.
 muda = "0.16"
 # Config persistence — `~/.config/tmnl/config.toml`.
 toml = { version = "0.8", default-features = false, features = ["parse", "display"] }
