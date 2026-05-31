@@ -35,6 +35,14 @@ export default defineConfig({
           ],
         },
         {
+          // Manual pages added by the `manual-writer` agent over time.
+          // Order here reflects intended reading sequence.
+          label: 'Manual',
+          items: [
+            { label: 'Getting started', slug: 'manual/getting-started' },
+          ],
+        },
+        {
           label: 'Family',
           items: [
             { label: 'mnml — terminal IDE', link: 'https://mnml.sh' },
