@@ -289,6 +289,20 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+      # MANUAL EDIT — `dist host` runs `cargo metadata` which traverses
+      # path-deps. Same sibling-clone the plan/build/build-global jobs
+      # need. Keep in sync with `.github/build-setup.yml`.
+      - name: Clone sibling repos
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd ..
+          if [ ! -d tmnl-protocol ]; then
+            git clone --depth=1 https://github.com/chris-mclennan/tmnl-protocol.git
+          fi
+          if [ ! -d fim-engine ]; then
+            git clone --depth=1 https://github.com/chris-mclennan/fim-engine.git
+          fi
       - name: Install cached dist
         uses: actions/download-artifact@v8
         with:
