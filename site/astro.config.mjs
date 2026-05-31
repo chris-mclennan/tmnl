@@ -43,6 +43,12 @@ export default defineConfig({
           ],
         },
         {
+          label: 'Releases',
+          items: [
+            { label: 'Changelog', slug: 'changelog' },
+          ],
+        },
+        {
           label: 'Family',
           items: [
             { label: 'mnml — terminal IDE', link: 'https://mnml.sh' },
