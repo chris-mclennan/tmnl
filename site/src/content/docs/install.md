@@ -10,17 +10,17 @@ tmnl ships native binaries for all three major desktop OSes via [`cargo-dist`](h
 Install with the shell installer (requires `curl`):
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/chris-mclennan/tmnl-rs/releases/latest/download/tmnl-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/chris-mclennan/tmnl/releases/latest/download/tmnl-installer.sh | sh
 ```
 
-Or download the `.pkg` installer from the [latest release](https://github.com/chris-mclennan/tmnl-rs/releases/latest).
+Or download the `.pkg` installer from the [latest release](https://github.com/chris-mclennan/tmnl/releases/latest).
 
 ## Linux
 
 Same shell installer as macOS:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/chris-mclennan/tmnl-rs/releases/latest/download/tmnl-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/chris-mclennan/tmnl/releases/latest/download/tmnl-installer.sh | sh
 ```
 
 You'll need a working OpenGL / Vulkan stack for `wgpu` to render. Most modern distros have this; check with `glxinfo` or `vulkaninfo` if tmnl fails to launch.
@@ -30,16 +30,16 @@ You'll need a working OpenGL / Vulkan stack for `wgpu` to render. Most modern di
 PowerShell installer:
 
 ```powershell
-irm https://github.com/chris-mclennan/tmnl-rs/releases/latest/download/tmnl-installer.ps1 | iex
+irm https://github.com/chris-mclennan/tmnl/releases/latest/download/tmnl-installer.ps1 | iex
 ```
 
-Or grab the `.msi` from the [latest release](https://github.com/chris-mclennan/tmnl-rs/releases/latest) and double-click.
+Or grab the `.msi` from the [latest release](https://github.com/chris-mclennan/tmnl/releases/latest) and double-click.
 
 ## Build from source
 
 ```sh
-git clone https://github.com/chris-mclennan/tmnl-rs
-cd tmnl-rs
+git clone https://github.com/chris-mclennan/tmnl
+cd tmnl
 cargo build --release
 ./target/release/tmnl
 ```

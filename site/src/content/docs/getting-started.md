@@ -34,4 +34,4 @@ This relies on tmnl exposing a transfer socket via the `TMNL_TRANSFER_SOCKET` en
 ## Next
 
 - Read about [the cell-streaming protocol](https://github.com/chris-mclennan/tmnl-protocol) if you want to write an app that renders into a tmnl tab directly.
-- Browse the [GitHub repo](https://github.com/chris-mclennan/tmnl-rs) for source and the issue tracker.
+- Browse the [GitHub repo](https://github.com/chris-mclennan/tmnl) for source and the issue tracker.
