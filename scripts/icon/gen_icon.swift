@@ -78,42 +78,42 @@ func render(_ side: Int) -> Data? {
     )
     ctx.restoreGState()
 
-    // Prompt caret: thin orange bar suggesting `▎` or `▍`. Sits in
-    // the upper-left third of the body, vertically centered on the
-    // top half. Width and position scale with `s`.
-    let caretW = s * 0.045
-    let caretH = s * 0.18
-    let caretX = body.minX + body.width * 0.18
-    let caretY = body.midY + body.height * 0.04
-    ctx.setFillColor(CGColor(red: 0.85, green: 0.45, blue: 0.20, alpha: 1.0))
-    ctx.fill(CGRect(x: caretX, y: caretY, width: caretW, height: caretH))
-
-    // "tmnl" wordmark — bold sans-serif, centered horizontally,
-    // bottom third of the body. NSGraphicsContext lets us use the
-    // AppKit text APIs against our CGContext.
+    // Shell-prompt wordmark — bold monospace `>tmnl`. The `>` is the
+    // app's accent color (orange for tmnl), the name is near-white.
+    // Centered horizontally and vertically inside the body.
     let nsCtx = NSGraphicsContext(cgContext: ctx, flipped: false)
     NSGraphicsContext.saveGraphicsState()
     NSGraphicsContext.current = nsCtx
 
-    let label: NSString = "tmnl"
-    let fontSize = s * 0.30
+    let accent = NSColor(red: 0.85, green: 0.45, blue: 0.20, alpha: 1.0) // tmnl: warm orange
+    let textColor = NSColor(red: 0.95, green: 0.96, blue: 0.97, alpha: 1.0)
+    let fontSize = s * 0.32
     let font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .bold)
     let para = NSMutableParagraphStyle()
     para.alignment = .center
-    let attrs: [NSAttributedString.Key: Any] = [
+
+    let attributed = NSMutableAttributedString()
+    attributed.append(NSAttributedString(string: "> ", attributes: [
         .font: font,
-        .foregroundColor: NSColor(red: 0.95, green: 0.96, blue: 0.97, alpha: 1.0),
+        .foregroundColor: accent,
         .paragraphStyle: para,
         .kern: -fontSize * 0.04,
-    ]
-    let textSize = label.size(withAttributes: attrs)
+    ]))
+    attributed.append(NSAttributedString(string: "tmnl", attributes: [
+        .font: font,
+        .foregroundColor: textColor,
+        .paragraphStyle: para,
+        .kern: -fontSize * 0.04,
+    ]))
+
+    let textSize = attributed.size()
     let textRect = CGRect(
-        x: 0,
-        y: body.minY + body.height * 0.18 - textSize.height * 0.10,
-        width: s,
+        x: body.minX + (body.width - textSize.width) / 2,
+        y: body.midY - textSize.height / 2,
+        width: textSize.width,
         height: textSize.height
     )
-    label.draw(in: textRect, withAttributes: attrs)
+    attributed.draw(in: textRect)
 
     NSGraphicsContext.restoreGraphicsState()
 
