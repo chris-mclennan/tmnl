@@ -14,6 +14,12 @@ keywords = ["terminal", "wgpu", "gpu", "macos", "tui"]
 categories = ["gui", "command-line-utilities"]
 exclude = [".local/", ".claude/", ".github/", "assets/", "scripts/"]
 
+[package.metadata.wix]
+upgrade-guid = "681C59FB-950F-42B0-999A-89E5ED497228"
+path-guid = "B3861F1C-5533-4494-980A-3431529D7A2F"
+license = false
+eula = false
+
 # The crate publishes as `tmnl-rs` (the bare `tmnl` name was unavailable),
 # but the binary stays `tmnl` — `cargo install tmnl-rs` gives you `tmnl`.
 [[bin]]
@@ -78,3 +84,8 @@ tempfile = "3"
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

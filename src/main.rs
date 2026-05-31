@@ -1680,10 +1680,7 @@ fn load_login_shell_env_if_needed() {
     use std::process::Command;
 
     let in_app_bundle = std::env::current_exe()
-        .map(|p| {
-            p.to_string_lossy()
-                .contains(".app/Contents/MacOS/")
-        })
+        .map(|p| p.to_string_lossy().contains(".app/Contents/MacOS/"))
         .unwrap_or(false);
     if !in_app_bundle {
         return;
