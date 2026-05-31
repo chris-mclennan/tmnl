@@ -171,7 +171,7 @@ Settings window edits and persists this file.
 ## Welcome screen + recents
 
 `~/.config/tmnl/recents.toml` — every native-tab launch (mnml + workspace,
-mixr, internal-app, etc.) is appended to this file by
+mixr, other blit-host apps, etc.) is appended to this file by
 `open_pane_with_command`. Capped at `MAX_RECENTS = 20`; de-duped by
 `(command, args, workspace)` tuple so a re-launch bumps the existing
 entry to the top of the list (most-recent-first).

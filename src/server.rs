@@ -157,10 +157,11 @@ fn accept_loop(
                     );
                     // Hand the client our chrome colors so it can theme
                     // its bg / fg / accent to match the window. Without
-                    // this, mixr / mnml / internal-app fall back to their
-                    // own defaults and a darker pane sits inside a
-                    // lighter (or differently-tinted) tmnl window, with
-                    // a visible mismatch ring around the pane edge.
+                    // this, blit-host clients (mixr / mnml / etc.) fall
+                    // back to their own defaults and a darker pane sits
+                    // inside a lighter (or differently-tinted) tmnl
+                    // window, with a visible mismatch ring around the
+                    // pane edge.
                     // Values mirror the constants in `main.rs`:
                     // CLEAR_BG / TEXT_FG / a teal accent from the
                     // launcher script.

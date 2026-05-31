@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tmnl wrapper — family-common dev subcommands + tmnl-specific launch modes.
 # Family convention: `build`/`release`/`test`/`check`/`watch`/`help` are
-# shared across mnml + tmnl + mixr-rs + internal-app.
+# shared across mnml + tmnl + mixr-rs.
 #
 # Usage:
 #   ./run.sh                      Run tmnl (shell mode — opens a window with

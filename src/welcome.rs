@@ -1,6 +1,6 @@
 //! tmnl's welcome screen — shown over the (otherwise-blank) shell view
 //! on startup when [`crate::recents`] has entries. Numbered list of
-//! recent native-tab launches (mnml workspaces, mixr, internal-app, …)
+//! recent native-tab launches (mnml workspaces, mixr, other blit-host apps, …)
 //! so the user can re-open their familiar TUI with a single keypress.
 //!
 //! Keys (while the overlay is up):
