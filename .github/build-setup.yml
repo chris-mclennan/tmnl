@@ -2,30 +2,25 @@
 # the actual build runs. Handles two things cargo-dist's default
 # workflow doesn't:
 #
-#  (1) Clones tmnl's private sibling repos to the layout that
-#      tmnl's `Cargo.toml` path-deps expect (`../tmnl-protocol`,
-#      `../fim-engine`). Once those repos are public the
-#      `SIBLING_CHECKOUT_TOKEN` secret can be dropped.
+#  (1) Clones tmnl's sibling crates to the layout that tmnl's
+#      `Cargo.toml` path-deps expect (`../tmnl-protocol`,
+#      `../fim-engine`). Anonymous clone (sibling repos are public).
 #
 #  (2) Installs the Linux system libs that `winit`, `wgpu`, and
 #      `muda` (native menu bar — pulls in atk-sys / gtk-sys)
 #      build-time depend on. macOS + Windows runners have these
 #      bundled already; only Linux needs the apt-get step.
 
-- name: Clone private sibling repos
+- name: Clone sibling repos
   shell: bash
-  env:
-    GH_TOKEN: ${{ secrets.SIBLING_CHECKOUT_TOKEN }}
   run: |
     set -euo pipefail
     cd ..
     if [ ! -d tmnl-protocol ]; then
-      git clone --depth=1 \
-        "https://x-access-token:${GH_TOKEN}@github.com/chris-mclennan/tmnl-protocol.git"
+      git clone --depth=1 https://github.com/chris-mclennan/tmnl-protocol.git
     fi
     if [ ! -d fim-engine ]; then
-      git clone --depth=1 \
-        "https://x-access-token:${GH_TOKEN}@github.com/chris-mclennan/fim-engine.git"
+      git clone --depth=1 https://github.com/chris-mclennan/fim-engine.git
     fi
 
 - name: Install Linux build deps

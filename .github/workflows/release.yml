@@ -77,20 +77,16 @@ jobs:
       # Mirrors `.github/workflows/build-setup.yml`. Keep these two
       # in sync. Will be clobbered by `dist init`/`dist generate` —
       # re-apply if regenerated.
-      - name: Clone private sibling repos
+      - name: Clone sibling repos
         shell: bash
-        env:
-          SIBLING_TOKEN: ${{ secrets.SIBLING_CHECKOUT_TOKEN }}
         run: |
           set -euo pipefail
           cd ..
           if [ ! -d tmnl-protocol ]; then
-            git clone --depth=1 \
-              "https://x-access-token:${SIBLING_TOKEN}@github.com/chris-mclennan/tmnl-protocol.git"
+            git clone --depth=1 https://github.com/chris-mclennan/tmnl-protocol.git
           fi
           if [ ! -d fim-engine ]; then
-            git clone --depth=1 \
-              "https://x-access-token:${SIBLING_TOKEN}@github.com/chris-mclennan/fim-engine.git"
+            git clone --depth=1 https://github.com/chris-mclennan/fim-engine.git
           fi
       # sure would be cool if github gave us proper conditionals...
       # so here's a doubly-nested ternary-via-truthiness to try to provide the best possible
@@ -149,21 +145,17 @@ jobs:
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
             echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           fi
-      - name: "Clone private sibling repos"
+      - name: "Clone sibling repos"
         run: |
           set -euo pipefail
           cd ..
           if [ ! -d tmnl-protocol ]; then
-            git clone --depth=1 \
-              "https://x-access-token:${GH_TOKEN}@github.com/chris-mclennan/tmnl-protocol.git"
+            git clone --depth=1 https://github.com/chris-mclennan/tmnl-protocol.git
           fi
           if [ ! -d fim-engine ]; then
-            git clone --depth=1 \
-              "https://x-access-token:${GH_TOKEN}@github.com/chris-mclennan/fim-engine.git"
+            git clone --depth=1 https://github.com/chris-mclennan/fim-engine.git
           fi
         shell: "bash"
-        env:
-          "GH_TOKEN": "${{ secrets.SIBLING_CHECKOUT_TOKEN }}"
       # MANUAL EDIT — winit / wgpu / muda need X11 + GTK headers on Linux.
       # Mirrors `.github/workflows/build-setup.yml`'s "Install Linux build
       # deps" step. Will be clobbered if `dist generate` succeeds in the
@@ -236,20 +228,16 @@ jobs:
       # MANUAL EDIT — same sibling-clone the plan/build jobs need.
       # `dist build --artifacts=global` runs `cargo metadata` which
       # traverses path-deps. Keep in sync with `.github/build-setup.yml`.
-      - name: Clone private sibling repos
+      - name: Clone sibling repos
         shell: bash
-        env:
-          SIBLING_TOKEN: ${{ secrets.SIBLING_CHECKOUT_TOKEN }}
         run: |
           set -euo pipefail
           cd ..
           if [ ! -d tmnl-protocol ]; then
-            git clone --depth=1 \
-              "https://x-access-token:${SIBLING_TOKEN}@github.com/chris-mclennan/tmnl-protocol.git"
+            git clone --depth=1 https://github.com/chris-mclennan/tmnl-protocol.git
           fi
           if [ ! -d fim-engine ]; then
-            git clone --depth=1 \
-              "https://x-access-token:${SIBLING_TOKEN}@github.com/chris-mclennan/fim-engine.git"
+            git clone --depth=1 https://github.com/chris-mclennan/fim-engine.git
           fi
       - name: Install cached dist
         uses: actions/download-artifact@v8
