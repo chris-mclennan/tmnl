@@ -56,5 +56,5 @@ capabilities present in the current `master`.
   `fake_server` / `fake_client` examples that exercise the protocol without a
   GPU window.
 
-[Unreleased]: https://github.com/chris-mclennan/tmnl-rs/compare/v0.0.1...HEAD
-[0.0.1]: https://github.com/chris-mclennan/tmnl-rs/releases/tag/v0.0.1
+[Unreleased]: https://github.com/chris-mclennan/tmnl/compare/v0.0.1...HEAD
+[0.0.1]: https://github.com/chris-mclennan/tmnl/releases/tag/v0.0.1

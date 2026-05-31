@@ -41,7 +41,7 @@ daily driver — without turning into a race to out-feature WezTerm / Ghostty.
   `<TMPDIR>/tmnl-<pid>-transfer.sock` (exported via `TMNL_TRANSFER_SOCKET`)
   accepts `Message::OpenPaneTransfer` with an attached pty master fd from
   child clients; the fd becomes a new adopted-shell tab.
-- **Reference client** — [`mnml`](https://github.com/chris-mclennan/mnml-rs) runs as
+- **Reference client** — [`mnml`](https://github.com/chris-mclennan/mnml) runs as
   a native tmnl tab; [`examples/hello_client.rs`](examples/hello_client.rs) is a
   minimal template.
 

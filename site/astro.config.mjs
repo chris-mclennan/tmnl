@@ -22,7 +22,7 @@ export default defineConfig({
         {
           icon: 'github',
           label: 'GitHub',
-          href: 'https://github.com/chris-mclennan/tmnl-rs',
+          href: 'https://github.com/chris-mclennan/tmnl',
         },
       ],
       sidebar: [
