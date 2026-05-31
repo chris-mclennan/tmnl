@@ -8,10 +8,11 @@ Every terminal renders ANSI byte streams. tmnl does that *and* acts as a clean
 rendering target apps draw to the way a GUI app draws to a window — typed cells,
 true-color, partial-frame diffs, no escape-sequence tax.
 
+[![Docs](https://img.shields.io/badge/docs-tmnl.sh-blue.svg)](https://tmnl.sh)
 [![Crates.io](https://img.shields.io/crates/v/tmnl-rs.svg?logo=rust)](https://crates.io/crates/tmnl-rs)
 [![CI](https://github.com/chris-mclennan/tmnl/actions/workflows/ci.yml/badge.svg)](https://github.com/chris-mclennan/tmnl/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
-[![Platform: macOS · Linux](https://img.shields.io/badge/platform-macOS%20%C2%B7%20Linux-lightgrey.svg)](#install)
+[![Platform: macOS · Linux · Windows](https://img.shields.io/badge/platform-macOS%20%C2%B7%20Linux%20%C2%B7%20Windows-lightgrey.svg)](#install)
 
 </div>
 
@@ -100,9 +101,13 @@ cargo install tmnl-rs        # the crate is tmnl-rs; the binary it installs is `
   cargo install --git https://github.com/chris-mclennan/tmnl tmnl-rs
   ```
   No `.app` bundle (irrelevant on Linux); a `.desktop` entry is on the roadmap.
-* **Windows** doesn't compile yet — tmnl's blit IPC uses `std::os::unix::net`
-  (UDS sockets) which has no Windows analogue without porting to named-pipes
-  or TCP-localhost. Tracked as the next cross-platform task.
+* **Windows** compiles and runs. UDS support via `uds_windows` (Win10 17063+
+  AF_UNIX) — the same file-path-socket UX works on every platform. Install via
+  the MSI from [the latest release](https://github.com/chris-mclennan/tmnl/releases/latest),
+  or the PowerShell one-liner:
+  ```powershell
+  irm https://github.com/chris-mclennan/tmnl/releases/latest/download/tmnl-installer.ps1 | iex
+  ```
 
 ## Build & run
 
