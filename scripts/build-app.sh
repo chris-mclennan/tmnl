@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build tmnl.app — a hand-rolled macOS app bundle.
+# Build tmnl.app — a macOS app bundle for the GPU-rendered terminal.
 #
 #   ./scripts/build-app.sh                    # debug profile, builds target/tmnl.app
 #   ./scripts/build-app.sh release            # release profile
@@ -11,12 +11,12 @@
 # Bundle layout:
 #   target/tmnl.app/Contents/
 #     Info.plist
-#     MacOS/tmnl-launcher       (small dispatch script — Contents/Resources/bin/tmnl)
+#     MacOS/tmnl                (the GPU binary — direct executable)
 #     Resources/AppIcon.icns
-#     Resources/bin/tmnl        (the actual TUI binary)
 #
-# Launcher dispatch: if `tmnl` is on PATH the launcher opens tmnl as
-# a native tmnl tab; otherwise it falls back to Terminal.app.
+# tmnl is a GUI app (winit + wgpu), so the binary is its own bundle
+# executable — no launcher dispatch needed (the way mnml.app and
+# mixr.app shim through `tmnl --mnml/--mixr` when tmnl is installed).
 #
 # `--bin-path` is for CI — cargo-dist has already built the binary
 # at a known path; we just package it.
@@ -59,10 +59,8 @@ fi
 
 APP="target/tmnl.app"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/bin"
-cp scripts/launcher.sh "$APP/Contents/MacOS/tmnl-launcher"
-chmod +x "$APP/Contents/MacOS/tmnl-launcher"
-cp "$BIN_PATH" "$APP/Contents/Resources/bin/tmnl"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+cp "$BIN_PATH" "$APP/Contents/MacOS/tmnl"
 cp scripts/Info.plist "$APP/Contents/Info.plist"
 
 # App icon — built on demand if missing (no external image-tool deps;
