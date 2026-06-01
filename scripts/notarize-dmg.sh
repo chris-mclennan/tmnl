@@ -83,9 +83,26 @@ cp -R "$APP_PATH" "$WORK_DIR/"
 hdiutil detach "$MOUNT_DIR" >/dev/null
 
 SIGNED_APP="$WORK_DIR/$(basename "$APP_PATH")"
-echo "[notarize] codesigning $(basename "$SIGNED_APP") with team $APPLE_TEAM_ID"
+
+# Resolve the signing identity by SHA1 — robust to whatever name format
+# the cert ended up with ("Developer ID Application: Chris McLennan
+# (7RH5JMR8G3)" vs. "Developer ID Application: (7RH5JMR8G3)" etc.). We
+# imported exactly one Developer ID Application cert into the temp
+# keychain, so a single-match grep is safe.
+IDENTITY_SHA=$(security find-identity -v -p codesigning "$KEYCHAIN" \
+    | grep "Developer ID Application" \
+    | head -1 \
+    | awk '{print $2}')
+if [ -z "$IDENTITY_SHA" ]; then
+    echo "[notarize] error: no Developer ID Application identity found in temp keychain" >&2
+    security find-identity -v -p codesigning "$KEYCHAIN" >&2 || true
+    exit 1
+fi
+
+echo "[notarize] codesigning $(basename "$SIGNED_APP") with identity $IDENTITY_SHA"
 codesign --force --options runtime --deep --timestamp \
-    --sign "Developer ID Application: ($APPLE_TEAM_ID)" \
+    --keychain "$KEYCHAIN" \
+    --sign "$IDENTITY_SHA" \
     "$SIGNED_APP"
 
 # Repackage into a new DMG (atomic replace).
