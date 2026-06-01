@@ -1,0 +1,55 @@
+---
+title: The family
+description: tmnl, mnml, and mixr — three small Rust tools that share an aesthetic, a config convention, and the tmnl-protocol wire format for native-tab integration.
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+import { Image } from 'astro:assets';
+import mnmlIcon from '../../assets/family/mnml.png';
+import mixrIcon from '../../assets/family/mixr.png';
+import tmnlIcon from '../../assets/family/tmnl.png';
+
+Three small Rust tools by [Chris McLennan](https://github.com/chris-mclennan). Each runs standalone. Together they form a host (`tmnl`) and two reference native-mode clients (`mnml`, `mixr`).
+
+<CardGrid>
+  <Card title="tmnl">
+    <Image src={tmnlIcon} alt="tmnl app icon" width={96} height={96} />
+
+    A GPU-rendered macOS terminal. Hosts your `$SHELL` like any terminal — and also hosts apps that draw directly into its cell grid via the [`tmnl-protocol`](https://github.com/chris-mclennan/tmnl-protocol) wire format.
+
+    **You're here.** &nbsp;[Install](/install/) · [GitHub](https://github.com/chris-mclennan/tmnl)
+  </Card>
+  <Card title="mnml">
+    <Image src={mnmlIcon} alt="mnml app icon" width={96} height={96} />
+
+    A NvChad-style terminal IDE. Pluggable input layer (vim *or* standard editing — picked at launch, no per-keymap branching downstream), LSP, git, fuzzy everything, baked-in HTTP client. Runs in any terminal; under tmnl it gets native-tab integration.
+
+    [mnml.sh](https://mnml.sh) · [GitHub](https://github.com/chris-mclennan/mnml)
+  </Card>
+  <Card title="mixr">
+    <Image src={mixrIcon} alt="mixr app icon" width={96} height={96} />
+
+    A terminal DJ app. Beatport streaming, MIDI controller support, Claude DJ for auto-mixing. The crossfader, knobs, and waveforms render as actual graphics inside tmnl (instead of unicode block art) thanks to the cell-streaming protocol.
+
+    [mixr.sh](https://mixr.sh) · [GitHub](https://github.com/chris-mclennan/mixr)
+  </Card>
+</CardGrid>
+
+## Why a family
+
+These tools were each built standalone, but they kept growing toward each other. Three shared threads now run through all three:
+
+**Shared aesthetic.** Same `> name` prompt-style wordmark on the app icons (orange caret, monospace name on a charcoal gradient bezel). Same charcoal + warm-orange palette in the UIs. The icons are obviously siblings on the dock.
+
+**Shared settings UI convention.** All three apps' Settings modals follow the same idiom — a sectioned scrollable list, `▸` focus marker, `[bracket]` for the current choice, `*` for "modified from default", `←→` to adjust a row, `r` to reset the focused row, `R` to reset all, `Enter` to save, `Esc` to cancel back to the opened-state snapshot. No shared crate — each app implements its own ~150-200 lines — but the muscle memory transfers.
+
+**Shared protocol.** The [`tmnl-protocol`](https://github.com/chris-mclennan/tmnl-protocol) crate is the wire format for native-mode tabs. tmnl is the server (owns the window + GPU), and any app that wants to run as a native tab is a client. mnml and mixr both ship a `--blit <socket>` flag that connects them as tmnl native tabs — the cell grid streams over a Unix socket, no ANSI in between. See [Native tabs](/manual/native-tabs/) for the protocol walkthrough.
+
+## What "native tab" buys each app
+
+- **mnml** gets native-tab integration with workspace switching, and can pop a running pty session out into a sibling tmnl tab via SCM_RIGHTS fd-passing (the shell keeps running). It also becomes the host for its own *blit-host* binaries — a third class of integration where a separate program owns an mnml pane and renders into it over `tmnl-protocol`.
+- **mixr** stops being a pile of unicode block-art. Its crossfader, knobs, and transport render as real graphics. The `♪` chip on mnml's statusline reads mixr's `~/.mixr/quick.txt` so the now-playing track surfaces in your editor without flipping windows.
+
+## What's standalone
+
+Each app works fine without the others. mnml runs in any terminal. mixr runs in any terminal. tmnl works as a regular terminal emulator hosting your shell. The integration is purely additive — and entirely opt-in via the `--blit` flag — so you can adopt one tool without committing to the rest.

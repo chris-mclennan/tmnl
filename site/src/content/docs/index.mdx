@@ -1,9 +1,9 @@
 ---
 title: tmnl
-description: A GPU-rendered terminal with offline AI command completion — and a structured-cell display surface that apps can draw to directly.
+description: A GPU-rendered terminal with a structured-cell display surface that apps can draw to directly — plus offline AI command completion and OSC 133 shell integration.
 template: splash
 hero:
-  tagline: A GPU terminal with offline AI. And a display surface that native apps can draw to directly.
+  tagline: A GPU terminal with a structured-cell display surface. And offline AI on the command line.
   actions:
     - text: Install
       link: /install/
@@ -18,43 +18,53 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 
 ## Two tracks
 
-tmnl has two modes. **Shell mode** is your daily driver — a fast GPU terminal hosting your `$SHELL`. **Native mode** is the differentiator — apps render directly into tmnl as structured cells, skipping ANSI entirely.
+tmnl runs in two modes from the same window. **Shell mode** is your daily driver — a GPU terminal hosting your `$SHELL` with mouse, OSC 133, and offline AI completion. **Native mode** is the differentiator — apps connect over a Unix socket and ship typed cell `Frame`s straight into tmnl's grid, skipping the ANSI round-trip entirely.
 
 <CardGrid stagger>
-  <Card title="Offline AI command completion" icon="rocket">
-    Press `⌘I` to complete a half-typed command. Press `⌘K` to turn natural language into a shell command. Both run a quantized **qwen2.5-coder** model in-process via the embedded `fim-engine` crate — entirely offline, nothing leaves the machine. Ghost text in the prompt, `Tab` to accept.
+  <Card title="Native tabs (the differentiator)" icon="laptop">
+    Apps connect over a Unix socket and stream typed `Frame { cells: [Cell { ch, fg, bg, attrs }] }` directly into tmnl's GPU grid via [`tmnl-protocol`](https://github.com/chris-mclennan/tmnl-protocol). No `vt100`, no escape codes, no parser between the app's intent and the pixels. `DiffRun` puts only changed cell-runs on the wire; apps set their own tab titles. Reference clients: [`mnml`](https://mnml.sh) (terminal IDE) and [`mixr`](https://mixr.sh) (terminal DJ).
   </Card>
-  <Card title="GPU rendering" icon="random">
-    `wgpu` cell pipeline + separate chrome strip. DirectX 12 on Windows, Metal on macOS, Vulkan on Linux. True-color RGBA per cell. Smooth at high refresh rates with low CPU.
+  <Card title="GPU rendering (wgpu)" icon="random">
+    `wgpu` cell pipeline plus a separate chrome strip — Metal on macOS, with DirectX 12 / Vulkan available the moment cross-platform lands. True-color RGBA per cell, configurable cursor shape, smooth at high refresh rates, low CPU.
+  </Card>
+  <Card title="Offline AI completion" icon="rocket">
+    `⌘I` completes the half-typed command line. `⌘K` turns a natural-language description into a shell command. Both run a quantized **qwen2.5-coder** model in-process via the embedded [`fim-engine`](https://github.com/chris-mclennan/fim-engine) crate. No network, no API key, no per-token cost. Ghost text in the prompt; `Tab` to accept.
   </Card>
   <Card title="OSC 133 shell integration" icon="puzzle">
-    Parses semantic-prompt marks to track the command lifecycle. tmnl knows where the prompt begins and ends — clean copy of just-the-output, accurate command-line anchor, future scrollback intelligence.
-  </Card>
-  <Card title="Native mode: cell streaming" icon="laptop">
-    Apps connect over a Unix socket and send structured `Frame`s of cells via [`tmnl-protocol`](https://github.com/chris-mclennan/tmnl-protocol) — no ANSI parsing, no escape-code dance. `DiffRun` puts only changed cell-runs on the wire. App-set tab titles. The reference clients are [`mnml`](https://mnml.sh) and [`mixr`](https://mixr.sh).
+    Parses semantic-prompt marks (`A` / `B` / `C` / `D`) to track the command lifecycle and anchor the command line. Source [`shell-integration/tmnl.zsh`](https://github.com/chris-mclennan/tmnl/blob/master/shell-integration/tmnl.zsh) from your `~/.zshrc` and tmnl knows where the prompt begins and ends — the foundation for the AI completion features and future scrollback intelligence.
   </Card>
   <Card title="Pty-fd handoff" icon="random">
-    Apps embedded inside another app (e.g. a shell pane inside `mnml`) can pop their pty into a sibling native tab via SCM_RIGHTS fd transfer. The shell keeps running, no state loss. Listener at `<TMPDIR>/tmnl-<pid>-transfer.sock`, exported via `TMNL_TRANSFER_SOCKET` in spawned shells. Unix only.
+    An app embedded inside another app (e.g. a shell pane inside `mnml`) can pop its running pty into a sibling native tab via SCM_RIGHTS fd transfer. The shell keeps running, no state loss. Standalone listener at `<TMPDIR>/tmnl-<pid>-transfer.sock`, exported via `TMNL_TRANSFER_SOCKET` for child processes.
   </Card>
   <Card title="Native chrome" icon="setting">
-    Native tabs. Native macOS menu bar (tmnl / Shell / Edit / View / Window / Help). Mac-style editing chords (`⌘Z` / `X` / `C` / `V` / `A`). In-grid settings modal (`⌘,`) following the family settings UI convention. Welcome screen with recent tab launches.
+    Native tabs (`Cmd+T` / `Cmd+W` / `Cmd+1..9`). Native macOS menu bar (tmnl / Shell / Edit / View / Window / Help). Mac-style editing chords. In-grid settings modal (`⌘,`) following the family settings UI convention. Welcome screen with recent native-tab launches (`1`–`9` to re-open).
   </Card>
 </CardGrid>
 
 ## Why "native mode" matters
 
-If you've ever tried to render a real UI inside a terminal — buttons, knobs, fine-grained graphics — you've fought ANSI. tmnl's native mode is the escape: an app opens a Unix socket, sends `Frame { cells: [Cell { fg, bg, char, ... }] }` directly, and tmnl draws it on the GPU. No vt100 parser between you and the pixels.
+If you've ever tried to render a real UI inside a terminal — fine-grained graphics, knobs, structured grids — you've fought ANSI. tmnl's native mode is the escape: an app opens a Unix socket, ships `Frame` messages of typed cells, and tmnl draws them on the GPU. No `vt100` parser between the app and the screen. App and terminal agree on a `Grid` instead of trading bytes.
 
-[`mnml`](https://mnml.sh) (a terminal IDE) and [`mixr`](https://mixr.sh) (a terminal DJ app) both ship a `--blit <socket>` mode that connects them as native tmnl tabs. Inside tmnl, mixr's crossfader and knobs render as actual graphics, not unicode block art. mnml gets native-tab integration with workspace switching.
+[`mnml`](https://mnml.sh) (a NvChad-style terminal IDE) and [`mixr`](https://mixr.sh) (a terminal DJ app) both ship a `--blit <socket>` mode that connects them as native tmnl tabs. Inside tmnl, mixr's crossfader renders as actual graphics, not unicode block art. mnml gets native-tab integration with workspace switching.
 
-You don't have to use any of this. tmnl works fine as a regular terminal emulator hosting your shell. The cell-streaming layer just makes it the host for a class of apps that couldn't exist before.
+You don't have to use any of this. tmnl works fine as a regular terminal emulator hosting your shell. The cell-streaming layer just makes it the host for a class of apps that couldn't exist before. See [Native tabs](/manual/native-tabs/) for the full protocol walkthrough.
+
+## State of the project
+
+tmnl is `v0.0.x`. It's solid as a daily driver on macOS for me (the author), but it has sharp edges:
+
+- **macOS-only today.** The wgpu pipeline is cross-platform; the menu bar, pty hosting, and SCM_RIGHTS handoff are not yet ported off macOS. Windows + Linux are roadmap.
+- **No scrollback search, no splits, no font config UI.** Single-window, single-pane-per-tab, single font baked in. Splits and search are the next big tracks.
+- **Native-mode SDK is unpublished.** The protocol is stable enough that mnml + mixr ride it daily, but the published crate / capability negotiation / second-reference-client work is still ahead.
+
+For shipped features see [FEATURES.md](https://github.com/chris-mclennan/tmnl/blob/master/FEATURES.md); for the roadmap see [`.local/PLAN.md`](https://github.com/chris-mclennan/tmnl/blob/master/.local/PLAN.md) (or just file an issue).
 
 ## The family
 
-tmnl is one of three small Rust tools by Chris McLennan:
+tmnl is one of three small Rust tools by [Chris McLennan](https://github.com/chris-mclennan). They share an aesthetic (`> name` prompt-style wordmark, charcoal + warm-orange palette) and a protocol — the [`tmnl-protocol`](https://github.com/chris-mclennan/tmnl-protocol) wire format lets the other two run as native tmnl tabs.
 
 - **tmnl** — this terminal
 - **[mnml](https://mnml.sh)** — a NvChad-style terminal IDE (vim or standard editing, LSP, git, fuzzy everything, baked-in HTTP client)
 - **[mixr](https://mixr.sh)** — a terminal DJ app (Beatport streaming, Claude DJ, MIDI controllers)
 
-mnml and mixr both run inside any terminal. Inside tmnl specifically, they get native-tab integration and the cell-streaming aesthetic.
+See [the family page](/family/) for the side-by-side.
