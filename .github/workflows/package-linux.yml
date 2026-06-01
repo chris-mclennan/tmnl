@@ -69,8 +69,10 @@ jobs:
           VERSION: ${{ steps.ver.outputs.version }}
           ARCH: ${{ matrix.arch }}
         run: |
-          .nfpm-bin/nfpm pkg --config nfpm/tmnl.yaml --packager deb --target "tmnl_${VERSION}_${ARCH}.deb"
-          .nfpm-bin/nfpm pkg --config nfpm/tmnl.yaml --packager rpm --target "tmnl-${VERSION}-1.${{ matrix.rpm_arch }}.rpm"
+          # Versionless filenames so `releases/latest/download/<name>` is stable
+          # across releases (matches cargo-dist's tarball naming convention).
+          .nfpm-bin/nfpm pkg --config nfpm/tmnl.yaml --packager deb --target "tmnl-rs-${{ matrix.triple }}.deb"
+          .nfpm-bin/nfpm pkg --config nfpm/tmnl.yaml --packager rpm --target "tmnl-rs-${{ matrix.triple }}.rpm"
           ls -la *.deb *.rpm
 
       - name: Build AppImage
@@ -102,7 +104,7 @@ jobs:
 
           ARCH="${runtime_arch}" ./squashfs-root/AppRun \
             --runtime-file=runtime \
-            AppDir "tmnl-${VERSION}-${runtime_arch}.AppImage"
+            AppDir "tmnl-rs-${{ matrix.triple }}.AppImage"
           ls -la *.AppImage
 
       - name: Upload to release
@@ -111,7 +113,7 @@ jobs:
         run: |
           v="${{ steps.ver.outputs.version }}"
           gh release upload "v${v}" \
-            "tmnl_${v}_${{ matrix.arch }}.deb" \
-            "tmnl-${v}-1.${{ matrix.rpm_arch }}.rpm" \
-            "tmnl-${v}-${{ matrix.rpm_arch }}.AppImage" \
+            "tmnl-rs-${{ matrix.triple }}.deb" \
+            "tmnl-rs-${{ matrix.triple }}.rpm" \
+            "tmnl-rs-${{ matrix.triple }}.AppImage" \
             --clobber
