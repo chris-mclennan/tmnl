@@ -113,11 +113,13 @@ ln -s /Applications "$DMG_STAGE/Applications"
 VOLNAME="$(basename "$SIGNED_APP" .app) $(basename "$DMG" .dmg | sed -E 's/.*-([0-9.]+).*/\1/')"
 hdiutil create -volname "$VOLNAME" -srcfolder "$DMG_STAGE" -ov -format UDZO "$NEW_DMG" >/dev/null
 
-echo "[notarize] submitting to Apple notary service (15 min timeout)"
+echo "[notarize] submitting to Apple notary service (30 min timeout)"
 # --wait blocks until verdict, but with NO default timeout — a hung
-# Apple endpoint hangs the whole CI run. Bound it at 15 min: typical
-# verdicts arrive in 1-5 min, 15 is generous. On timeout the script
-# fails fast and the run.log shows what happened.
+# Apple endpoint hangs the whole CI run. Bound it at 30 min: typical
+# verdicts after the first one arrive in 5-15 min; first-time
+# Developer ID submissions get deeper scrutiny and can take 30-60 min.
+# 30 covers the common case; if Apple takes longer the script fails
+# fast and the next run inherits the same submission queue position.
 #
 # --output-format json gets a structured response we can inspect on
 # failure (status, message, submission id for follow-up via `dist
@@ -128,7 +130,7 @@ if ! xcrun notarytool submit "$NEW_DMG" \
         --password "$APPLE_APP_PASSWORD" \
         --team-id "$APPLE_TEAM_ID" \
         --wait \
-        --timeout 15m \
+        --timeout 30m \
         --output-format json > "$NOTARY_OUT" 2>&1; then
     echo "[notarize] notarytool submit FAILED — output below" >&2
     cat "$NOTARY_OUT" >&2
