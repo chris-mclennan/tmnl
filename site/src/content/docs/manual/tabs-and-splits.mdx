@@ -1,0 +1,217 @@
+---
+title: Tabs, splits, and panes
+description: The tab + split + pane model — what a tab is, the chord reference for moving between them, drag-reorder, focus, and the per-pane kinds.
+---
+
+A tmnl window is a stack of **tabs**. Each tab is a split tree of **panes**. One
+pane per tab has focus and receives keyboard input. The tab strip at the top
+shows one chip per tab; the body shows the focused tab's split layout.
+
+That sentence is the whole model. The rest of this page is the chord reference,
+the rules around focus and drag-reorder, what kinds of panes exist, and where
+the rough edges are today. For the deep dive on the *native* pane kind — what
+the `tmnl-protocol` wire format does, how to write a backing app — see [Native
+tabs](./native-tabs/).
+
+## Tabs
+
+A tab owns:
+
+- A **split layout** — a binary tree of panes (`layout.rs::Layout`). Today
+  always a single `Leaf`; the `Split` constructor + the split / focus / close
+  verbs are wired (`Cmd+D`, `Cmd+Shift+D`, …) and the math is unit-tested, but
+  see [Phase 1 limitations](#phase-1-limitations) for the current ceiling.
+- A **`panes` vec** the tree indexes into. Each pane carries its own `Grid`, so
+  switching tabs is instant — background panes keep their state for free.
+- A **`focused` pane id** — the leaf that draws a cursor + full-bright text +
+  receives keyboard input.
+- A **label** — derived from the focused pane (shell name, mnml-set title,
+  Claude Code attention status, …) unless the user has set a custom name by
+  right-clicking the chip → rename.
+
+The active tab's body is laid out by recursively splitting the body rect
+through its `Layout` tree (`Layout::leaf_rects`). Inactive tabs render nothing
+— they pause until you switch back, at which point their cached `Grid` is what
+you see (no re-render, no flash).
+
+### Tab chords
+
+Cmd chords are intercepted at the tmnl level — Cmd doesn't reach the hosted
+process unless explicitly forwarded (see [Native tab forwarding](#native-tab-cmd-forwarding)).
+
+| Action | Chord |
+| --- | --- |
+| New tab (same flavour) | `Cmd+T` |
+| Close active tab | `Cmd+W` |
+| Jump to tab N | `Cmd+1` … `Cmd+9` |
+| Cycle prev / next | `Cmd+Shift+[` / `Cmd+Shift+]` |
+
+`Cmd+T` spawns the same kind of tab the window launched with — `--mnml`
+launches another mnml workspace; `--mixr` launches another mixr; a bare launch
+spawns a fresh shell tab. tmnl stashes an `EditorTabTemplate` on startup
+capturing the binary + workspace + extra args so the second `Cmd+T` looks
+identical to the first.
+
+`Cmd+W` on the last tab closes the window.
+
+### The `+` chip
+
+Past the last tab chip on the strip sits a `+` button. Left-clicking it does
+exactly what `Cmd+T` does — spawns a same-flavour new tab. Native-mode
+windows get another native tab; shell-mode windows get another shell.
+
+### Closing tabs
+
+Three ways to close a tab:
+
+- **`Cmd+W`** on the focused tab.
+- **Middle-click** anywhere on a tab chip.
+- **Left-click the `⊗`** that appears on each non-active chip (the small close
+  badge — hit-tested before the chip-switch rect, so the close glyph isn't
+  also treated as a tab switch).
+
+Inside a native-mode tab, `Cmd+W` is *forwarded to the hosted process* as
+`Ctrl+W` instead of closing the tmnl tab. The middle-click and `⊗` paths
+always close the tmnl tab regardless of pane kind.
+
+### Drag-reorder
+
+Click and drag a tab chip along the strip to reorder. The implementation is
+simple: while a chip drag is armed (the mouse went down on a chip and is still
+held), every `CursorMoved` event over a *different* chip swaps the dragged
+tab with the chip under the cursor in-place. The active tab follows the swap.
+There's no animation and no separate drop indicator — the strip commits the
+swap as soon as the cursor crosses into another chip. On release the drag
+ends.
+
+### Renaming a tab
+
+Right-click a tab chip → the chip turns into an inline text field. Type the
+new name, `Enter` commits, `Esc` cancels, any click anywhere commits.
+Session-only — not persisted. An empty rename reverts the chip to its
+auto-derived label.
+
+## Tab strip rendering
+
+The tab strip is a separate `wgpu` pipeline (`strip.wgsl`) painted above the
+cell grid — chrome, not content. Layout is OS-aware:
+
+- **macOS** — leaves an inset on the left for the traffic-light buttons. The
+  exact pixel count lives in `MACOS_TAB_STRIP_PX_*` constants in
+  `src/main.rs`.
+- **Windows / Linux** — the strip runs the full window width with no inset;
+  there's no traffic-light gap to leave room for.
+
+The strip carries the tab chips left-to-right, then the `+` new-tab button.
+On a Native-mode tab the chip can also show an attention `●` prefix when the
+hosted process emits an OSC 1337 attention signal — Claude Code does this when
+a turn finishes and it's waiting for input.
+
+## Panes (inside a tab)
+
+A pane is the leaf of a tab's split tree. Each one owns a `Grid` and a
+`PaneKind`:
+
+- **Shell** — a real `$SHELL` pty hosted by tmnl, output parsed by `vt100`
+  into cells. The everyday tmnl pane.
+- **Native** — a `tmnl-protocol` server socket and a connected backing-app
+  process (mnml, mixr, your own client) shipping `Frame`s of cells directly
+  into the pane's `Grid`. No ANSI parsing in the loop. See [Native tabs](./native-tabs/) for the protocol-level
+  deep dive — how the socket is minted, what the wire format looks like, and
+  how to write your own backing app.
+
+There's no separate "Welcome" pane kind. The welcome overlay on a bare launch
+is painted *on top of* a shell pane that's already there — dismissing it
+drops you into that shell.
+
+### Pane focus
+
+Within a tab, exactly one pane has focus.
+
+- **Mouse press** in a pane focuses it before forwarding the event to that
+  pane in its local cell coordinates (`src/app.rs::pane_under_cursor`).
+- **`Cmd+Option+Arrow`** moves keyboard focus to the pane nearest the
+  focused one in the arrow's direction (`focus_dir`). No-op if there's no
+  pane in that direction.
+
+The focus cue is a brightness contrast, not a border. The focused pane draws
+its cursor + full-bright cells; every other pane on the active tab fades
+toward its own background by `INACTIVE_DIM = 0.4`. Splits in the active tab
+are separated by 1-cell divider strips (drag a divider to resize the split);
+no accent-colored border is painted around the focused pane.
+
+### Split chords
+
+| Action | Chord |
+| --- | --- |
+| Split focused pane to the right | `Cmd+D` |
+| Split focused pane downward | `Cmd+Shift+D` |
+| Close focused pane | `Cmd+Shift+W` |
+| Move focus left / right / up / down | `Cmd+Option+Arrow` |
+
+A new pane always spawns a fresh **shell** pane regardless of the tab's
+flavour — a Native split is a follow-up. The split takes focus immediately so
+the next keystroke goes into the new shell.
+
+`Cmd+Shift+W` closes the focused pane and collapses its split so the sibling
+takes the freed space. Closing the last pane in the tab closes the whole tab.
+
+### Native-tab Cmd forwarding
+
+When the focused pane is a Native pane, a handful of Cmd chords get
+**translated to Ctrl-equivalents** and forwarded to the hosted process
+instead of being intercepted at the tmnl level. The pragmatic point: a Mac
+user with mnml muscle memory should hit `Cmd+P` and get mnml's file picker,
+not a tmnl-level no-op.
+
+| Cmd chord | Forwarded as | Why |
+| --- | --- | --- |
+| `Cmd+W` | `Ctrl+W` | mnml closes the focused buffer, not the whole tab. |
+| `Cmd+1` … `Cmd+9` | `Alt+1` … `Alt+9` | mnml's `tab.goto_N` chord fires. |
+| `Cmd+Z` / `X` / `C` / `V` / `A` / `S` / `F` / `N` | Ctrl-equivalent | Standard editing chords. |
+| `Cmd+P` / `B` / `G` / `/` | Ctrl-equivalent | mnml file picker / tree / goto-line / comment. |
+
+Shell panes keep the original tmnl behavior for these (so `Cmd+C` still copies
+to the OS clipboard, etc.).
+
+`Cmd+Shift+[` / `Cmd+Shift+]` (cycle tabs) are **never** forwarded — they
+always switch tmnl tabs, so there's an unambiguous way to leave a Native tab
+when you're inside one.
+
+## Phase 1 limitations
+
+The implementation is honest about being early.
+
+- **Single pane per tab today, in practice.** The `Layout` tree's `Split`
+  constructor + the split / focus / close verbs are wired and the math is
+  unit-tested, but the codebase comments still describe the steady state as
+  "exactly one pane per tab" — a holdover that hasn't been updated as the
+  split chords landed. The chords (`Cmd+D`, `Cmd+Shift+D`, `Cmd+Option+Arrow`,
+  `Cmd+Shift+W`) all work; the splits-plan tracks rough edges (no pane swap,
+  no Native splits yet, no z-ordered split focus history).
+- **No pane swap chord.** `Cmd+Option+Arrow` *moves focus* between panes; it
+  doesn't swap them. Re-laying out the tree is a follow-up.
+- **No Native splits.** `Cmd+D` / `Cmd+Shift+D` always spawn a shell pane.
+  A Native-pane split (e.g. mnml beside mixr in the same tmnl tab) is on the
+  roadmap; today that pattern is "two adjacent native tabs," switched with
+  `Cmd+Shift+[` / `]`.
+- **One window.** tmnl is single-window today. Multiple windows is a separate
+  workstream from the splits work.
+- **Drag-reorder has no drop indicator.** The strip just commits the swap as
+  the cursor crosses into another chip. An explicit drop indicator is a
+  polish item.
+
+## Where to go next
+
+- **[Native tabs](./native-tabs/)** — the protocol-level deep dive. What a
+  Native pane actually is, the `tmnl-protocol` wire format, writing your own
+  backing app, the pty-fd handoff, the honest limitations of native mode.
+- **[Getting started](./getting-started/)** — the higher-level walkthrough of
+  shell mode, native mode, and the family bundle.
+- [FEATURES.md](https://github.com/chris-mclennan/tmnl/blob/master/FEATURES.md)
+  — the shipped-feature inventory and the roadmap.
+- The split-tree implementation lives in
+  [`src/layout.rs`](https://github.com/chris-mclennan/tmnl/blob/master/src/layout.rs);
+  the chord handlers in
+  [`src/app.rs`](https://github.com/chris-mclennan/tmnl/blob/master/src/app.rs)
+  around the `Cmd`-modifier match.
