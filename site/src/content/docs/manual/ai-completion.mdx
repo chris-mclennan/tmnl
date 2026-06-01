@@ -1,0 +1,170 @@
+---
+title: AI completion (offline)
+description: tmnl's local fill-in-the-middle command completion — a quantized qwen2.5-coder model running in-process via candle. ⌘I continues the half-typed command; ⌘K turns a description into a shell command. No network, no API key, no per-token cost.
+---
+
+tmnl ships two AI features on the shell prompt that are unusual for a terminal: they're **local**. The model runs in the tmnl process, on your machine, after a one-time download. There's no API key to configure, no cloud round-trip per keystroke, and nothing about what you type ever leaves the box.
+
+This page covers what's actually shipped — the two shortcuts, where they work, the `fim-engine` crate underneath, the first-run model download, performance you can expect, and the rough edges.
+
+## What ⌘I and ⌘K do
+
+Both shortcuts only fire when tmnl is in **shell mode** and the prompt has an OSC 133 anchor (see [the integration snippet](https://github.com/chris-mclennan/tmnl/blob/master/docs/shell-integration.md)). Without that anchor, tmnl doesn't know where on the screen your command line starts, so it has nothing to feed the model — the keystrokes silently no-op.
+
+### `⌘I` — continuation
+
+Type some of a command. Hit `⌘I`. tmnl reads the text from the OSC 133 `B` mark to the cursor, sends it to the model as the *prefix* (the suffix is empty — there's nothing after the cursor on a shell prompt), and the model fills in what comes next. The suggestion appears as dim ghost text at the cursor, with a `[tab]` hint next to it.
+
+```
+$ git log --oneline --since=▮ "2 weeks ago" --author="me"  [tab]
+              prefix you typed ▲ ▲ ghost suggestion (dim)
+```
+
+`Tab` accepts. Any other key dismisses the suggestion and goes through to the shell as a normal keystroke. Any modification of the command line cancels an in-flight request before it lands — stale suggestions are dropped.
+
+### `⌘K` — natural-language → command
+
+Type a description of what you want. Hit `⌘K`. tmnl wraps your description in a shell-script prompt (`#!/bin/zsh\n# <your description>\n`) so the code model generates a zsh one-liner for it. The generated command previews on the row **below** the prompt; `Tab` accepts, which erases your description and types the command in its place.
+
+```
+$ find all node_modules folders bigger than 1GB▮
+  find . -type d -name node_modules -prune -exec du -sh {} +   [tab]
+  ▲ preview on the row below
+```
+
+The two shortcuts share the model and worker — they only differ in how tmnl builds the prompt and where the ghost text gets drawn.
+
+## Where it works
+
+- **Shell mode, on the prompt, with OSC 133 installed** — both `⌘I` and `⌘K` light up.
+- **Shell mode, no OSC 133** — silent no-op. tmnl needs the `B` mark to find the start of the command line. Install the snippet and the features become available.
+- **Native mode tabs (mnml, mixr, your own tmnl-protocol clients)** — tmnl forwards keystrokes through to the hosted app; `⌘I` / `⌘K` aren't intercepted at the terminal layer. mnml has its own ghost-text completion (powered by the same `fim-engine` crate — they share the model cache, so you don't pay the download twice).
+- **A running command in shell mode** — the prompt-anchor check fails (the cursor isn't between `B` and the end of the command line), so the shortcuts no-op. They're prompt-only.
+
+If a request takes more than a moment, the ghost slot shows `generating…` in dim text until the reply comes back.
+
+## The `fim-engine` crate
+
+The completion engine isn't part of tmnl proper — it lives in a sibling crate at `../fim-engine` ([`chris-mclennan/fim-engine`](https://github.com/chris-mclennan/fim-engine) on GitHub). tmnl statically links it via a path dependency in `Cargo.toml`:
+
+```toml
+# Linux / Windows — CPU candle, no Apple-only crate graph.
+fim-engine = { path = "../fim-engine", version = "0.1.0", default-features = false }
+
+# macOS — re-enable the `metal` feature for Apple GPU inference.
+[target.'cfg(target_os = "macos")'.dependencies]
+fim-engine = { path = "../fim-engine", version = "0.1.0", features = ["metal"] }
+```
+
+The split is so that Linux and Windows builds don't pull in `objc2` (Apple-only) through `candle-core/metal`. macOS gets GPU inference for free; everywhere else runs CPU candle.
+
+The crate is kept separate (rather than inlined in tmnl) for one practical reason: candle has a very large dependency tree, so isolating it means tmnl's incremental rebuilds stay fast — you only pay the candle compile cost once, when `fim-engine` itself changes.
+
+The same crate powers mnml's inline ghost-text completion. Both apps read from the same on-disk model cache, so you download the ~1 GB weights once for the whole family.
+
+## First-run model download
+
+On the first `⌘I` or `⌘K` of a tmnl session, the engine spins up a worker thread, then loads the model. If the cached weights aren't on disk yet, it downloads them from the Hugging Face CDN first — this is the slow path, blocking on the worker thread (never the UI thread) until the files are present.
+
+The model is **qwen2.5-coder-1.5B-instruct**, q4_k_m-quantized GGUF. Two files come down:
+
+- `qwen2.5-coder-1.5b-instruct-q4_k_m.gguf` — the quantized weights.
+- `tokenizer-1.5b.json` — the qwen2 BPE tokenizer.
+
+They land in the shared `fim-engine` cache:
+
+- `$XDG_CACHE_HOME/fim-engine/` when set, else
+- `~/.cache/fim-engine/`, else
+- `./.fim-engine-cache/` as a last resort.
+
+`fim-engine` ships with a second model (`Qwen3B` — `qwen2.5-coder-3b-instruct-q4_k_m.gguf`, smarter at multi-line completion, slower), but tmnl wires `ModelChoice::Qwen1_5B` unconditionally today — see the [settings](#settings) note below.
+
+Once cached, the first `⌘I` / `⌘K` of every subsequent session is just the load (a couple of seconds), not the download. If the download fails (no network, HF outage, …) the worker logs `model load failed: …`, every later request returns the same error, and the shortcuts behave as no-ops until you restart tmnl.
+
+## Settings
+
+There is **no setting** in tmnl's `Cmd+,` modal for the AI completion today — model choice and cache location are wired in code, not config. If you need to put the cache somewhere other than `~/.cache/fim-engine`, the only knob is the `XDG_CACHE_HOME` env var.
+
+Two things are roadmapped but not shipped:
+
+- A `[ai]` config section in `~/.config/tmnl/config.toml` to pick between `qwen-1.5b` and `qwen-3b` (the crate supports both via `ModelChoice`; tmnl just hardcodes `Qwen1_5B`).
+- An on/off toggle for users who don't want the model loaded at all. Today the workaround is "don't press `⌘I` or `⌘K`" — the worker is spawned lazily on the first trigger, so a session that never invokes it never loads the model.
+
+## Performance
+
+Numbers you should expect, with the 1.5B model:
+
+- **Inference** — ~100–400 ms per completion on the engine itself, per `fim-engine`'s own docs. tmnl's worker adds a few milliseconds of round-trip on top.
+- **macOS with `metal`** — GPU inference via Apple Metal. `fim-engine` quotes "~10× faster than CPU for the 1.5B model" for inference; in practice ⌘I lands in well under a second on Apple Silicon.
+- **Linux / Windows (CPU)** — CPU candle. Inference still completes, just slower; for the 1.5B model it's typically a couple of seconds rather than a fraction.
+- **First-trigger load** — separate from inference. Loading the model from disk into memory takes a few seconds; the worker logs `local model ready` when it's done (you'll see it via `RUST_LOG=info` if you're watching).
+- **First-trigger download** — separate again. ~1 GB over your network from the Hugging Face CDN. Once, ever, per machine.
+
+The worker holds the engine in memory for the lifetime of the tmnl process — there's no per-request load cost.
+
+## How tmnl uses it (the seam)
+
+If you're curious what's between the keypress and the ghost text:
+
+1. `⌘I` / `⌘K` in the winit event loop calls `App::trigger_ai_completion` / `App::trigger_ai_generate` (`src/app.rs`).
+2. tmnl reconstructs the current command line by reading from the OSC 133 `B` anchor in the shell session up to the cursor.
+3. The text is shipped over an `mpsc::Sender` to the long-lived `tmnl-fim-worker` thread (`src/fim.rs`). The UI thread never touches the model.
+4. The worker calls `fim_engine::FimEngine::complete(prefix, suffix, 64)` — bounded at 64 tokens to keep latency tight for an inline completion.
+5. The reply comes back on the reply channel. The UI polls the channel every tick (`App::poll_fim`), and a reply matching the in-flight request id becomes the `Ghost` overlay.
+
+Any keystroke from the user invalidates the in-flight request id, so stale completions can't paint over a command line that's already moved on.
+
+## Compared to Copilot / cloud completions
+
+| | tmnl (local) | Cloud (Copilot, Cursor, …) |
+| --- | --- | --- |
+| Where the model lives | In your process | A vendor's GPUs |
+| What leaves your machine | Nothing (after first-run weights download) | Your prompt, every keystroke a request fires on |
+| Network requirement | Just the first-run download | Continuous; offline = no completions |
+| API key | None | Required |
+| Cost per request | None | Per-token or per-seat |
+| Hardware | Apple GPU (macOS) or CPU (Linux/Windows) | Vendor's |
+| Smart on huge multi-file context | No — it's a 1.5B-param model with ~3k tokens of context | Yes — frontier models with large context windows |
+
+The honest framing: tmnl's AI is great when "I need to remember the flag for `find -prune`" or "wrap my one-line description into a real command." It is **not** trying to compete with Copilot on multi-file refactors or on Sonnet-class reasoning. The win is privacy, offline-ness, no recurring cost, and a fast loop on the prompt for the things shell command completion is actually good at.
+
+## Troubleshooting
+
+### "I hit ⌘I and nothing happened"
+
+The most common cause is that OSC 133 marks aren't reaching tmnl. Check:
+
+1. Is the integration snippet sourced from `~/.zshrc`? See [shell integration](https://github.com/chris-mclennan/tmnl/blob/master/docs/shell-integration.md).
+2. Is it sourced **after** your prompt framework (Starship, p10k, …)? Many frameworks set their own `PROMPT_COMMAND` / `precmd` that the snippet has to wrap.
+3. Is the command line empty? `⌘I` no-ops on a blank prompt — it has nothing to continue.
+
+### "It's stuck on `generating…`"
+
+The first trigger of a session is the slowest — model load + first inference both happen on the same code path. If the cache is cold, it's also downloading the ~1 GB weights. Give it a minute on the first try. If it's still stuck after the download window, run tmnl from a shell with `RUST_LOG=info`:
+
+```sh
+RUST_LOG=info tmnl
+```
+
+You'll see `fim: local model ready` when the model has loaded, or `fim: model load failed: …` with the underlying error (network, disk, malformed cache, …). A failed load is sticky for the session — restart tmnl after fixing whatever it complained about.
+
+### "The model gave me a python snippet, not a shell command"
+
+`⌘I` is plain continuation — it'll continue whatever it sees, including a half-typed python heredoc if that's what's on the prompt. `⌘K` is the one that biases toward shell commands (it wraps your description in `#!/bin/zsh\n# …\n` so the code model fills in a zsh one-liner). If you want shell, use `⌘K` with a description.
+
+The 1.5B model is also genuinely small — it's good at idiomatic one-liners and common flags, less good at obscure invocations. The Qwen3B variant is smarter but needs the not-yet-shipped settings hook to enable.
+
+### "I want the cache somewhere else"
+
+Set `XDG_CACHE_HOME` before launching tmnl. The engine resolves the cache directory as `$XDG_CACHE_HOME/fim-engine` first, then `~/.cache/fim-engine`. If you want to start over with a clean slate, delete the cache dir — the next `⌘I` / `⌘K` will re-download.
+
+### "I never want the model to load"
+
+Don't press `⌘I` or `⌘K`. The worker is spawned lazily — a session that never triggers a completion never loads the model and never spawns the worker thread. There is currently no on/off setting; that's roadmapped.
+
+## Related
+
+- [Getting started](/manual/getting-started/) — the first-run walkthrough, including the AI features summary in the OSC 133 section.
+- [`fim-engine` on GitHub](https://github.com/chris-mclennan/fim-engine) — the embedded completion crate, also used by mnml.
+- [Shell integration doc](https://github.com/chris-mclennan/tmnl/blob/master/docs/shell-integration.md) — the OSC 133 snippet that unlocks `⌘I` / `⌘K`.
+- [`FEATURES.md`](https://github.com/chris-mclennan/tmnl/blob/master/FEATURES.md) — the shipped-feature inventory, including the AI completion line items.
