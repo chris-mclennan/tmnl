@@ -8,6 +8,7 @@ export default defineConfig({
   integrations: [
     starlight({
       title: 'tmnl',
+      customCss: ['./src/styles/install.css'],
       description:
         'A GPU-rendered terminal — and a structured-cell display surface that apps can draw to directly.',
       // Hidden-during-dev: every page gets <meta name="robots" content="noindex">.
