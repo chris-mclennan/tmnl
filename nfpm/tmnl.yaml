@@ -1,0 +1,35 @@
+# nfpm package config — used by .github/workflows/package-linux.yml
+# to generate .deb + .rpm packages on release. ARCH / VERSION are
+# substituted from env vars by nfpm at config-parse time.
+name: tmnl
+arch: ${ARCH}
+version: ${VERSION}
+maintainer: Chris McLennan <chrismclennan@mac.com>
+description: |
+  A GPU-rendered terminal — and a structured-cell display surface
+  that apps can draw to directly.
+homepage: https://tmnl.sh
+license: MIT
+section: utils
+priority: optional
+contents:
+  - src: staging/tmnl
+    dst: /usr/bin/tmnl
+    file_info:
+      mode: 0755
+  - src: scripts/linux/tmnl.desktop
+    dst: /usr/share/applications/tmnl.desktop
+    file_info:
+      mode: 0644
+  - src: scripts/icon/AppIcon.iconset/icon_512x512.png
+    dst: /usr/share/icons/hicolor/512x512/apps/tmnl.png
+    file_info:
+      mode: 0644
+  - src: scripts/icon/AppIcon.iconset/icon_256x256.png
+    dst: /usr/share/icons/hicolor/256x256/apps/tmnl.png
+    file_info:
+      mode: 0644
+  - src: scripts/icon/AppIcon.iconset/icon_128x128.png
+    dst: /usr/share/icons/hicolor/128x128/apps/tmnl.png
+    file_info:
+      mode: 0644
