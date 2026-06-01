@@ -70,6 +70,38 @@ jobs:
           .nfpm-bin/nfpm pkg --config nfpm/tmnl.yaml --packager rpm --target "tmnl-${VERSION}-1.${{ matrix.rpm_arch }}.rpm"
           ls -la *.deb *.rpm
 
+      - name: Build AppImage
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          mkdir -p AppDir/usr/bin
+          cp staging/tmnl AppDir/usr/bin/tmnl
+          chmod +x AppDir/usr/bin/tmnl
+          cat > AppDir/AppRun <<'APPRUN'
+          #!/bin/bash
+          HERE="$(dirname "$(readlink -f "${0}")")"
+          exec "${HERE}/usr/bin/tmnl" "$@"
+          APPRUN
+          chmod +x AppDir/AppRun
+          cp scripts/linux/tmnl.desktop AppDir/tmnl.desktop
+          cp scripts/icon/AppIcon.iconset/icon_256x256.png AppDir/tmnl.png
+
+          # appimagetool needs FUSE — not available in GHA. Extract first.
+          curl -sL --fail -o appimagetool "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
+          chmod +x appimagetool
+          ./appimagetool --appimage-extract > /dev/null
+
+          # Per-arch runtime so the AppImage can be ARM64 even though
+          # the build host is x86_64.
+          runtime_arch="${{ matrix.rpm_arch }}"
+          curl -sL --fail -o runtime "https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-${runtime_arch}"
+          chmod +x runtime
+
+          ARCH="${runtime_arch}" ./squashfs-root/AppRun \
+            --runtime-file=runtime \
+            AppDir "tmnl-${VERSION}-${runtime_arch}.AppImage"
+          ls -la *.AppImage
+
       - name: Upload to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -78,4 +110,5 @@ jobs:
           gh release upload "v${v}" \
             "tmnl_${v}_${{ matrix.arch }}.deb" \
             "tmnl-${v}-1.${{ matrix.rpm_arch }}.rpm" \
+            "tmnl-${v}-${{ matrix.rpm_arch }}.AppImage" \
             --clobber
