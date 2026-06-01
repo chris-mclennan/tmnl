@@ -34,6 +34,39 @@ capabilities present in the current `master`.
   `Message::OpenPaneTransfer`.
 - **`dirs`** bumped to `6` to match the rest of the family.
 
+## [0.0.4] - 2026-06-01
+
+### Added
+
+- macOS DMGs are now code-signed + notarized when the
+  `APPLE_TEAM_ID` / `APPLE_DEVELOPER_ID_CERT_*` / `APPLE_ID` /
+  `APPLE_APP_PASSWORD` GitHub secrets are configured. Gatekeeper trusts
+  the signed DMG without the "unidentified developer" warning.
+
+### Changed
+
+- `scripts/notarize-dmg.sh` — robust signing identity lookup via
+  `security find-identity` SHA1 (instead of by-name format which fails
+  if the cert's common name doesn't match the expected pattern).
+- `notarytool submit` now bounds the wait at 30 min and surfaces the
+  verdict on failure instead of hanging the CI run.
+
+## [0.0.3] - 2026-05-31
+
+### Changed
+
+- macOS `.dmg` artifact now ships with cargo-dist's standard naming
+  (`tmnl-rs-<triple>.dmg`).
+- Install page's macOS download button points at the DMG (drag-to-install).
+
+## [0.0.2] - 2026-05-31
+
+### Added
+
+- First `.app` bundle + DMG artifacts shipping with releases.
+- Refactor: `build-app.sh` / `build-dmg.sh` accept `--bin-path` so CI can
+  package the cargo-dist-built binary directly.
+
 ## [0.0.1]
 
 ### Added
