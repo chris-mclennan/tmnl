@@ -113,12 +113,37 @@ ln -s /Applications "$DMG_STAGE/Applications"
 VOLNAME="$(basename "$SIGNED_APP" .app) $(basename "$DMG" .dmg | sed -E 's/.*-([0-9.]+).*/\1/')"
 hdiutil create -volname "$VOLNAME" -srcfolder "$DMG_STAGE" -ov -format UDZO "$NEW_DMG" >/dev/null
 
-echo "[notarize] submitting to Apple notary service (this may take 1-5 min)"
-xcrun notarytool submit "$NEW_DMG" \
-    --apple-id "$APPLE_ID" \
-    --password "$APPLE_APP_PASSWORD" \
-    --team-id "$APPLE_TEAM_ID" \
-    --wait
+echo "[notarize] submitting to Apple notary service (15 min timeout)"
+# --wait blocks until verdict, but with NO default timeout — a hung
+# Apple endpoint hangs the whole CI run. Bound it at 15 min: typical
+# verdicts arrive in 1-5 min, 15 is generous. On timeout the script
+# fails fast and the run.log shows what happened.
+#
+# --output-format json gets a structured response we can inspect on
+# failure (status, message, submission id for follow-up via `dist
+# notarytool log <id>`).
+NOTARY_OUT="$RUNNER_TEMP/notary-out.json"
+if ! xcrun notarytool submit "$NEW_DMG" \
+        --apple-id "$APPLE_ID" \
+        --password "$APPLE_APP_PASSWORD" \
+        --team-id "$APPLE_TEAM_ID" \
+        --wait \
+        --timeout 15m \
+        --output-format json > "$NOTARY_OUT" 2>&1; then
+    echo "[notarize] notarytool submit FAILED — output below" >&2
+    cat "$NOTARY_OUT" >&2
+    exit 1
+fi
+cat "$NOTARY_OUT"
+# Verify the verdict was "Accepted"; "Invalid" / "Rejected" / etc. mean signing
+# passed but Apple's checks failed — still need to abort.
+STATUS=$(jq -r '.status // empty' "$NOTARY_OUT" 2>/dev/null || echo "")
+if [ "$STATUS" != "Accepted" ]; then
+    echo "[notarize] notarytool returned status: $STATUS" >&2
+    echo "[notarize] full output:" >&2
+    cat "$NOTARY_OUT" >&2
+    exit 1
+fi
 
 echo "[notarize] stapling ticket to DMG"
 xcrun stapler staple "$NEW_DMG"
