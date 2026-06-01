@@ -40,6 +40,8 @@ export default defineConfig({
           label: 'Manual',
           items: [
             { label: 'Getting started', slug: 'manual/getting-started' },
+            { label: 'Native tabs', slug: 'manual/native-tabs' },
+            { label: 'AI completion (offline)', slug: 'manual/ai-completion' },
           ],
         },
         {

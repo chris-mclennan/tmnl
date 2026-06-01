@@ -1,0 +1,316 @@
+---
+title: Native tabs
+description: The structured-cell display surface that makes tmnl different — what native tabs are, how to launch them, and how to write an app that draws into one.
+---
+
+Most of what's interesting about tmnl is in this page.
+
+A regular terminal is a byte sink for ANSI escape codes. The app inside writes
+`\x1b[31mhi\x1b[0m`, the terminal parses those bytes back into "set fg to red,
+emit `h`, emit `i`, reset". Both sides have a cell grid in their head; they
+just communicate by serialising it and re-parsing.
+
+A **native tab** is a tab where that round-trip doesn't happen. The hosted app
+connects to tmnl over a Unix socket and ships typed `Frame` messages —
+`{ cells: [Cell { ch, fg, bg, attrs }, …] }` — directly into the same `Grid` the
+GPU pipeline draws. No `vt100`. No escape codes. The cells the app *intends*
+are the cells that hit the screen.
+
+Native and shell tabs live in the same window. You can have a shell tab next
+to a [mnml](https://mnml.sh) tab next to a [mixr](https://mixr.sh) tab; switch
+between them with `Cmd+1..9`; close them with `Cmd+W`. Native is just another
+kind of tab.
+
+## What a native tab actually is
+
+Concretely, a native tab is one process pair:
+
+- **tmnl (server)** owns the window, the `wgpu` cell pipeline, the glyph
+  atlas, and a `Grid` of `(ch, fg, bg, attrs)` cells for the tab.
+- **The backing app (client)** is a separate process, launched by tmnl, that
+  speaks the [`tmnl-protocol`](https://github.com/chris-mclennan/tmnl-protocol)
+  wire format over a Unix-domain socket.
+
+The traffic on the socket is small and explicit:
+
+| Message | Direction | Purpose |
+| --- | --- | --- |
+| `Hello { version }` | both | Handshake; current version is `4`. |
+| `Resize { cols, rows }` | tmnl → app | Grid dimensions; sent on connect and on every resize. |
+| `Frame { cols, rows, cursor, runs: [DiffRun] }` | app → tmnl | One frame of cells, optionally partial. |
+| `Input(Key \| Mouse)` | tmnl → app | Keyboard / mouse, typed and decoded already. |
+| `Title(String)` | app → tmnl | Set the tab-chip label. |
+| `Palette { bg, fg, accent }` | tmnl → app | Tmnl's chrome colors so the app can re-theme to match. |
+| `OpenPane { command, args }` | app → tmnl | Ask tmnl to open a sibling native tab (e.g. mnml's `mixr.show`). |
+| `OpenPaneTransfer { command, args }` | app → tmnl | Same shape as `OpenPane`, but with a pty master fd attached via `SCM_RIGHTS`. |
+| `Quit` | tmnl → app | Tear-down; sent on shutdown. |
+
+A `Frame` carries a list of `DiffRun { start, cells: [WireCell] }` — runs of
+consecutive cells starting at a flat `(row * cols + col)` offset. Sending one
+giant run that covers the whole grid is fine for a first cut (that's what
+[`hello_client.rs`](https://github.com/chris-mclennan/tmnl/blob/master/examples/hello_client.rs)
+does). Once your app knows which cells changed, you ship only those — the
+protocol is fine with hundreds of small runs per frame.
+
+The cursor lives on the `Frame`: `cursor_col`, `cursor_row`, `cursor_shape`
+(0 block, 1 underline, 2 bar), `cursor_visible`. Tmnl overlays it on the
+correct cell during render — the app doesn't draw the cursor glyph.
+
+## Why this matters
+
+Two practical wins, one design one.
+
+**Crisp text, GPU-native.** Cells go from the app's source-of-truth straight
+to a `wgpu` glyph atlas. No intermediate byte stream means no `vt100`
+ambiguity (wide chars, malformed escapes, OSC parsing edge cases), no
+double-buffered terminal-state machine, and no surprises at the seam between
+what the app intended and what the terminal painted.
+
+**Resize is just a number.** When the window resizes, tmnl sends one
+`Resize { cols, rows }` message. The app re-lays out for the new size and ships
+the next `Frame`. There's no `SIGWINCH` plumbing, no `ioctl(TIOCSWINSZ)`, no
+"wait for the inner app to notice the size has changed and stop drawing into
+nowhere". It's an inline message on the same socket.
+
+**The terminal stops being a translator.** Every TUI today thinks in cells,
+then serialises to ANSI, then a terminal parses the ANSI back into cells.
+Native mode skips both halves. For a `ratatui`-shaped app (which already has
+a `Buffer` of cells internally) the leap is one socket and a `BlitBackend`
+that ships its frames over the wire instead of through stdout.
+
+## Launching a native tab
+
+Two CLI flags spawn a native tab at startup:
+
+```sh
+tmnl --mnml [WORKSPACE]   # opens mnml as a native tab
+tmnl --mixr [ARGS…]       # opens mixr as a native tab
+```
+
+What happens under the hood (see
+[`src/main.rs`](https://github.com/chris-mclennan/tmnl/blob/master/src/main.rs)
+around `which_app` and `editor_template`):
+
+1. tmnl mints a Unix socket path — `<tempdir>/tmnl-<pid>.sock` for the first
+   tab, `<tempdir>/tmnl-<pid>-<nonce>.sock` for additional ones.
+2. It binds the socket (the `Server` in `src/server.rs`) and starts listening.
+3. It walks up its own exe's parent dirs looking for a sibling repo's binary
+   — `<…>/mnml/target/{release,debug}/mnml` or
+   `<…>/mixr-rs/target/{release,debug}/mixr`. The
+   `TMNL_LAUNCH_CMD` env var overrides the resolved path for `--mnml`.
+4. It spawns that binary with `--blit <socket>` appended, plus the per-app
+   defaults — `--input standard` for mnml, `--dashboard` for mixr.
+   `TMNL_LAUNCH_ARGS` overrides the defaults entirely.
+5. The child connects back over the socket, both sides exchange `Hello`, and
+   the tab goes live.
+
+If the binary isn't found, the tab still opens — tmnl prints the socket path
+and waits. You can connect any client to that path manually, which is
+exactly what `--no-launch` is for:
+
+```sh
+tmnl --mnml --no-launch
+# tmnl: --no-launch — start mnml manually with --blit /tmp/tmnl-12345.sock
+```
+
+Useful when you're developing a backing app and want to attach a fresh
+build between iterations.
+
+### What `Cmd+T` does
+
+Tmnl remembers what flavour of tab the window launched with — an
+`EditorTabTemplate` capturing the binary, workspace, and extra args. When you
+hit `Cmd+T`:
+
+- Launched with `--mnml`? `Cmd+T` opens another mnml tab, same workspace,
+  fresh socket.
+- Launched with `--mixr`? `Cmd+T` opens another mixr tab.
+- Launched as a plain shell? `Cmd+T` opens another shell tab.
+
+This is "every new tab is the same kind". If you want a *different* kind, you
+can mix flavours in one window by typing a command in a shell tab —
+`tmnl-style apps usually accept a `--blit` flag` — but the welcome screen's
+recents list (`~/.config/tmnl/recents.toml`, `1`–`9` to re-open) is the
+intended way to bring up a familiar TUI on a future session.
+
+## Side-by-side with shell tabs
+
+Native and shell tabs are peers. The tab strip mixes them freely:
+
+```
+[ ● mnml — repo ]  [ zsh ]  [ mixr ]  [ + ]
+```
+
+The keybindings are the same regardless of tab kind:
+
+| Action | Chord |
+| --- | --- |
+| Switch to tab N | `Cmd+1` … `Cmd+9` |
+| Next / prev tab | `Cmd+Shift+]` / `Cmd+Shift+[` |
+| New tab (same flavour) | `Cmd+T` |
+| Close tab | `Cmd+W` |
+
+`Cmd+W` deserves a note. In a *shell* tab it kills the pty. In a *native* tab
+it isn't intercepted by tmnl — it's forwarded to the hosted app as `Ctrl+W`,
+so e.g. mnml closes its focused buffer instead of tearing the whole tab down.
+If you want an unambiguous escape, `Cmd+Shift+[` / `Cmd+Shift+]` always
+switch tabs at the tmnl level regardless of who has focus.
+
+## Writing your own native-mode app
+
+The protocol is a single crate — `tmnl-protocol` — that you add as a
+dependency:
+
+```toml
+[dependencies]
+tmnl-protocol = { git = "https://github.com/chris-mclennan/tmnl-protocol" }
+```
+
+Then it's about 80 lines of glue. Connect to the socket, do the handshake,
+wait for the first `Resize`, ship `Frame`s, react to `Input`s. The full
+minimal example is
+[`examples/hello_client.rs`](https://github.com/chris-mclennan/tmnl/blob/master/examples/hello_client.rs)
+— here's its shape, edited for brevity:
+
+```rust
+let stream = UnixStream::connect(&socket)?;
+let mut writer = stream.try_clone()?;
+let mut reader = BufReader::new(stream);
+
+write_message(&mut writer, &Message::Hello { version: PROTOCOL_VERSION })?;
+write_message(&mut writer, &Message::Title("hello".to_string()))?;
+
+// Wait for the first Resize so we know the grid size.
+let (mut cols, mut rows) = loop {
+    match read_message(&mut reader)? {
+        Message::Resize(r) => break (r.cols, r.rows),
+        Message::Quit => return Ok(()),
+        _ => {}
+    }
+};
+
+// Render + react.
+render(&mut writer, cols, rows, &state, &mut seq)?;
+while let Ok(msg) = read_message(&mut reader) {
+    match msg {
+        Message::Resize(r) => { cols = r.cols; rows = r.rows; }
+        Message::Input(InputEvent::Key(k)) if k.press => match k.code {
+            KeyCode::Esc => break,
+            KeyCode::Char(c) => state.push(c),
+            _ => {}
+        },
+        Message::Quit => break,
+        _ => continue,
+    }
+    render(&mut writer, cols, rows, &state, &mut seq)?;
+}
+```
+
+For a `ratatui` app the integration is one extra step — wrap a
+`TestBackend` so its in-memory cell buffer ships over the wire after every
+draw. That's the "`BlitBackend` pattern": you keep using `ratatui`'s
+`Frame` / `Layout` / widgets exactly as before, the wrapper translates the
+backend's `Buffer` into a `tmnl_protocol::Frame` on flush. mnml's
+[`src/blit.rs`](https://github.com/chris-mclennan/mnml/blob/master/src/blit.rs)
+is the reference implementation; the same shape works for any
+`ratatui`-shaped TUI.
+
+### Smoke-testing without a GPU
+
+You can develop a backing app without ever launching the real tmnl. Two
+example binaries fake each side of the protocol:
+
+```sh
+# Terminal A — tmnl stub: binds the socket, scripts input, prints frames.
+cargo run --example fake_server -- /tmp/dev.sock
+
+# Terminal B — your app under development.
+cargo run -- --blit /tmp/dev.sock
+```
+
+`fake_server` runs in stdout instead of a window, so the frames your app
+ships are printable. Pair it with `fake_client` to exercise tmnl's
+server side without a backing app.
+
+The full protocol walkthrough — handshake, frame semantics, diff runs, partial
+updates — lives in
+[`docs/sdk-guide.md`](https://github.com/chris-mclennan/tmnl/blob/master/docs/sdk-guide.md).
+
+## Pty-fd handoff (advanced, Unix only)
+
+There's a second SCM_RIGHTS listener that exists for one specific trick: a
+backing app can hand a *running* pty session over to tmnl, and that pty
+keeps running inside a fresh shell tab.
+
+The use case lives in mnml: a `Pane::Pty` running `claude` or `codex` or
+just a shell gets "popped out" into its own tmnl tab without losing
+scrollback or restarting the child. From inside mnml you run `:tmnl.pop-pty`
+(alias `:tmnl.pop`). Under the hood:
+
+1. tmnl exports `TMNL_TRANSFER_SOCKET=<tempdir>/tmnl-<pid>-transfer.sock`
+   before any child `exec`, so backing apps inherit the path.
+2. tmnl binds that socket as a dedicated single-message listener
+   (`src/transfer.rs`).
+3. mnml's `:tmnl.pop-pty` opens the socket and calls
+   `send_message_with_fd(stream, OpenPaneTransfer { command, args }, Some(pty_master_fd))`.
+   The pty master fd rides via `SCM_RIGHTS` ancillary data on the same
+   `sendmsg(2)`.
+4. tmnl receives the message, takes ownership of the fd via
+   `ShellSession::adopt_fd`, and surfaces a new shell tab on the next tick.
+5. mnml marks its sender side as released so the pty session isn't killed
+   when the source pane closes.
+
+Why the dedicated socket? `SCM_RIGHTS` ancillary data can't be read through
+a `BufReader` — the streaming protocol connection uses one — so the
+handoff gets its own single-message socket.
+
+**Platform note.** `SCM_RIGHTS` is `AF_UNIX`-specific. The handoff helpers
+return `Unsupported` on Windows. The streaming protocol socket itself works
+on Windows via `uds_windows`, but pty-fd handoff is Unix-only.
+
+## Limitations — be honest
+
+Native mode isn't a drop-in replacement for shell mode. There are real
+constraints.
+
+- **Apps must be ratatui-shaped.** Native mode is for apps that think in a
+  bounded grid of `(ch, fg, bg, attrs)` cells — `ratatui` TUIs are the
+  canonical fit. A generic CLI tool that emits scrolling text doesn't have
+  a grid to ship; it'd have to invent one. Use a shell tab and let `vt100`
+  do its job.
+- **No image cells today.** The cell schema is character + fg + bg + attrs.
+  Image protocols (Sixel, Kitty graphics, iTerm2 inline images) aren't part
+  of `tmnl-protocol`. A typed image-cell extension is on the roadmap, not
+  shipped.
+- **Single client per tab.** A given native tab's socket accepts one
+  connection at a time — a second connection is refused with a warning. The
+  one-client-per-pane model is intentional; it keeps frame-ordering and
+  resize semantics simple.
+- **The SDK isn't published yet.** `tmnl-protocol` is on GitHub but not on
+  crates.io. Today you depend on it via a `git = …` Cargo dep. A published
+  crate plus a longer-form SDK guide are on the roadmap.
+- **No capability negotiation.** `Hello { version }` is a single integer.
+  Either both sides understand the version or they don't. Optional
+  features added after v3 (`Palette`, `OpenPane`, `OpenPaneTransfer`) are
+  detected by message tag — a renderer that doesn't know a tag rejects it
+  with `unknown msg type`. Real handshake-time capability negotiation is a
+  roadmap item.
+- **One window.** Tmnl is single-window today. Multiple windows is a
+  separate workstream from native mode.
+
+If your app fits the grid model and you want crisp text, GPU-native rendering,
+and no escape-code seam, native mode is the path. If you want to ship a
+sixel-rendering image viewer this week, shell mode is the path.
+
+## Where to go next
+
+- [`docs/sdk-guide.md`](https://github.com/chris-mclennan/tmnl/blob/master/docs/sdk-guide.md)
+  — the full protocol walkthrough.
+- [`examples/hello_client.rs`](https://github.com/chris-mclennan/tmnl/blob/master/examples/hello_client.rs)
+  — minimal, commented backing-app template.
+- [`tmnl-protocol`](https://github.com/chris-mclennan/tmnl-protocol)
+  — the wire-format crate.
+- [`mnml`](https://github.com/chris-mclennan/mnml) — the reference
+  client; `src/blit.rs` is the `BlitBackend` pattern for ratatui apps.
+- [FEATURES.md](https://github.com/chris-mclennan/tmnl/blob/master/FEATURES.md)
+  — the shipped-feature inventory and what's still on the roadmap.
