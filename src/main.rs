@@ -5,6 +5,7 @@ mod config;
 mod fim;
 mod grid;
 mod headless;
+mod help;
 mod keymap;
 mod launcher;
 mod layout;
@@ -242,6 +243,9 @@ struct App {
     /// [`crate::command`] registry at startup. See
     /// `docs/COMMAND_MIGRATION.md`.
     keymap: crate::keymap::Keymap,
+    /// Help overlay state. `Some` while the overlay is up; `None`
+    /// when closed. Toggled by `view.help` (default `cmd+shift+/`).
+    help: Option<crate::help::HelpState>,
     cursor_cell: (u16, u16),
     /// Raw cursor pixel position from the most recent `CursorMoved`.
     /// Cached so `MouseInput` can hit-test the strip region (where pixel
@@ -1885,6 +1889,7 @@ fn main() {
         gpu: None,
         mods: ModifiersState::empty(),
         keymap: crate::keymap::Keymap::build(),
+        help: None,
         cursor_cell: (0, 0),
         cursor_px: (0.0, 0.0),
         buttons_down: 0,

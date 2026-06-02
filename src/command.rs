@@ -425,6 +425,29 @@ fn builtin_commands() -> Vec<Command> {
             },
             when: Some(no_modal_open),
         },
+        // ⌘⇧/ — Toggle the help overlay (lists every chord in the
+        // registry, grouped by section). macOS Help-key convention.
+        Command {
+            id: "view.help",
+            title: "Toggle help overlay",
+            group: "View",
+            keys: &["cmd+shift+/", "cmd+?"],
+            run: |app, _el, _ke| {
+                if app.help.is_some() {
+                    app.help = None;
+                } else {
+                    app.help = Some(crate::help::HelpState::new());
+                }
+                if let Some(w) = &app.window {
+                    w.request_redraw();
+                }
+            },
+            // No `no_modal_open` guard — pressing ⌘⇧/ in any state
+            // toggles the overlay. (Welcome/settings/rename modals
+            // intercept the chord before try_dispatch runs anyway,
+            // since they have their own greedy handlers above.)
+            when: None,
+        },
         // ⌘I — AI completion of the current command line (Shell mode).
         Command {
             id: "ai.completion",

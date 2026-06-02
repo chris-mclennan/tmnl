@@ -1377,6 +1377,56 @@ impl App {
         self.relayout_all_panes();
     }
 
+    /// Route a keystroke into the help overlay. Returns true if the
+    /// key was consumed. Esc / `?` close; arrows + PageUp/PageDown
+    /// scroll. Greedy while the overlay is open so a stray ⌘T can't
+    /// open a tab behind it.
+    pub(crate) fn help_handle_key(&mut self, ke: &winit::event::KeyEvent) -> bool {
+        use winit::keyboard::{Key, NamedKey};
+        let Some(st) = self.help.as_mut() else {
+            return false;
+        };
+        let consumed = match &ke.logical_key {
+            Key::Named(NamedKey::Escape) => {
+                self.help = None;
+                true
+            }
+            Key::Character(s) if s.as_str() == "?" => {
+                self.help = None;
+                true
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                st.scroll(-1);
+                true
+            }
+            Key::Named(NamedKey::ArrowDown) => {
+                st.scroll(1);
+                true
+            }
+            Key::Character(s) if s.as_str() == "k" => {
+                st.scroll(-1);
+                true
+            }
+            Key::Character(s) if s.as_str() == "j" => {
+                st.scroll(1);
+                true
+            }
+            Key::Named(NamedKey::PageUp) => {
+                st.scroll(-10);
+                true
+            }
+            Key::Named(NamedKey::PageDown) => {
+                st.scroll(10);
+                true
+            }
+            _ => false,
+        };
+        if consumed && let Some(w) = &self.window {
+            w.request_redraw();
+        }
+        consumed
+    }
+
     /// Route a keystroke into the Settings modal. Returns true if the
     /// key was consumed (mode-specific handlers should skip it).
     fn settings_handle_key(&mut self, ke: &winit::event::KeyEvent) -> bool {
@@ -1565,6 +1615,11 @@ impl App {
         // Enter commits, Backspace deletes, everything else
         // types into the name.
         if self.renaming_tab.is_some() && self.rename_handle_key(&ke) {
+            return;
+        }
+        // Help overlay: Esc / ? close, arrows scroll. Greedy while
+        // open so a stray ⌘T doesn't open a tab behind it.
+        if self.help.is_some() && self.help_handle_key(&ke) {
             return;
         }
         // Command-registry dispatch — chords migrated to
@@ -1997,6 +2052,11 @@ impl App {
         // layering matches the conceptual stack).
         if let (Some(gpu), Some(st)) = (self.gpu.as_mut(), self.welcome.as_ref()) {
             crate::welcome::draw(&mut gpu.grid, st);
+        }
+        // Help overlay — toggled by `view.help` (default ⌘⇧/).
+        // Painted last so it sits above settings + welcome.
+        if let (Some(gpu), Some(st)) = (self.gpu.as_mut(), self.help.as_ref()) {
+            crate::help::draw(&mut gpu.grid, st);
         }
         if let Some(gpu) = &mut self.gpu {
             gpu.render();
