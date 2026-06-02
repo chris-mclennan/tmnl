@@ -35,22 +35,56 @@ emulator hosting tabs. Modal contexts: welcome overlay, settings panel,
 tab rename, focus arrows. Each is its own early-return at the top of
 `handle_keyboard_input` (line 1548 in `src/app.rs`).
 
-## Plan
+## Status: **complete** ✓
 
-1. **Phase 1 (done)**: Foundation files + App.keymap field.
-2. **Phase 2**: Wire `try_dispatch` at the top of
-   `handle_keyboard_input` (after the three modal early-returns and
-   before the `if self.mods.super_key() && ...` Cmd-chord block).
-3. **Phase 3**: Migrate Cmd chords one at a time. Each migration
-   adds a `Command` entry + deletes the matching arm. Estimated 15-20
-   chords total for tmnl (much smaller surface than mixr's 100+).
-4. **Phase 4**: Help overlay generation — `help_rows()` already
-   exists; once enough commands are registered, build a help screen
-   that walks it.
+All Cmd-prefixed chords + ⌘⌥+Arrow + ⌘I/⌘K + Shift+PgUp/Dn
+migrated. **39 commands** total in the registry. The legacy
+`if self.mods.super_key() && ... { match (c, shift) { ... } }`
+block in `handle_keyboard_input` is gone — a marker comment is
+all that's left.
 
-## Modal handlers staying put
+### Commands by group
 
-Like mixr, tmnl has modal contexts that need to greedily capture
-keys: `welcome_handle_key`, `settings_handle_key`,
-`rename_handle_key`. These won't migrate — they're inherently
-greedy.
+| Group              | Commands |
+|--------------------|----------|
+| Tabs               | tab.new, tab.close_or_forward, tab.goto_1..9, tab.cycle_back, tab.cycle_forward |
+| Splits             | pane.close, split.right, split.down, focus.left/right/up/down |
+| View               | view.zoom_in/out/reset, scroll.page_up/down |
+| AI                 | ai.completion, ai.generate |
+| Forwarded chords   | fwd.cmd_z/x/c/v/a/s/f/n/p/b/g/slash |
+
+Each Command has:
+- `id` — namespaced identifier (`tab.goto_3`)
+- `title` — user-facing description for help
+- `group` — section in help/palette
+- `keys` — default chord(s) as strings (`"cmd+shift+w"`)
+- `run: fn(&mut App, &ActiveEventLoop, &KeyEvent)` — handler
+- `when: Option<fn(&App) -> bool>` — context guard
+
+### Modal handlers staying put
+
+Like mixr, tmnl has modal contexts that greedily capture keys
+and **intentionally don't migrate**:
+
+- `welcome_handle_key` (welcome overlay)
+- `settings_handle_key` (settings panel)
+- `rename_handle_key` (tab title editing)
+- The per-pane forwarding match in `handle_keyboard_input` for
+  Shell/Native key dispatch (ordinary character typing → pty or
+  protocol server, ghost-suggestion handling, etc.)
+
+These aren't chords — they're modal text input that absorbs every
+keystroke. A single fn-pointer `Command` doesn't model that. The
+modal handler shape is the right answer for them.
+
+### Future work
+
+- Help screen UI (registry already populates via `help_rows()`,
+  just needs a panel to render into — `view.help` command stub
+  could open a centered overlay similar to mnml's).
+- Command palette (filter the registry by title/id and run on
+  Enter — would replace the native macOS menu bar's shortcut
+  hints with an in-app discoverable list).
+- Custom rebinding via `~/.config/tmnl/keys.toml` — the
+  multi-value keymap already supports config-driven overlays
+  (same as mixr/mnml); just needs a config schema + parse step.
