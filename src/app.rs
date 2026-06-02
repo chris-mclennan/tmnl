@@ -119,7 +119,7 @@ impl App {
     /// (`editor_template == None` ⇒ falls back to a shell tab so ⌘T
     /// still does something sensible). The new tab's pane owns its
     /// own grid, sized to the current window.
-    fn new_native_tab(&mut self) {
+    pub(crate) fn new_native_tab(&mut self) {
         let Some(tmpl) = self.editor_template.clone() else {
             // Fall back to a shell tab — gives ⌘T a sensible behavior
             // in shell-mode windows.
@@ -267,7 +267,7 @@ impl App {
     /// Append a fresh shell tab and switch to it. The new tab's pane
     /// owns its own grid, sized to the current window; spawn failures
     /// leave the existing active tab in place and toast to stderr.
-    fn new_shell_tab(&mut self) {
+    pub(crate) fn new_shell_tab(&mut self) {
         let (cols, rows) = match self.gpu.as_ref() {
             Some(gpu) => (gpu.grid.cols, gpu.grid.rows),
             None => return,
@@ -1567,6 +1567,12 @@ impl App {
         if self.renaming_tab.is_some() && self.rename_handle_key(&ke) {
             return;
         }
+        // Command-registry dispatch — chords migrated to
+        // `crate::command::builtin_commands` are handled here. See
+        // `docs/COMMAND_MIGRATION.md`.
+        if crate::command::try_dispatch(&ke, self, event_loop) {
+            return;
+        }
         // Tab-management chords: ⌘T new, ⌘W close, ⌘1..⌘9 jump,
         // ⌘⇧[ / ⌘⇧] cycle. macOS Terminal / iTerm / Safari
         // conventions. Cmd = winit's `super_key()`. Intercept
@@ -1578,20 +1584,9 @@ impl App {
             let c = s.chars().next();
             let shift = self.mods.shift_key();
             match (c, shift) {
-                (Some('t'), false) => {
-                    // ⌘T spawns the same kind of tab the window
-                    // launched with — Native when --editor was
-                    // set, shell otherwise.
-                    if self.editor_template.is_some() {
-                        self.new_native_tab();
-                    } else {
-                        self.new_shell_tab();
-                    }
-                    if let Some(w) = &self.window {
-                        w.request_redraw();
-                    }
-                    return;
-                }
+                // ⌘T (new tab) migrated to `tab.new` in
+                // `command::builtin_commands` — handled by
+                // `try_dispatch` above.
                 (Some('w'), true) => {
                     // ⌘⇧W — close the focused split pane. Its
                     // split collapses so the sibling takes the

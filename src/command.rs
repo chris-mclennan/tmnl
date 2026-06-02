@@ -132,7 +132,24 @@ fn no_modal_open(app: &App) -> bool {
 /// `docs/COMMAND_MIGRATION.md`.
 fn builtin_commands() -> Vec<Command> {
     vec![
-        // (no commands migrated yet — start by registering one and
-        // deleting its corresponding arm in handle_keyboard_input)
+        // ⌘T — new tab of the same kind the window launched with
+        // (Native when --editor was set, shell otherwise).
+        Command {
+            id: "tab.new",
+            title: "New tab",
+            group: "Tabs",
+            keys: &["cmd+t"],
+            run: |app, _event_loop| {
+                if app.editor_template.is_some() {
+                    app.new_native_tab();
+                } else {
+                    app.new_shell_tab();
+                }
+                if let Some(w) = &app.window {
+                    w.request_redraw();
+                }
+            },
+            when: Some(no_modal_open),
+        },
     ]
 }
