@@ -151,5 +151,116 @@ fn builtin_commands() -> Vec<Command> {
             },
             when: Some(no_modal_open),
         },
+        // ⌘⇧W — close the focused split pane (collapses split if
+        // siblings remain; closes tab if last pane).
+        Command {
+            id: "pane.close",
+            title: "Close focused split pane",
+            group: "Splits",
+            keys: &["cmd+shift+w"],
+            run: |app, event_loop| {
+                app.close_focused_pane(event_loop);
+                if let Some(w) = &app.window {
+                    w.request_redraw();
+                }
+            },
+            when: Some(no_modal_open),
+        },
+        // ⌘D — split focused pane right (new shell pane).
+        Command {
+            id: "split.right",
+            title: "Split right",
+            group: "Splits",
+            keys: &["cmd+d"],
+            run: |app, _event_loop| {
+                app.split_active_pane(crate::layout::SplitDir::Vertical);
+                if let Some(w) = &app.window {
+                    w.request_redraw();
+                }
+            },
+            when: Some(no_modal_open),
+        },
+        // ⌘⇧D — split focused pane down.
+        Command {
+            id: "split.down",
+            title: "Split down",
+            group: "Splits",
+            keys: &["cmd+shift+d"],
+            run: |app, _event_loop| {
+                app.split_active_pane(crate::layout::SplitDir::Horizontal);
+                if let Some(w) = &app.window {
+                    w.request_redraw();
+                }
+            },
+            when: Some(no_modal_open),
+        },
+        // ⌘⇧[ — cycle tab backward.
+        Command {
+            id: "tab.cycle_back",
+            title: "Cycle to previous tab",
+            group: "Tabs",
+            keys: &["cmd+shift+["],
+            run: |app, _event_loop| {
+                app.cycle_tab(false);
+                if let Some(w) = &app.window {
+                    w.request_redraw();
+                }
+            },
+            when: Some(no_modal_open),
+        },
+        // ⌘⇧] — cycle tab forward.
+        Command {
+            id: "tab.cycle_forward",
+            title: "Cycle to next tab",
+            group: "Tabs",
+            keys: &["cmd+shift+]"],
+            run: |app, _event_loop| {
+                app.cycle_tab(true);
+                if let Some(w) = &app.window {
+                    w.request_redraw();
+                }
+            },
+            when: Some(no_modal_open),
+        },
+        // Font zoom: ⌘= / ⌘+ in, ⌘- / ⌘_ out, ⌘0 reset.
+        Command {
+            id: "view.zoom_in",
+            title: "Zoom font in",
+            group: "View",
+            keys: &["cmd+=", "cmd+shift+="],
+            run: |app, _event_loop| {
+                app.zoom_font(crate::FONT_ZOOM_STEP);
+                if let Some(w) = &app.window {
+                    w.request_redraw();
+                }
+            },
+            when: Some(no_modal_open),
+        },
+        Command {
+            id: "view.zoom_out",
+            title: "Zoom font out",
+            group: "View",
+            keys: &["cmd+-", "cmd+shift+-"],
+            run: |app, _event_loop| {
+                app.zoom_font(-crate::FONT_ZOOM_STEP);
+                if let Some(w) = &app.window {
+                    w.request_redraw();
+                }
+            },
+            when: Some(no_modal_open),
+        },
+        Command {
+            id: "view.zoom_reset",
+            title: "Reset font zoom",
+            group: "View",
+            keys: &["cmd+0"],
+            run: |app, _event_loop| {
+                app.reset_font_zoom();
+                if let Some(w) = &app.window {
+                    w.request_redraw();
+                }
+            },
+            when: Some(no_modal_open),
+        },
     ]
 }

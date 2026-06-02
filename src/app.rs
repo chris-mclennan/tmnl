@@ -301,7 +301,7 @@ impl App {
     /// Active index clamps to a valid position; Mode resources drop
     /// when their Tab is removed (Launcher::Drop kills the spawned
     /// client; ShellSession's reader thread joins via its own Drop).
-    fn close_active_tab(&mut self, event_loop: &ActiveEventLoop) {
+    pub(crate) fn close_active_tab(&mut self, event_loop: &ActiveEventLoop) {
         self.close_tab_at(self.active, event_loop);
     }
 
@@ -336,7 +336,7 @@ impl App {
     }
 
     /// Switch to tab `idx` (0-based). No-op if out of range.
-    fn switch_to_tab(&mut self, idx: usize) {
+    pub(crate) fn switch_to_tab(&mut self, idx: usize) {
         if idx >= self.tabs.len() || idx == self.active {
             return;
         }
@@ -347,7 +347,7 @@ impl App {
     /// Rebuild the atlas at a new font-zoom level (relative step). After
     /// resizing the grid the new cell dims are forwarded to every pane's
     /// session so the hosted shell / mnml repaints at the new dimensions.
-    fn zoom_font(&mut self, delta: f32) {
+    pub(crate) fn zoom_font(&mut self, delta: f32) {
         let Some(gpu) = self.gpu.as_mut() else {
             return;
         };
@@ -357,7 +357,7 @@ impl App {
     }
 
     /// Reset the font zoom to 1.0 (⌘0). Same resize plumbing as `zoom_font`.
-    fn reset_font_zoom(&mut self) {
+    pub(crate) fn reset_font_zoom(&mut self) {
         let Some(gpu) = self.gpu.as_mut() else {
             return;
         };
@@ -374,7 +374,7 @@ impl App {
     }
 
     /// Cycle to the next (`forward=true`) / previous tab, wrapping.
-    fn cycle_tab(&mut self, forward: bool) {
+    pub(crate) fn cycle_tab(&mut self, forward: bool) {
         if self.tabs.len() <= 1 {
             return;
         }
@@ -439,7 +439,7 @@ impl App {
     /// Split the focused pane — a fresh shell pane takes half its area.
     /// `SplitDir::Vertical` puts the new pane to the right, `Horizontal`
     /// below. The new pane takes focus.
-    fn split_active_pane(&mut self, dir: SplitDir) {
+    pub(crate) fn split_active_pane(&mut self, dir: SplitDir) {
         let (cols, rows) = match self.gpu.as_ref() {
             Some(gpu) => (gpu.grid.cols, gpu.grid.rows),
             None => return,
@@ -557,7 +557,7 @@ impl App {
     /// Close the focused pane — its split collapses so the sibling
     /// takes the freed space. Closing a tab's last pane closes the
     /// whole tab.
-    fn close_focused_pane(&mut self, event_loop: &ActiveEventLoop) {
+    pub(crate) fn close_focused_pane(&mut self, event_loop: &ActiveEventLoop) {
         if self.tabs[self.active].panes.len() <= 1 {
             self.close_active_tab(event_loop);
             return;
@@ -1587,36 +1587,9 @@ impl App {
                 // ⌘T (new tab) migrated to `tab.new` in
                 // `command::builtin_commands` — handled by
                 // `try_dispatch` above.
-                (Some('w'), true) => {
-                    // ⌘⇧W — close the focused split pane. Its
-                    // split collapses so the sibling takes the
-                    // freed space; closing the tab's last pane
-                    // closes the whole tab.
-                    self.close_focused_pane(event_loop);
-                    if let Some(w) = &self.window {
-                        w.request_redraw();
-                    }
-                    return;
-                }
-                (Some('d'), false) => {
-                    // ⌘D — split the focused pane right (a fresh
-                    // shell pane to the right). tmnl-level —
-                    // never forwarded to the hosted process.
-                    self.split_active_pane(SplitDir::Vertical);
-                    if let Some(w) = &self.window {
-                        w.request_redraw();
-                    }
-                    return;
-                }
-                (Some('d'), true) => {
-                    // ⌘⇧D — split the focused pane down (a fresh
-                    // shell pane below).
-                    self.split_active_pane(SplitDir::Horizontal);
-                    if let Some(w) = &self.window {
-                        w.request_redraw();
-                    }
-                    return;
-                }
+                // ⌘⇧W (close pane) → pane.close,
+                // ⌘D (split right) → split.right,
+                // ⌘⇧D (split down) → split.down. Migrated.
                 (Some('w'), false) => {
                     // Native (mnml) tabs: forward ⌘W as ⌃W so the
                     // host process closes its active buffer/pane
@@ -1682,45 +1655,9 @@ impl App {
                     }
                     return;
                 }
-                (Some('['), true) => {
-                    self.cycle_tab(false);
-                    if let Some(w) = &self.window {
-                        w.request_redraw();
-                    }
-                    return;
-                }
-                (Some(']'), true) => {
-                    self.cycle_tab(true);
-                    if let Some(w) = &self.window {
-                        w.request_redraw();
-                    }
-                    return;
-                }
-                // Font zoom: ⌘+ / ⌘= zoom in (both share the
-                // physical key — `=` unmodified, `+` with shift),
-                // ⌘- zoom out, ⌘0 reset. macOS Terminal / iTerm /
-                // browser convention.
-                (Some('='), _) | (Some('+'), _) => {
-                    self.zoom_font(FONT_ZOOM_STEP);
-                    if let Some(w) = &self.window {
-                        w.request_redraw();
-                    }
-                    return;
-                }
-                (Some('-'), false) | (Some('_'), _) => {
-                    self.zoom_font(-FONT_ZOOM_STEP);
-                    if let Some(w) = &self.window {
-                        w.request_redraw();
-                    }
-                    return;
-                }
-                (Some('0'), false) => {
-                    self.reset_font_zoom();
-                    if let Some(w) = &self.window {
-                        w.request_redraw();
-                    }
-                    return;
-                }
+                // ⌘⇧[ / ⌘⇧] (cycle tab) → tab.cycle_back / .forward,
+                // ⌘= / ⌘+ / ⌘- / ⌘_ / ⌘0 (font zoom) → view.zoom_*.
+                // All migrated.
                 // Mac-style editing chords → translate to Ctrl-equivalent
                 // for the hosted Native client (mnml understands Ctrl+Z
                 // as undo, Ctrl+C/V/X/A/S/F for clipboard/select-all/
