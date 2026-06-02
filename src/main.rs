@@ -1,9 +1,11 @@
 mod app;
 mod atlas;
+mod command;
 mod config;
 mod fim;
 mod grid;
 mod headless;
+mod keymap;
 mod launcher;
 mod layout;
 mod menu;
@@ -236,6 +238,10 @@ struct App {
     window: Option<Arc<Window>>,
     gpu: Option<Gpu>,
     mods: ModifiersState,
+    /// Resolved key bindings — chord → command id. Built from the
+    /// [`crate::command`] registry at startup. See
+    /// `docs/COMMAND_MIGRATION.md`.
+    keymap: crate::keymap::Keymap,
     cursor_cell: (u16, u16),
     /// Raw cursor pixel position from the most recent `CursorMoved`.
     /// Cached so `MouseInput` can hit-test the strip region (where pixel
@@ -1878,6 +1884,7 @@ fn main() {
         window: None,
         gpu: None,
         mods: ModifiersState::empty(),
+        keymap: crate::keymap::Keymap::build(),
         cursor_cell: (0, 0),
         cursor_px: (0.0, 0.0),
         buttons_down: 0,

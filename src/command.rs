@@ -1,0 +1,138 @@
+//! The tmnl command registry — the spine the help overlay, command
+//! palette (later), and tab-management chords hang off of.
+//!
+//! Each [`Command`] is a named, group-tagged action with optional
+//! default keys and a `fn(&mut App, &ActiveEventLoop)` handler. The
+//! registry is process-global (`OnceLock`) and built once at startup
+//! from [`builtin_commands`].
+//!
+//! Mirrors mnml's `command.rs` shape so the family stays structurally
+//! similar — the help overlay (in `app::help`) reads this registry
+//! plus the resolved [`crate::keymap::Keymap`] to render its
+//! `<chord>  <title>` rows. See `docs/COMMAND_MIGRATION.md`.
+
+#![allow(dead_code)]
+
+use std::collections::HashMap;
+use std::sync::OnceLock;
+
+use winit::event::KeyEvent;
+use winit::event_loop::ActiveEventLoop;
+
+use crate::App;
+
+pub type CommandFn = fn(&mut App, &ActiveEventLoop);
+/// Context predicate. Returns true when the command is eligible to
+/// fire for the current `App` state. `None` ⇒ "always eligible"
+/// (rare; most tmnl chords have at least a "no modal open" guard).
+pub type WhenFn = fn(&App) -> bool;
+
+#[derive(Clone)]
+pub struct Command {
+    pub id: &'static str,
+    pub title: &'static str,
+    /// Help-overlay section (e.g. `"Tabs"`, `"Splits"`, `"View"`).
+    pub group: &'static str,
+    /// Default keyspecs (`"cmd+t"`, `"cmd+shift+w"`, `"cmd+1"`, …).
+    /// [`crate::keymap::Keymap`] parses these.
+    pub keys: &'static [&'static str],
+    pub run: CommandFn,
+    pub when: Option<WhenFn>,
+}
+
+impl Command {
+    pub fn key_hint(&self) -> String {
+        self.keys.join(" / ")
+    }
+}
+
+pub struct Registry {
+    commands: Vec<Command>,
+    by_id: HashMap<&'static str, usize>,
+}
+
+impl Registry {
+    fn build() -> Self {
+        let commands = builtin_commands();
+        let by_id = commands
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (c.id, i))
+            .collect();
+        Registry { commands, by_id }
+    }
+
+    pub fn get(&self, id: &str) -> Option<&Command> {
+        self.by_id.get(id).map(|&i| &self.commands[i])
+    }
+
+    pub fn all(&self) -> &[Command] {
+        &self.commands
+    }
+}
+
+pub fn registry() -> &'static Registry {
+    static R: OnceLock<Registry> = OnceLock::new();
+    R.get_or_init(Registry::build)
+}
+
+/// Walk the registry and yield `(keys, title, group)` rows for every
+/// command with a non-empty default `keys`. The `keys` field is the
+/// joined display form (`"cmd+t / cmd+n"`). Used by the help overlay
+/// to auto-generate rows.
+pub fn help_rows() -> Vec<(String, &'static str, &'static str)> {
+    registry()
+        .all()
+        .iter()
+        .filter(|c| !c.keys.is_empty())
+        .map(|c| (c.keys.join(" / "), c.title, c.group))
+        .collect()
+}
+
+/// Look up `key` + `app.mods` in `app.keymap`, resolve the resulting
+/// id in the registry, check the command's `when` guard, and run it.
+/// Returns `true` when dispatched.
+///
+/// Takes `&mut App` (not a separate `&Keymap`) because `Keymap` lives
+/// inside `App` and Rust can't split-borrow it from the rest of the
+/// struct. We resolve to an owned `String` to drop the keymap borrow
+/// before calling the handler.
+pub fn try_dispatch(key: &KeyEvent, app: &mut App, event_loop: &ActiveEventLoop) -> bool {
+    let mods = app.mods;
+    let ids: Vec<String> = app.keymap.resolve_all(key, mods).to_vec();
+    if ids.is_empty() {
+        return false;
+    }
+    for id in &ids {
+        let Some(cmd) = registry().get(id) else {
+            continue;
+        };
+        let when = cmd.when;
+        let run = cmd.run;
+        if let Some(w) = when
+            && !w(app)
+        {
+            continue;
+        }
+        run(app, event_loop);
+        return true;
+    }
+    false
+}
+
+/// True when no modal overlay is capturing keystrokes — safe to
+/// dispatch tab-management chords. The default guard for tmnl
+/// chord migrations.
+fn no_modal_open(app: &App) -> bool {
+    app.welcome.is_none() && app.settings.is_none() && app.renaming_tab.is_none()
+}
+
+/// Initial command set — `Cmd`-prefixed tab/split management chords.
+/// Migrating one at a time from `app.rs::handle_keyboard_input`. See
+/// `docs/COMMAND_MIGRATION.md`.
+fn builtin_commands() -> Vec<Command> {
+    vec![
+        // (no commands migrated yet — start by registering one and
+        // deleting its corresponding arm in handle_keyboard_input)
+    ]
+}
