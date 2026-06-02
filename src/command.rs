@@ -120,6 +120,33 @@ pub fn try_dispatch(key: &KeyEvent, app: &mut App, event_loop: &ActiveEventLoop)
     false
 }
 
+/// Forward the current key event to the focused Native pane with
+/// Cmd → Ctrl modifier remap. Used by Mac-style editing chords
+/// (⌘Z/X/C/V/A/S/F/N/P/B/G/⌘/) so mnml's standard-mode bindings
+/// (Ctrl+...) light up under Mac muscle memory. No-op for Shell
+/// tabs (they're bare terminals where the OS already handles
+/// Cmd-clipboard).
+fn forward_as_ctrl(app: &mut App, ke: &winit::event::KeyEvent) {
+    use crate::PaneKind;
+    use crate::protocol::{InputEvent, KeyInput};
+    if !matches!(
+        &app.tabs[app.active].focused_pane().kind,
+        PaneKind::Native { .. }
+    ) {
+        return;
+    }
+    let translated_mods = crate::pack_mods_cmd_to_ctrl(app.mods);
+    if let PaneKind::Native { server, .. } = &mut app.tabs[app.active].focused_pane_mut().kind
+        && let Some(code) = crate::translate_key(&ke.logical_key, app.mods)
+    {
+        server.send_input(&InputEvent::Key(KeyInput {
+            code,
+            mods: translated_mods,
+            press: true,
+        }));
+    }
+}
+
 /// Tab N (0-indexed): Native tabs forward as ⌥(digit+1) so mnml's
 /// `tab.goto_N` chord switches mnml tab pages; Shell tabs switch
 /// tmnl tabs.
@@ -394,6 +421,217 @@ fn builtin_commands() -> Vec<Command> {
                 app.reset_font_zoom();
                 if let Some(w) = &app.window {
                     w.request_redraw();
+                }
+            },
+            when: Some(no_modal_open),
+        },
+        // ⌘I — AI completion of the current command line (Shell mode).
+        Command {
+            id: "ai.completion",
+            title: "AI: complete current command line",
+            group: "AI",
+            keys: &["cmd+i"],
+            run: |app, _el, _ke| app.trigger_ai_completion(),
+            when: Some(no_modal_open),
+        },
+        // ⌘K — Generate a command from a typed description.
+        Command {
+            id: "ai.generate",
+            title: "AI: generate command from description",
+            group: "AI",
+            keys: &["cmd+k"],
+            run: |app, _el, _ke| app.trigger_ai_generate(),
+            when: Some(no_modal_open),
+        },
+        // ⌘⌥ + Arrow — focus the split pane in that direction.
+        // Works in both Shell and Native tabs (consumed locally).
+        Command {
+            id: "focus.left",
+            title: "Focus pane ←",
+            group: "Splits",
+            keys: &["cmd+alt+left"],
+            run: |app, _el, _ke| {
+                app.focus_dir(crate::FocusDir::Left);
+                if let Some(w) = &app.window {
+                    w.request_redraw();
+                }
+            },
+            when: Some(no_modal_open),
+        },
+        Command {
+            id: "focus.right",
+            title: "Focus pane →",
+            group: "Splits",
+            keys: &["cmd+alt+right"],
+            run: |app, _el, _ke| {
+                app.focus_dir(crate::FocusDir::Right);
+                if let Some(w) = &app.window {
+                    w.request_redraw();
+                }
+            },
+            when: Some(no_modal_open),
+        },
+        Command {
+            id: "focus.up",
+            title: "Focus pane ↑",
+            group: "Splits",
+            keys: &["cmd+alt+up"],
+            run: |app, _el, _ke| {
+                app.focus_dir(crate::FocusDir::Up);
+                if let Some(w) = &app.window {
+                    w.request_redraw();
+                }
+            },
+            when: Some(no_modal_open),
+        },
+        Command {
+            id: "focus.down",
+            title: "Focus pane ↓",
+            group: "Splits",
+            keys: &["cmd+alt+down"],
+            run: |app, _el, _ke| {
+                app.focus_dir(crate::FocusDir::Down);
+                if let Some(w) = &app.window {
+                    w.request_redraw();
+                }
+            },
+            when: Some(no_modal_open),
+        },
+        // Mac-style editing/navigation chords — translated to
+        // Ctrl-equivalent and forwarded to the focused Native pane.
+        // Shell tabs fall through to the bare terminal (which the OS
+        // already handles for ⌘C/V copy/paste).
+        Command {
+            id: "fwd.cmd_z",
+            title: "Undo (⌘Z → ⌃Z forwarded to Native)",
+            group: "Forwarded chords",
+            keys: &["cmd+z"],
+            run: |a, _, k| forward_as_ctrl(a, k),
+            when: Some(no_modal_open),
+        },
+        Command {
+            id: "fwd.cmd_x",
+            title: "Cut (⌘X → ⌃X)",
+            group: "Forwarded chords",
+            keys: &["cmd+x"],
+            run: |a, _, k| forward_as_ctrl(a, k),
+            when: Some(no_modal_open),
+        },
+        Command {
+            id: "fwd.cmd_c",
+            title: "Copy (⌘C → ⌃C)",
+            group: "Forwarded chords",
+            keys: &["cmd+c"],
+            run: |a, _, k| forward_as_ctrl(a, k),
+            when: Some(no_modal_open),
+        },
+        Command {
+            id: "fwd.cmd_v",
+            title: "Paste (⌘V → ⌃V)",
+            group: "Forwarded chords",
+            keys: &["cmd+v"],
+            run: |a, _, k| forward_as_ctrl(a, k),
+            when: Some(no_modal_open),
+        },
+        Command {
+            id: "fwd.cmd_a",
+            title: "Select all (⌘A → ⌃A)",
+            group: "Forwarded chords",
+            keys: &["cmd+a"],
+            run: |a, _, k| forward_as_ctrl(a, k),
+            when: Some(no_modal_open),
+        },
+        Command {
+            id: "fwd.cmd_s",
+            title: "Save (⌘S → ⌃S)",
+            group: "Forwarded chords",
+            keys: &["cmd+s"],
+            run: |a, _, k| forward_as_ctrl(a, k),
+            when: Some(no_modal_open),
+        },
+        Command {
+            id: "fwd.cmd_f",
+            title: "Find (⌘F → ⌃F)",
+            group: "Forwarded chords",
+            keys: &["cmd+f"],
+            run: |a, _, k| forward_as_ctrl(a, k),
+            when: Some(no_modal_open),
+        },
+        Command {
+            id: "fwd.cmd_n",
+            title: "New (⌘N → ⌃N)",
+            group: "Forwarded chords",
+            keys: &["cmd+n"],
+            run: |a, _, k| forward_as_ctrl(a, k),
+            when: Some(no_modal_open),
+        },
+        Command {
+            id: "fwd.cmd_p",
+            title: "File picker (⌘P → ⌃P)",
+            group: "Forwarded chords",
+            keys: &["cmd+p"],
+            run: |a, _, k| forward_as_ctrl(a, k),
+            when: Some(no_modal_open),
+        },
+        Command {
+            id: "fwd.cmd_b",
+            title: "Toggle tree (⌘B → ⌃B)",
+            group: "Forwarded chords",
+            keys: &["cmd+b"],
+            run: |a, _, k| forward_as_ctrl(a, k),
+            when: Some(no_modal_open),
+        },
+        Command {
+            id: "fwd.cmd_g",
+            title: "Goto line (⌘G → ⌃G)",
+            group: "Forwarded chords",
+            keys: &["cmd+g"],
+            run: |a, _, k| forward_as_ctrl(a, k),
+            when: Some(no_modal_open),
+        },
+        Command {
+            id: "fwd.cmd_slash",
+            title: "Toggle comment (⌘/ → ⌃/)",
+            group: "Forwarded chords",
+            keys: &["cmd+/"],
+            run: |a, _, k| forward_as_ctrl(a, k),
+            when: Some(no_modal_open),
+        },
+        // Shift+PageUp / Shift+PageDown — scroll shell scrollback.
+        Command {
+            id: "scroll.page_up",
+            title: "Scroll up (shell scrollback)",
+            group: "View",
+            keys: &["shift+pageup"],
+            run: |app, _el, _ke| {
+                use crate::PaneKind;
+                let page = app
+                    .gpu
+                    .as_ref()
+                    .map_or(20, |g| g.grid.rows.saturating_sub(1) as i32);
+                if let PaneKind::Shell { session: Some(s) } =
+                    &mut app.tabs[app.active].focused_pane_mut().kind
+                {
+                    s.scroll(page);
+                }
+            },
+            when: Some(no_modal_open),
+        },
+        Command {
+            id: "scroll.page_down",
+            title: "Scroll down (shell scrollback)",
+            group: "View",
+            keys: &["shift+pagedown"],
+            run: |app, _el, _ke| {
+                use crate::PaneKind;
+                let page = app
+                    .gpu
+                    .as_ref()
+                    .map_or(20, |g| g.grid.rows.saturating_sub(1) as i32);
+                if let PaneKind::Shell { session: Some(s) } =
+                    &mut app.tabs[app.active].focused_pane_mut().kind
+                {
+                    s.scroll(-page);
                 }
             },
             when: Some(no_modal_open),

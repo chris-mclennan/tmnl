@@ -10,7 +10,7 @@ use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::Key;
 use winit::window::{Window, WindowId};
 
 use crate::*;
@@ -580,7 +580,7 @@ impl App {
 
     /// Move keyboard focus to the pane nearest the focused one in
     /// `dir`. No-op if there's no pane in that direction.
-    fn focus_dir(&mut self, dir: FocusDir) {
+    pub(crate) fn focus_dir(&mut self, dir: FocusDir) {
         let (cols, rows) = match self.gpu.as_ref() {
             Some(gpu) => (gpu.grid.cols, gpu.grid.rows),
             None => return,
@@ -645,7 +645,7 @@ impl App {
     /// ⌘I — request an AI continuation of the current command line.
     /// No-op without an OSC 133 anchor (integration snippet not
     /// installed).
-    fn trigger_ai_completion(&mut self) {
+    pub(crate) fn trigger_ai_completion(&mut self) {
         let Some(prefix) = self.command_line() else {
             return;
         };
@@ -671,7 +671,7 @@ impl App {
     /// description typed on the command line (Stage 2). The reply is
     /// previewed on the row below; accepting it erases the description
     /// and types the command.
-    fn trigger_ai_generate(&mut self) {
+    pub(crate) fn trigger_ai_generate(&mut self) {
         let Some(raw) = self.command_line() else {
             return;
         };
@@ -1159,7 +1159,7 @@ impl App {
         if self.welcome.is_none() {
             return false;
         }
-        use winit::keyboard::{Key, NamedKey};
+        use winit::keyboard::Key;
         match &ke.logical_key {
             Key::Named(NamedKey::Escape) => {
                 self.welcome = None;
@@ -1383,7 +1383,7 @@ impl App {
         let Some(st) = self.settings.as_mut() else {
             return false;
         };
-        use winit::keyboard::{Key, NamedKey};
+        use winit::keyboard::Key;
         match &ke.logical_key {
             Key::Named(NamedKey::Escape) => {
                 let original = st.original.clone();
@@ -1480,7 +1480,7 @@ impl App {
     /// leak to the hosted process. `false` ⇒ no rename in progress,
     /// the caller handles the key normally.
     fn rename_handle_key(&mut self, ke: &winit::event::KeyEvent) -> bool {
-        use winit::keyboard::{Key, NamedKey};
+        use winit::keyboard::Key;
         if self.renaming_tab.is_none() {
             return false;
         }
@@ -1636,62 +1636,9 @@ impl App {
                 _ => {}
             }
         }
-        // ⌘⌥ + Arrow — move focus to the split pane in that
-        // direction. tmnl-level (consumed, never forwarded) so
-        // it works in both Shell and Native tabs.
-        if self.mods.super_key()
-            && self.mods.alt_key()
-            && let Key::Named(nk) = &ke.logical_key
-        {
-            let dir = match nk {
-                NamedKey::ArrowLeft => Some(FocusDir::Left),
-                NamedKey::ArrowRight => Some(FocusDir::Right),
-                NamedKey::ArrowUp => Some(FocusDir::Up),
-                NamedKey::ArrowDown => Some(FocusDir::Down),
-                _ => None,
-            };
-            if let Some(dir) = dir {
-                self.focus_dir(dir);
-                if let Some(w) = &self.window {
-                    w.request_redraw();
-                }
-                return;
-            }
-        }
-        // ⌘I — AI completion of the current command line.
-        // ⌘K — generate a command from a typed description.
-        if self.mods.super_key()
-            && let Key::Character(s) = &ke.logical_key
-        {
-            if s.eq_ignore_ascii_case("i") {
-                self.trigger_ai_completion();
-                return;
-            }
-            if s.eq_ignore_ascii_case("k") {
-                self.trigger_ai_generate();
-                return;
-            }
-        }
-        // Shift+PageUp / Shift+PageDown — scroll shell scrollback.
-        if self.mods.shift_key()
-            && let Key::Named(nk) = &ke.logical_key
-            && matches!(
-                nk,
-                winit::keyboard::NamedKey::PageUp | winit::keyboard::NamedKey::PageDown
-            )
-        {
-            let page = self
-                .gpu
-                .as_ref()
-                .map_or(20, |g| g.grid.rows.saturating_sub(1) as i32);
-            let up = matches!(nk, winit::keyboard::NamedKey::PageUp);
-            if let PaneKind::Shell { session: Some(s) } =
-                &mut self.tabs[self.active].focused_pane_mut().kind
-            {
-                s.scroll(if up { page } else { -page });
-            }
-            return;
-        }
+        // ⌘⌥+Arrow (focus pane), ⌘I/⌘K (AI), Shift+PageUp/Down
+        // (scrollback) all migrated to focus.* / ai.* / scroll.*
+        // commands — handled by try_dispatch above.
         let focused = self.tabs[self.active].focused;
         match &mut self.tabs[self.active].panes[focused].kind {
             PaneKind::Shell { session } => {
