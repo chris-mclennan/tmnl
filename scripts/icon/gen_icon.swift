@@ -78,33 +78,26 @@ func render(_ side: Int) -> Data? {
     )
     ctx.restoreGState()
 
-    // Shell-prompt wordmark — bold monospace `>tmnl`. The `>` is the
-    // app's accent color (orange for tmnl), the name is near-white.
-    // Centered horizontally and vertically inside the body.
+    // Wordmark — bold monospace `tmnl` in the app's accent color
+    // (warm orange), centered on the charcoal bezel. Kept deliberately
+    // simple — no prompt prefix, no second color — so the three
+    // family icons read as accent-color variants of the same shape.
     let nsCtx = NSGraphicsContext(cgContext: ctx, flipped: false)
     NSGraphicsContext.saveGraphicsState()
     NSGraphicsContext.current = nsCtx
 
     let accent = NSColor(red: 0.85, green: 0.45, blue: 0.20, alpha: 1.0) // tmnl: warm orange
-    let textColor = NSColor(red: 0.95, green: 0.96, blue: 0.97, alpha: 1.0)
-    let fontSize = s * 0.32
+    let fontSize = s * 0.42
     let font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .bold)
     let para = NSMutableParagraphStyle()
     para.alignment = .center
 
-    let attributed = NSMutableAttributedString()
-    attributed.append(NSAttributedString(string: "> ", attributes: [
+    let attributed = NSAttributedString(string: "tmnl", attributes: [
         .font: font,
         .foregroundColor: accent,
         .paragraphStyle: para,
-        .kern: -fontSize * 0.04,
-    ]))
-    attributed.append(NSAttributedString(string: "tmnl", attributes: [
-        .font: font,
-        .foregroundColor: textColor,
-        .paragraphStyle: para,
-        .kern: -fontSize * 0.04,
-    ]))
+        .kern: -fontSize * 0.02,
+    ])
 
     let textSize = attributed.size()
     let textRect = CGRect(
