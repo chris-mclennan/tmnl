@@ -77,11 +77,22 @@ These aren't chords — they're modal text input that absorbs every
 keystroke. A single fn-pointer `Command` doesn't model that. The
 modal handler shape is the right answer for them.
 
+### Help overlay (done)
+
+`src/help.rs` renders the registry into a centered, bordered
+overlay painted into the GPU cell grid. `view.help` (default
+`cmd+shift+/`, macOS Help convention) toggles it. Esc / `?`
+dismiss; ↑↓ / `j`/`k` scroll; PageUp/Down page. State is
+`Option<HelpState>` on `App`; `help_handle_key` is the modal
+handler that runs before `try_dispatch` so a stray ⌘T can't
+open a tab behind it.
+
+The build_rows test asserts the registry has ≥30 bindings — a
+drift sentinel so future regressions on `builtin_commands` fail
+at `cargo test`.
+
 ### Future work
 
-- Help screen UI (registry already populates via `help_rows()`,
-  just needs a panel to render into — `view.help` command stub
-  could open a centered overlay similar to mnml's).
 - Command palette (filter the registry by title/id and run on
   Enter — would replace the native macOS menu bar's shortcut
   hints with an in-app discoverable list).
