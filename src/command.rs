@@ -21,7 +21,7 @@ use winit::event_loop::ActiveEventLoop;
 
 use crate::App;
 
-pub type CommandFn = fn(&mut App, &ActiveEventLoop);
+pub type CommandFn = fn(&mut App, &ActiveEventLoop, &KeyEvent);
 /// Context predicate. Returns true when the command is eligible to
 /// fire for the current `App` state. `None` ⇒ "always eligible"
 /// (rare; most tmnl chords have at least a "no modal open" guard).
@@ -114,10 +114,37 @@ pub fn try_dispatch(key: &KeyEvent, app: &mut App, event_loop: &ActiveEventLoop)
         {
             continue;
         }
-        run(app, event_loop);
+        run(app, event_loop, key);
         return true;
     }
     false
+}
+
+/// Tab N (0-indexed): Native tabs forward as ⌥(digit+1) so mnml's
+/// `tab.goto_N` chord switches mnml tab pages; Shell tabs switch
+/// tmnl tabs.
+fn goto_tab_or_forward(app: &mut App, ke: &winit::event::KeyEvent, n: usize) {
+    use crate::PaneKind;
+    use crate::protocol::{InputEvent, KeyInput, MOD_ALT};
+    if matches!(
+        &app.tabs[app.active].focused_pane().kind,
+        PaneKind::Native { .. }
+    ) {
+        if let PaneKind::Native { server, .. } = &mut app.tabs[app.active].focused_pane_mut().kind
+            && let Some(code) = crate::translate_key(&ke.logical_key, app.mods)
+        {
+            server.send_input(&InputEvent::Key(KeyInput {
+                code,
+                mods: MOD_ALT,
+                press: true,
+            }));
+        }
+        return;
+    }
+    app.switch_to_tab(n);
+    if let Some(w) = &app.window {
+        w.request_redraw();
+    }
 }
 
 /// True when no modal overlay is capturing keystrokes — safe to
@@ -139,7 +166,7 @@ fn builtin_commands() -> Vec<Command> {
             title: "New tab",
             group: "Tabs",
             keys: &["cmd+t"],
-            run: |app, _event_loop| {
+            run: |app, _event_loop, _ke| {
                 if app.editor_template.is_some() {
                     app.new_native_tab();
                 } else {
@@ -158,7 +185,7 @@ fn builtin_commands() -> Vec<Command> {
             title: "Close focused split pane",
             group: "Splits",
             keys: &["cmd+shift+w"],
-            run: |app, event_loop| {
+            run: |app, event_loop, _ke| {
                 app.close_focused_pane(event_loop);
                 if let Some(w) = &app.window {
                     w.request_redraw();
@@ -172,7 +199,7 @@ fn builtin_commands() -> Vec<Command> {
             title: "Split right",
             group: "Splits",
             keys: &["cmd+d"],
-            run: |app, _event_loop| {
+            run: |app, _event_loop, _ke| {
                 app.split_active_pane(crate::layout::SplitDir::Vertical);
                 if let Some(w) = &app.window {
                     w.request_redraw();
@@ -186,7 +213,7 @@ fn builtin_commands() -> Vec<Command> {
             title: "Split down",
             group: "Splits",
             keys: &["cmd+shift+d"],
-            run: |app, _event_loop| {
+            run: |app, _event_loop, _ke| {
                 app.split_active_pane(crate::layout::SplitDir::Horizontal);
                 if let Some(w) = &app.window {
                     w.request_redraw();
@@ -200,7 +227,7 @@ fn builtin_commands() -> Vec<Command> {
             title: "Cycle to previous tab",
             group: "Tabs",
             keys: &["cmd+shift+["],
-            run: |app, _event_loop| {
+            run: |app, _event_loop, _ke| {
                 app.cycle_tab(false);
                 if let Some(w) = &app.window {
                     w.request_redraw();
@@ -214,12 +241,121 @@ fn builtin_commands() -> Vec<Command> {
             title: "Cycle to next tab",
             group: "Tabs",
             keys: &["cmd+shift+]"],
-            run: |app, _event_loop| {
+            run: |app, _event_loop, _ke| {
                 app.cycle_tab(true);
                 if let Some(w) = &app.window {
                     w.request_redraw();
                 }
             },
+            when: Some(no_modal_open),
+        },
+        // ⌘W — Native tabs forward as ⌃W (mnml closes its buffer
+        // with confirmation prompt); Shell tabs close the whole tab.
+        Command {
+            id: "tab.close_or_forward",
+            title: "Close tab / forward ⌃W to Native",
+            group: "Tabs",
+            keys: &["cmd+w"],
+            run: |app, event_loop, ke| {
+                use crate::PaneKind;
+                use crate::protocol::{InputEvent, KeyInput};
+                if matches!(
+                    &app.tabs[app.active].focused_pane().kind,
+                    PaneKind::Native { .. }
+                ) {
+                    let translated_mods = crate::pack_mods_cmd_to_ctrl(app.mods);
+                    if let PaneKind::Native { server, .. } =
+                        &mut app.tabs[app.active].focused_pane_mut().kind
+                        && let Some(code) = crate::translate_key(&ke.logical_key, app.mods)
+                    {
+                        server.send_input(&InputEvent::Key(KeyInput {
+                            code,
+                            mods: translated_mods,
+                            press: true,
+                        }));
+                    }
+                } else {
+                    app.close_active_tab(event_loop);
+                    if let Some(w) = &app.window {
+                        w.request_redraw();
+                    }
+                }
+            },
+            when: Some(no_modal_open),
+        },
+        // ⌘1..⌘9 — Native tabs forward as ⌥N (mnml's tab.goto_N);
+        // Shell tabs switch tmnl tabs. 9 commands (one per digit)
+        // since `keys` is a static slice.
+        Command {
+            id: "tab.goto_1",
+            title: "Jump to tab 1",
+            group: "Tabs",
+            keys: &["cmd+1"],
+            run: |app, _el, ke| goto_tab_or_forward(app, ke, 0),
+            when: Some(no_modal_open),
+        },
+        Command {
+            id: "tab.goto_2",
+            title: "Jump to tab 2",
+            group: "Tabs",
+            keys: &["cmd+2"],
+            run: |app, _el, ke| goto_tab_or_forward(app, ke, 1),
+            when: Some(no_modal_open),
+        },
+        Command {
+            id: "tab.goto_3",
+            title: "Jump to tab 3",
+            group: "Tabs",
+            keys: &["cmd+3"],
+            run: |app, _el, ke| goto_tab_or_forward(app, ke, 2),
+            when: Some(no_modal_open),
+        },
+        Command {
+            id: "tab.goto_4",
+            title: "Jump to tab 4",
+            group: "Tabs",
+            keys: &["cmd+4"],
+            run: |app, _el, ke| goto_tab_or_forward(app, ke, 3),
+            when: Some(no_modal_open),
+        },
+        Command {
+            id: "tab.goto_5",
+            title: "Jump to tab 5",
+            group: "Tabs",
+            keys: &["cmd+5"],
+            run: |app, _el, ke| goto_tab_or_forward(app, ke, 4),
+            when: Some(no_modal_open),
+        },
+        Command {
+            id: "tab.goto_6",
+            title: "Jump to tab 6",
+            group: "Tabs",
+            keys: &["cmd+6"],
+            run: |app, _el, ke| goto_tab_or_forward(app, ke, 5),
+            when: Some(no_modal_open),
+        },
+        Command {
+            id: "tab.goto_7",
+            title: "Jump to tab 7",
+            group: "Tabs",
+            keys: &["cmd+7"],
+            run: |app, _el, ke| goto_tab_or_forward(app, ke, 6),
+            when: Some(no_modal_open),
+        },
+        Command {
+            id: "tab.goto_8",
+            title: "Jump to tab 8",
+            group: "Tabs",
+            keys: &["cmd+8"],
+            run: |app, _el, ke| goto_tab_or_forward(app, ke, 7),
+            when: Some(no_modal_open),
+        },
+        Command {
+            id: "tab.goto_9",
+            title: "Jump to tab 9",
+            group: "Tabs",
+            keys: &["cmd+9"],
+            run: |app, _el, ke| goto_tab_or_forward(app, ke, 8),
             when: Some(no_modal_open),
         },
         // Font zoom: ⌘= / ⌘+ in, ⌘- / ⌘_ out, ⌘0 reset.
@@ -228,7 +364,7 @@ fn builtin_commands() -> Vec<Command> {
             title: "Zoom font in",
             group: "View",
             keys: &["cmd+=", "cmd+shift+="],
-            run: |app, _event_loop| {
+            run: |app, _event_loop, _ke| {
                 app.zoom_font(crate::FONT_ZOOM_STEP);
                 if let Some(w) = &app.window {
                     w.request_redraw();
@@ -241,7 +377,7 @@ fn builtin_commands() -> Vec<Command> {
             title: "Zoom font out",
             group: "View",
             keys: &["cmd+-", "cmd+shift+-"],
-            run: |app, _event_loop| {
+            run: |app, _event_loop, _ke| {
                 app.zoom_font(-crate::FONT_ZOOM_STEP);
                 if let Some(w) = &app.window {
                     w.request_redraw();
@@ -254,7 +390,7 @@ fn builtin_commands() -> Vec<Command> {
             title: "Reset font zoom",
             group: "View",
             keys: &["cmd+0"],
-            run: |app, _event_loop| {
+            run: |app, _event_loop, _ke| {
                 app.reset_font_zoom();
                 if let Some(w) = &app.window {
                     w.request_redraw();

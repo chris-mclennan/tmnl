@@ -1157,7 +1157,7 @@ fn paint_idle(grid: &mut Grid, state: ConnState, socket_path: &std::path::Path) 
 /// translating Mac-style editing chords (⌘Z / ⌘C / etc) into their Ctrl
 /// equivalents on the wire so the hosted Linux/cross-platform app sees
 /// what it expects.
-fn pack_mods_cmd_to_ctrl(m: ModifiersState) -> u8 {
+pub(crate) fn pack_mods_cmd_to_ctrl(m: ModifiersState) -> u8 {
     let mut out = 0u8;
     if m.shift_key() {
         out |= MOD_SHIFT;
@@ -1268,7 +1268,7 @@ fn apply_frame_to_grid(grid: &mut grid::Grid, last_cursor: &mut Option<usize>, f
     }
 }
 
-fn translate_key(k: &Key, mods: ModifiersState) -> Option<KeyCode> {
+pub(crate) fn translate_key(k: &Key, mods: ModifiersState) -> Option<KeyCode> {
     match k {
         Key::Named(n) => match n {
             NamedKey::Enter => Some(KeyCode::Enter),

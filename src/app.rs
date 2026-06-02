@@ -1590,71 +1590,9 @@ impl App {
                 // ⌘⇧W (close pane) → pane.close,
                 // ⌘D (split right) → split.right,
                 // ⌘⇧D (split down) → split.down. Migrated.
-                (Some('w'), false) => {
-                    // Native (mnml) tabs: forward ⌘W as ⌃W so the
-                    // host process closes its active buffer/pane
-                    // rather than tmnl killing the whole tab.
-                    // mnml shows a confirmation prompt when it
-                    // would close the last buffer, so an
-                    // accidental ⌘W doesn't drop the user back
-                    // onto the welcome screen or the shell.
-                    // Shell tabs keep the original close-tab
-                    // behavior (no way to recover the shell
-                    // otherwise).
-                    if matches!(
-                        &self.tabs[self.active].focused_pane().kind,
-                        PaneKind::Native { .. }
-                    ) {
-                        let translated_mods = pack_mods_cmd_to_ctrl(self.mods);
-                        if let PaneKind::Native { server, .. } =
-                            &mut self.tabs[self.active].focused_pane_mut().kind
-                            && let Some(code) = translate_key(&ke.logical_key, self.mods)
-                        {
-                            server.send_input(&InputEvent::Key(KeyInput {
-                                code,
-                                mods: translated_mods,
-                                press: true,
-                            }));
-                        }
-                        return;
-                    }
-                    self.close_active_tab(event_loop);
-                    if let Some(w) = &self.window {
-                        w.request_redraw();
-                    }
-                    return;
-                }
-                (Some(d), false) if d.is_ascii_digit() && d != '0' => {
-                    // Native tabs: forward ⌘<N> as ⌥<N> so mnml's
-                    // `tab.goto_N` chord (Alt+1..9) switches mnml
-                    // tab pages instead of tmnl tabs. The user
-                    // can still switch tmnl tabs explicitly with
-                    // ⌘⇧[ / ⌘⇧] (cycle) or via the tab strip.
-                    // Shell tabs keep the original behavior
-                    // because they have no in-app tab pages.
-                    if matches!(
-                        &self.tabs[self.active].focused_pane().kind,
-                        PaneKind::Native { .. }
-                    ) {
-                        if let PaneKind::Native { server, .. } =
-                            &mut self.tabs[self.active].focused_pane_mut().kind
-                            && let Some(code) = translate_key(&ke.logical_key, self.mods)
-                        {
-                            server.send_input(&InputEvent::Key(KeyInput {
-                                code,
-                                mods: MOD_ALT,
-                                press: true,
-                            }));
-                        }
-                        return;
-                    }
-                    let n = d.to_digit(10).unwrap() as usize - 1;
-                    self.switch_to_tab(n);
-                    if let Some(w) = &self.window {
-                        w.request_redraw();
-                    }
-                    return;
-                }
+                // ⌘W (close or forward as ⌃W) → tab.close_or_forward.
+                // ⌘1..⌘9 (switch tab or forward as ⌥N) → tab.goto_N.
+                // All migrated to command::builtin_commands above.
                 // ⌘⇧[ / ⌘⇧] (cycle tab) → tab.cycle_back / .forward,
                 // ⌘= / ⌘+ / ⌘- / ⌘_ / ⌘0 (font zoom) → view.zoom_*.
                 // All migrated.
