@@ -1573,72 +1573,12 @@ impl App {
         if crate::command::try_dispatch(&ke, self, event_loop) {
             return;
         }
-        // Tab-management chords: ⌘T new, ⌘W close, ⌘1..⌘9 jump,
-        // ⌘⇧[ / ⌘⇧] cycle. macOS Terminal / iTerm / Safari
-        // conventions. Cmd = winit's `super_key()`. Intercept
-        // before forwarding to the active tab's Mode so the
-        // chord never reaches the hosted process.
-        if self.mods.super_key()
-            && let Key::Character(s) = &ke.logical_key
-        {
-            let c = s.chars().next();
-            let shift = self.mods.shift_key();
-            match (c, shift) {
-                // ⌘T (new tab) migrated to `tab.new` in
-                // `command::builtin_commands` — handled by
-                // `try_dispatch` above.
-                // ⌘⇧W (close pane) → pane.close,
-                // ⌘D (split right) → split.right,
-                // ⌘⇧D (split down) → split.down. Migrated.
-                // ⌘W (close or forward as ⌃W) → tab.close_or_forward.
-                // ⌘1..⌘9 (switch tab or forward as ⌥N) → tab.goto_N.
-                // All migrated to command::builtin_commands above.
-                // ⌘⇧[ / ⌘⇧] (cycle tab) → tab.cycle_back / .forward,
-                // ⌘= / ⌘+ / ⌘- / ⌘_ / ⌘0 (font zoom) → view.zoom_*.
-                // All migrated.
-                // Mac-style editing chords → translate to Ctrl-equivalent
-                // for the hosted Native client (mnml understands Ctrl+Z
-                // as undo, Ctrl+C/V/X/A/S/F for clipboard/select-all/
-                // save/find). Only fires for Native tabs — Shell tabs
-                // are bare terminals where remapping Cmd would break
-                // ⌘C-as-copy / ⌘V-as-paste in the surrounding OS.
-                (Some(ch), _)
-                    if matches!(
-                        ch,
-                        // Editing / clipboard chords (existing).
-                        'z' | 'x' | 'c' | 'v' | 'a' | 's' | 'f' | 'n'
-                        // Navigation chords forwarded as ⌃-equivalents
-                        // so mnml's existing standard-mode bindings
-                        // light up under Mac muscle memory:
-                        //   ⌘P → ⌃P → file picker (also ⌘⇧P palette)
-                        //   ⌘B → ⌃B → toggle file tree
-                        //   ⌘G → ⌃G → goto line
-                        //   ⌘/ → ⌃/ → toggle line comment
-                        | 'p' | 'b' | 'g' | '/'
-                    ) && matches!(
-                        &self.tabs[self.active].focused_pane().kind,
-                        PaneKind::Native { .. }
-                    ) =>
-                {
-                    let translated_mods = pack_mods_cmd_to_ctrl(self.mods);
-                    if let PaneKind::Native { server, .. } =
-                        &mut self.tabs[self.active].focused_pane_mut().kind
-                        && let Some(code) = translate_key(&ke.logical_key, self.mods)
-                    {
-                        server.send_input(&InputEvent::Key(KeyInput {
-                            code,
-                            mods: translated_mods,
-                            press: true,
-                        }));
-                    }
-                    return;
-                }
-                _ => {}
-            }
-        }
-        // ⌘⌥+Arrow (focus pane), ⌘I/⌘K (AI), Shift+PageUp/Down
-        // (scrollback) all migrated to focus.* / ai.* / scroll.*
-        // commands — handled by try_dispatch above.
+        // ── Every Cmd-prefixed chord migrated to the registry. ──
+        // The legacy `if self.mods.super_key() && ... { match ... }`
+        // block here is gone (preserved in docs/COMMAND_MIGRATION.md).
+        // Same for ⌘⌥+Arrow / ⌘I/K / Shift+PgUp+Dn — all now in
+        // `command::builtin_commands`, dispatched by `try_dispatch`
+        // at the top of this function.
         let focused = self.tabs[self.active].focused;
         match &mut self.tabs[self.active].panes[focused].kind {
             PaneKind::Shell { session } => {
