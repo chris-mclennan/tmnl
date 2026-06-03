@@ -18,6 +18,10 @@ let iconsetDir = URL(fileURLWithPath: CommandLine.arguments.count > 1
     ? CommandLine.arguments[1]
     : "scripts/icon/AppIcon.iconset")
 
+// Second arg "nightly" inverts the palette — accent becomes the
+// background, charcoal becomes the wordmark.
+let isNightly = CommandLine.arguments.count > 2 && CommandLine.arguments[2] == "nightly"
+
 try? FileManager.default.createDirectory(at: iconsetDir, withIntermediateDirectories: true)
 
 // macOS App icon set — names + sizes that `iconutil` expects.
@@ -57,10 +61,16 @@ func render(_ side: Int) -> Data? {
     let path = CGMutablePath()
     path.addRoundedRect(in: body, cornerWidth: radius, cornerHeight: radius)
     ctx.addPath(path)
-    // Gradient body — top: warm dark, bottom: cool dark. Matches
-    // mnml/tmnl theme's bg → bg_darker shift.
-    let topColor   = CGColor(red: 0.18, green: 0.20, blue: 0.24, alpha: 1.0)
-    let botColor   = CGColor(red: 0.10, green: 0.12, blue: 0.14, alpha: 1.0)
+    // Stable: charcoal gradient bezel. Nightly: tmnl orange gradient.
+    let topColor: CGColor
+    let botColor: CGColor
+    if isNightly {
+        topColor = CGColor(red: 0.95, green: 0.55, blue: 0.28, alpha: 1.0)
+        botColor = CGColor(red: 0.78, green: 0.38, blue: 0.14, alpha: 1.0)
+    } else {
+        topColor = CGColor(red: 0.18, green: 0.20, blue: 0.24, alpha: 1.0)
+        botColor = CGColor(red: 0.10, green: 0.12, blue: 0.14, alpha: 1.0)
+    }
     let gradient = CGGradient(
         colorsSpace: cs,
         colors: [topColor, botColor] as CFArray,
@@ -84,7 +94,10 @@ func render(_ side: Int) -> Data? {
     NSGraphicsContext.saveGraphicsState()
     NSGraphicsContext.current = nsCtx
 
-    let accent = NSColor(red: 0.85, green: 0.45, blue: 0.20, alpha: 1.0) // tmnl: warm orange
+    // Stable: accent on charcoal. Nightly: charcoal on accent.
+    let accent = isNightly
+        ? NSColor(red: 0.10, green: 0.12, blue: 0.16, alpha: 1.0)
+        : NSColor(red: 0.85, green: 0.45, blue: 0.20, alpha: 1.0) // tmnl: warm orange
     let fontSize = s * 0.42
     let font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .bold)
     let para = NSMutableParagraphStyle()
