@@ -62,6 +62,21 @@ daily driver — without turning into a race to out-feature WezTerm / Ghostty.
   command script doubles as a pass/fail test.
 - **Protocol smoke harness** — `examples/fake_server` and `examples/fake_client`
   exercise both sides of `tmnl-protocol` without a GPU window.
+- **Update-available check** — a background thread pings the GitHub releases
+  API at startup and prints `tmnl: vX.Y.Z available — <release URL>` to stderr
+  when a newer tag exists. No telemetry, no async runtime — single blocking GET
+  via `ureq`.
+
+## Packaging
+
+- **macOS `.app` bundles** — `./scripts/build-app.sh release` produces
+  `target/tmnl.app` for drag-into-`/Applications` distribution.
+- **Nightly bundle** — `./scripts/build-app.sh --nightly` produces
+  `target/tmnl-nightly.app` with bundle identifier `rs.tmnl.app.nightly`. It
+  coexists with stable tmnl in `/Applications`, pins to the dock as a separate
+  icon, and execs `$HOME/Projects/tmnl/target/release/tmnl` so each launch
+  picks up the latest local build. Inverted-palette icon (warm orange / charcoal
+  wordmark) makes the two visually distinct.
 
 ---
 

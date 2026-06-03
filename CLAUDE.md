@@ -53,6 +53,7 @@ tmnl/                 ← this crate (the app binary)
 cargo run --bin tmnl              # dev — runs as a plain binary
 ./scripts/build-app.sh            # bundle target/tmnl.app (debug)
 ./scripts/build-app.sh release    # bundle release
+./scripts/build-app.sh --nightly  # bundle target/tmnl-nightly.app
 open target/tmnl.app              # launch the bundle
 cargo run --bin tmnl -- --headless  # no window; scripted stdin + grid dumps
 ```
@@ -204,6 +205,52 @@ headers, `[bracket]` choices) doesn't apply yet — with one numeric
 setting (`inset`) the modal stays single-row. Numeric-row support is a
 v2 convention extension; the modal will graduate to the full sectioned
 list when tmnl grows more settings (font size, cursor style, …).
+
+## Nightly bundle (#78)
+
+`./scripts/build-app.sh --nightly` produces `target/tmnl-nightly.app` — a
+parallel install of tmnl that uses its own `Info-nightly.plist` (bundle ID
+`rs.tmnl.app.nightly`, display name `tmnl-nightly`) and its own
+`AppIcon-nightly.icns` (inverted palette — warm orange background, charcoal
+`tmnl` wordmark). The two bundles coexist in `/Applications` and pin to the
+dock as separate icons.
+
+The nightly launcher (`scripts/launcher-nightly.sh`) is a one-liner:
+`exec $HOME/Projects/tmnl/target/release/tmnl`. Unlike mnml + mixr (which run
+*inside* tmnl and need a dispatch shim into the host terminal), tmnl is the
+outer terminal — the launcher just execs the binary. NSApplication picks up
+the bundle's `Info-nightly.plist` via LaunchServices before the exec, so the
+dock icon, Cmd+Tab name, and bundle identity are all the nightly's.
+
+`LSMinimumSystemVersion` is `11.0` in both `Info.plist` and
+`Info-nightly.plist` — bumped from `10.14` to clear macOS Tahoe's "Support
+Ending for Intel-based Apps" warning, which misleadingly triggers on any
+pre-Big-Sur declared minimum regardless of the actual arm64 binary. The icons
+also paint full-bleed (no transparent margin) so Tahoe's glass icon template
+wraps our art directly instead of leaving a grey outer bezel.
+
+## Update-available check (#79)
+
+`src/update_check.rs` spawns a background std thread from `main()` that pings
+`api.github.com/repos/chris-mclennan/tmnl/releases/latest`, compares the
+`tag_name` against `CARGO_PKG_VERSION`, and (when newer) prints
+`tmnl: vX.Y.Z available — <release URL>` to stderr.
+
+Implementation notes:
+
+- **`ureq` not `reqwest`.** tmnl has no async runtime; a single blocking GET
+  on a background thread is the right tool. Cargo dep is
+  `ureq = { version = "2.10", default-features = false, features = ["tls"] }`.
+- **No `serde_json` dep.** A tiny ad-hoc JSON key extractor in `fetch_latest_tag`
+  finds the first `"tag_name":"…"` occurrence (it's at the top level of the
+  `/releases/latest` payload).
+- **v1 surface is stderr only.** Visible when launched from a terminal; the
+  `.app` launcher logs to its own log file. The read APIs (`latest()`,
+  `take_pending_announcement()`) are wired but `dead_code`-gated awaiting the
+  v2 welcome-banner integration.
+- **Shape matches mnml + mixr.** All three implement the same `UpdateCheck`
+  struct with the same method signatures, so syncing the family when one
+  changes is cheap.
 
 ## Docs sync
 

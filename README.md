@@ -115,12 +115,19 @@ cargo install tmnl-rs        # the crate is tmnl-rs; the binary it installs is `
 cargo run --bin tmnl              # dev build — fast iteration
 ./scripts/build-app.sh            # bundle target/tmnl.app (debug)
 ./scripts/build-app.sh release    # bundle target/tmnl.app (release)
+./scripts/build-app.sh --nightly  # bundle target/tmnl-nightly.app
 open target/tmnl.app              # launch the bundle
 ```
 
 Use the `.app` bundle for the real macOS experience — the native menu bar and
 dock icon only behave correctly when launched as a bundle. Plain `cargo run` is
 fine for iterating on rendering or shell behaviour.
+
+The `--nightly` bundle (`target/tmnl-nightly.app`) has its own bundle ID
+(`rs.tmnl.app.nightly`) so it coexists alongside the stable `tmnl.app` in
+`/Applications` and pins to the dock as a separate, distinguishable icon. Its
+launcher execs `$HOME/Projects/tmnl/target/release/tmnl` directly, so each
+launch picks up the latest local `cargo build --release`.
 
 tmnl builds on stable Rust (MSRV **1.85**, edition 2024).
 

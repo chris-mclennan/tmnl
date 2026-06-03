@@ -14,6 +14,27 @@ capabilities present in the current `master`.
 
 ### Added
 
+- **Nightly app bundle** (#78) — `./scripts/build-app.sh --nightly` produces
+  `target/tmnl-nightly.app` with bundle identifier `rs.tmnl.app.nightly`, so it
+  coexists alongside the stable `tmnl.app` in `/Applications` and pins to the
+  dock as a separate icon. The nightly launcher (`scripts/launcher-nightly.sh`)
+  `exec`s `$HOME/Projects/tmnl/target/release/tmnl` directly — tmnl is the
+  outer terminal so no dispatch shim is needed; NSApplication still picks up
+  the bundle's `Info-nightly.plist` via LaunchServices before the exec, so the
+  nightly identity (dock icon, Cmd+Tab name) is preserved. Icon palette is
+  inverted from stable — warm orange background with a charcoal `tmnl`
+  wordmark — so the two are visually distinguishable in the dock.
+- **Update-available check** (#79) — new `src/update_check.rs`. A background
+  std thread spawned from `main()` pings
+  `api.github.com/repos/chris-mclennan/tmnl/releases/latest`, compares
+  `tag_name` against `CARGO_PKG_VERSION`, and (when newer) prints
+  `tmnl: vX.Y.Z available — <release URL>` to stderr. The read APIs
+  (`latest()`, `take_pending_announcement()`) are wired but `dead_code`-gated
+  awaiting v2 welcome-banner integration — the shape matches mnml + mixr's
+  `update_check` deliberately so the three stay easy to sync. Uses `ureq`
+  (`2.10`, default-features-off + `tls`) so the check is a single blocking GET
+  on a background thread with no async runtime dragged in; a tiny ad-hoc JSON
+  key extractor avoids a `serde_json` dep just to read one field.
 - **Welcome screen + recents** — bare-launch overlay listing recent native-tab
   launches from `~/.config/tmnl/recents.toml`; `1`–`9` open, `r` drops, `Esc`
   dismisses into the shell pane.
@@ -27,6 +48,15 @@ capabilities present in the current `master`.
 
 ### Changed
 
+- **App icon** — simplified to a bare four-letter wordmark (the leading `> `
+  prompt prefix is gone); font sized at `0.34` of the canvas. The icon now
+  paints full-bleed to the canvas edge (no transparent margin) so macOS Tahoe's
+  glass icon template wraps the art directly instead of leaving a weird grey
+  outer bezel. Matches the icon refresh that landed in mnml + mixr.
+- **`LSMinimumSystemVersion`** bumped from `10.14` to `11.0` (both `Info.plist`
+  and `Info-nightly.plist`). Clears macOS Tahoe's "Support Ending for
+  Intel-based Apps" warning, which misleadingly triggers on any pre-Big-Sur
+  declared minimum regardless of the actual arm64 binary.
 - **Settings modal** — retrofitted to the family settings UI convention
   (`▸` focus marker, `*` modified marker, `r` reset row, `R` reset all,
   `Esc` cancels via the opened-state snapshot).
