@@ -98,7 +98,7 @@ func render(_ side: Int) -> Data? {
     let accent = isNightly
         ? NSColor(red: 0.10, green: 0.12, blue: 0.16, alpha: 1.0)
         : NSColor(red: 0.85, green: 0.45, blue: 0.20, alpha: 1.0) // tmnl: warm orange
-    let fontSize = s * 0.42
+    let fontSize = s * 0.34
     let font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .bold)
     let para = NSMutableParagraphStyle()
     para.alignment = .center

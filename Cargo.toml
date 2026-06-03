@@ -51,6 +51,10 @@ portable-pty = "0.8"
 muda = "0.16"
 # Config persistence — `~/.config/tmnl/config.toml`.
 toml = { version = "0.8", default-features = false, features = ["parse", "display"] }
+# Background "is there a newer release?" probe (src/update_check.rs).
+# Blocking + lightweight — avoid pulling in async runtimes just for one
+# GET on launch. `tls` covers HTTPS via rustls.
+ureq = { version = "2.10", default-features = false, features = ["tls"] }
 serde = { version = "1", features = ["derive"] }
 dirs = "6"
 # Used by the pty-fd handoff receiver — `ioctl(TIOCSWINSZ)` on adopted

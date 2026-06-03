@@ -18,6 +18,7 @@ mod settings_ui;
 mod shell;
 mod shell_prompt;
 mod transfer;
+mod update_check;
 mod welcome;
 
 use tmnl_protocol as protocol;
@@ -1726,6 +1727,12 @@ fn main() {
     // PATH + user-set tokens otherwise aren't available to the
     // children we spawn. See doc comment on the function.
     load_login_shell_env_if_needed();
+    // Background "is there a newer release?" probe. Logs to stderr
+    // when a newer tag than CARGO_PKG_VERSION is found. Fire-and-forget;
+    // the returned handle is unused on the main thread here (the
+    // welcome overlay reads from `WelcomeState::update_notice` via
+    // a separate path).
+    let _update_check = update_check::UpdateCheck::spawn();
     let argv: Vec<String> = std::env::args().skip(1).collect();
     // Headless mode — no window, scripted stdin, text grid dumps (see
     // `src/headless.rs`). Branches out before any winit / wgpu / AppKit
