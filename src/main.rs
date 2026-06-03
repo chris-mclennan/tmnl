@@ -2,6 +2,7 @@ mod app;
 mod atlas;
 mod command;
 mod config;
+mod family_offer;
 mod fim;
 mod grid;
 mod headless;
@@ -1733,6 +1734,10 @@ fn main() {
     // welcome overlay reads from `WelcomeState::update_notice` via
     // a separate path).
     let _update_check = update_check::UpdateCheck::spawn();
+    // First-launch family offer — prints stderr hints once per
+    // missing sibling, then writes ~/.config/tmnl/.family-offer-shown
+    // to silence subsequent launches.
+    family_offer::maybe_offer_at_launch();
     let argv: Vec<String> = std::env::args().skip(1).collect();
     // Headless mode — no window, scripted stdin, text grid dumps (see
     // `src/headless.rs`). Branches out before any winit / wgpu / AppKit
