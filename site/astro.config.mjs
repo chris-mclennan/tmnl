@@ -62,6 +62,7 @@ export default defineConfig({
             { label: 'Overview', slug: 'index' },
             { label: 'Install', slug: 'install' },
             { label: 'First run', slug: 'getting-started' },
+            { label: 'Troubleshooting', slug: 'troubleshooting' },
           ],
         },
         {
@@ -73,6 +74,7 @@ export default defineConfig({
             { label: 'Tabs, splits, and panes', slug: 'manual/tabs-and-splits' },
             { label: 'Native tabs', slug: 'manual/native-tabs' },
             { label: 'AI completion (offline)', slug: 'manual/ai-completion' },
+            { label: 'Updates', slug: 'manual/updates' },
           ],
         },
         {

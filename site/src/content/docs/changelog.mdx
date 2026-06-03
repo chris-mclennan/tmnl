@@ -47,6 +47,18 @@ Already subscribed? [Manage your subscription](https://buttondown.com/chrismclen
 
 Versions auto-tagged at [github.com/chris-mclennan/tmnl/releases](https://github.com/chris-mclennan/tmnl/releases) — this page summarizes the user-facing changes. For commit-level history, see the GitHub release notes.
 
+### 0.0.4 — 2026-06-01
+
+**First notarized release.** No more "unidentified developer" warning on first launch.
+
+- **Code-signing + notarization** now active in release CI. When the `APPLE_TEAM_ID` / `APPLE_DEVELOPER_ID_CERT_*` / `APPLE_ID` / `APPLE_APP_PASSWORD` GitHub secrets are configured, the macOS DMGs are signed and notarized end-to-end — Gatekeeper trusts the install without a manual right-click-Open.
+- `scripts/notarize-dmg.sh` — robust signing-identity lookup via `security find-identity` SHA1 (instead of the by-name format that breaks when the cert's common name doesn't match the expected pattern).
+- `notarytool submit` — wait now bounded at 30 minutes and surfaces the verdict on failure instead of hanging the CI run indefinitely.
+- **Nightly bundle scripts** — `./scripts/build-app.sh --nightly` builds `target/tmnl-nightly.app` with bundle identifier `rs.tmnl.app.nightly` and an inverted warm-orange icon, so contributors can pin a "latest cargo build" dock entry alongside the stable release. Local-only, not shipped in CI. See [Troubleshooting](/troubleshooting/).
+- **Update-available check** — new `src/update_check.rs`. A background thread pings `api.github.com/repos/chris-mclennan/tmnl/releases/latest` on launch and prints `tmnl: vX.Y.Z available — <url>` to stderr when newer. See [Updates](/manual/updates/).
+- **`LSMinimumSystemVersion` bumped from `10.14` to `11.0`** in both `Info.plist` and `Info-nightly.plist`. Clears macOS Tahoe's "Support Ending for Intel-based Apps" warning, which misfired on any pre-Big-Sur declared minimum regardless of the actual arm64 binary.
+- **Full-bleed app icon + simplified wordmark** — the leading `> ` prompt prefix is gone; the icon is now a bare four-letter wordmark in the family accent color, painted to the full canvas edge so macOS Tahoe's glass icon template wraps the art directly instead of leaving a grey outer bezel. Matches the icon refresh that landed in mnml + mixr.
+
 ### 0.0.3 — 2026-05-31
 
 - macOS `.dmg` artifact now ships with cargo-dist's standard naming (`tmnl-rs-<triple>.dmg`)
