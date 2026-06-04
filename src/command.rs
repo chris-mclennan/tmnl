@@ -21,7 +21,12 @@ use winit::event_loop::ActiveEventLoop;
 
 use crate::App;
 
-pub type CommandFn = fn(&mut App, &ActiveEventLoop, &KeyEvent);
+/// Command handler. `KeyEvent` is `Some` when the command is dispatched
+/// from a keypress; `None` when fired by other paths (chip click,
+/// `RunHostCommand` protocol message, ex command, …). Key-forwarding
+/// handlers (`forward_as_ctrl`, `goto_tab_or_forward`) bail when it's
+/// `None`; everything else ignores the parameter.
+pub type CommandFn = fn(&mut App, &ActiveEventLoop, Option<&KeyEvent>);
 /// Context predicate. Returns true when the command is eligible to
 /// fire for the current `App` state. `None` ⇒ "always eligible"
 /// (rare; most tmnl chords have at least a "no modal open" guard).
@@ -114,10 +119,28 @@ pub fn try_dispatch(key: &KeyEvent, app: &mut App, event_loop: &ActiveEventLoop)
         {
             continue;
         }
-        run(app, event_loop, key);
+        run(app, event_loop, Some(key));
         return true;
     }
     false
+}
+
+/// Fire a command by id without a key event. Used by non-keyboard
+/// dispatch paths: chip clicks, `Message::RunHostCommand` from a hosted
+/// app, ex commands, …. Returns `true` when the id existed and the
+/// `when` guard passed (the command may still no-op internally if it
+/// genuinely required a key event, e.g. key-forwarding chords).
+pub fn dispatch_by_id(id: &str, app: &mut App, event_loop: &ActiveEventLoop) -> bool {
+    let Some(cmd) = registry().get(id) else {
+        return false;
+    };
+    if let Some(w) = cmd.when
+        && !w(app)
+    {
+        return false;
+    }
+    (cmd.run)(app, event_loop, None);
+    true
 }
 
 /// Read a URL string from the OS clipboard. Returns `None` when the
@@ -283,9 +306,10 @@ fn read_clipboard_text() -> Option<String> {
 /// (Ctrl+...) light up under Mac muscle memory. No-op for Shell
 /// tabs (they're bare terminals where the OS already handles
 /// Cmd-clipboard).
-fn forward_as_ctrl(app: &mut App, ke: &winit::event::KeyEvent) {
+fn forward_as_ctrl(app: &mut App, ke: Option<&winit::event::KeyEvent>) {
     use crate::PaneKind;
     use crate::protocol::{InputEvent, KeyInput};
+    let Some(ke) = ke else { return };
     if !matches!(
         &app.tabs[app.active].focused_pane().kind,
         PaneKind::Native { .. }
@@ -307,13 +331,22 @@ fn forward_as_ctrl(app: &mut App, ke: &winit::event::KeyEvent) {
 /// Tab N (0-indexed): Native tabs forward as ⌥(digit+1) so mnml's
 /// `tab.goto_N` chord switches mnml tab pages; Shell tabs switch
 /// tmnl tabs.
-fn goto_tab_or_forward(app: &mut App, ke: &winit::event::KeyEvent, n: usize) {
+fn goto_tab_or_forward(app: &mut App, ke: Option<&winit::event::KeyEvent>, n: usize) {
     use crate::PaneKind;
     use crate::protocol::{InputEvent, KeyInput, MOD_ALT};
     if matches!(
         &app.tabs[app.active].focused_pane().kind,
         PaneKind::Native { .. }
     ) {
+        // No key event ⇒ called from a non-keyboard dispatch path; the
+        // Native pane has nothing to forward, so just switch the tmnl tab.
+        let Some(ke) = ke else {
+            app.switch_to_tab(n);
+            if let Some(w) = &app.window {
+                w.request_redraw();
+            }
+            return;
+        };
         if let PaneKind::Native { server, .. } = &mut app.tabs[app.active].focused_pane_mut().kind
             && let Some(code) = crate::translate_key(&ke.logical_key, app.mods)
         {
@@ -538,10 +571,12 @@ fn builtin_commands() -> Vec<Command> {
             run: |app, event_loop, ke| {
                 use crate::PaneKind;
                 use crate::protocol::{InputEvent, KeyInput};
-                if matches!(
-                    &app.tabs[app.active].focused_pane().kind,
-                    PaneKind::Native { .. }
-                ) {
+                if let Some(ke) = ke
+                    && matches!(
+                        &app.tabs[app.active].focused_pane().kind,
+                        PaneKind::Native { .. }
+                    )
+                {
                     let translated_mods = crate::pack_mods_cmd_to_ctrl(app.mods);
                     if let PaneKind::Native { server, .. } =
                         &mut app.tabs[app.active].focused_pane_mut().kind

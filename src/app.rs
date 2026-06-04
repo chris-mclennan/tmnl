@@ -994,6 +994,7 @@ impl App {
         // (`Message::OpenPane`) — collected during the focused-pane
         // tick, applied below once the pane borrow is released.
         let mut open_pane_reqs: Vec<(String, Vec<String>)> = Vec::new();
+        let mut host_command_reqs: Vec<String> = Vec::new();
 
         // Tick the active tab's focused pane.
         let want_ghost_refresh = self.fim_redraw;
@@ -1057,6 +1058,9 @@ impl App {
                             ServerEvent::OpenPane { command, args } => {
                                 open_pane_reqs.push((command, args));
                             }
+                            ServerEvent::RunHostCommand(id) => {
+                                host_command_reqs.push(id);
+                            }
                         }
                     }
                     // Diffs are cumulative — apply every frame in order.
@@ -1103,6 +1107,14 @@ impl App {
         // released.
         for (command, args) in open_pane_reqs.drain(..) {
             self.open_pane_with_command(command, args);
+        }
+        // Same shape for RunHostCommand — fire each command via the
+        // registry. Use case: mnml's left-rail INTEGRATIONS chips
+        // with `command = "tmnl:browser.attach_dashboard"` etc.
+        for id in host_command_reqs.drain(..) {
+            if !crate::command::dispatch_by_id(&id, self, event_loop) {
+                eprintln!("tmnl: RunHostCommand unknown or guarded id {id:?}");
+            }
         }
 
         // Overlay the AI ghost suggestion, or a "generating…"

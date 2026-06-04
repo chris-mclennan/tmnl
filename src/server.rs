@@ -42,6 +42,12 @@ pub enum ServerEvent {
         command: String,
         args: Vec<String>,
     },
+    /// Client asked the renderer to fire one of its own commands by
+    /// id (`Message::RunHostCommand`) — e.g. mnml's left-rail
+    /// integration chips firing `browser.attach_dashboard` or
+    /// `split.browser_clipboard` on tmnl without needing to know
+    /// the implementation.
+    RunHostCommand(String),
 }
 
 /// Bind a UDS listener at the file path. Identical shape on Unix
@@ -227,6 +233,12 @@ fn reader_loop(
                     .is_err()
                 {
                     log::warn!("event_tx.send(OpenPane) failed; reader exiting");
+                    break;
+                }
+            }
+            Ok(Message::RunHostCommand(id)) => {
+                if event_tx.send(ServerEvent::RunHostCommand(id)).is_err() {
+                    log::warn!("event_tx.send(RunHostCommand) failed; reader exiting");
                     break;
                 }
             }

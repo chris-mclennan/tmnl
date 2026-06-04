@@ -1698,6 +1698,10 @@ fn tick_secondary_pane(pane: &mut Pane, visible: bool) {
                     // A non-focused pane can't be interacted with to
                     // trigger an OpenPane — drop it.
                     ServerEvent::OpenPane { .. } => {}
+                    // Same rationale for RunHostCommand: only the
+                    // focused pane's client should be firing host
+                    // commands at us.
+                    ServerEvent::RunHostCommand(_) => {}
                 }
             }
             while let Ok(f) = server.frame_rx.try_recv() {
