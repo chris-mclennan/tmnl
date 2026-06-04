@@ -154,7 +154,34 @@ enum PaneKind {
         /// (we don't create webviews pre-resume) or while we're
         /// re-mounting after a tab hide/show cycle.
         webview: Option<wry::WebView>,
+        /// Top-of-pane chrome strip state — back/forward/reload chips
+        /// and URL bar. See [`BrowserChrome`].
+        chrome: BrowserChrome,
     },
+}
+
+/// Chrome strip on the top row of a Browser pane. Three chips —
+/// `[<] [>] [⟳]` — followed by the URL bar. Clicks on a chip fire
+/// the matching webview action; a click on the URL bar starts an
+/// inline edit that loads on Enter and cancels on Esc.
+#[derive(Default)]
+pub(crate) struct BrowserChrome {
+    /// URL edit buffer when focused. `None` ⇒ the URL bar shows the
+    /// pane's `url` field read-only; `Some(s)` ⇒ keys go to the
+    /// editor instead of the WebView.
+    pub edit: Option<String>,
+    /// Cursor position in `edit` (chars, not bytes). Meaningless when
+    /// `edit` is `None`.
+    pub cursor: usize,
+}
+
+/// Hit-test region on a Browser pane's chrome strip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BrowserChip {
+    Back,
+    Forward,
+    Reload,
+    UrlBar,
 }
 
 /// One pane — a leaf in a tab's split layout. Each pane owns its
@@ -1149,6 +1176,91 @@ fn grid_dims(w: u32, h: u32, atlas: &Atlas, inset_px: f32, strip: f32) -> (u32, 
     (cols, rows)
 }
 
+/// Percent-encode a URL query value — minimal RFC3986 form that covers
+/// the characters DuckDuckGo / search engines actually care about
+/// (space → `+`, then any non-unreserved char → `%XX`). We don't pull
+/// in a full `url` crate just for the address bar's search fallback.
+pub(crate) fn url_query_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// Chrome strip on the top row of a Browser pane: `[<] [>] [⟳]` then
+/// the URL. Painted on every relayout. Click hit-testing is computed
+/// from the same chip layout in [`browser_chip_at`].
+///
+/// When `chrome.edit` is `Some(s)`, the URL bar shows the edit buffer
+/// with a cursor block at `chrome.cursor` instead of the read-only URL.
+pub(crate) fn paint_browser_chrome(grid: &mut Grid, url: &str, chrome: &BrowserChrome) {
+    if grid.rows == 0 || grid.cols < 16 {
+        return;
+    }
+    // Clear the top row first so previous frames don't bleed through.
+    grid.write(0, 0, &" ".repeat(grid.cols as usize), TEXT_FG, CLEAR_BG);
+    let chips: &[(u32, &str)] = &[(0, "[<]"), (4, "[>]"), (8, "[⟳]")];
+    for (col, label) in chips {
+        grid.write(*col, 0, label, TEXT_FG, CLEAR_BG);
+    }
+    // URL bar starts at column 13 — past the three 3-char chips with
+    // single-cell gaps and a one-cell separator.
+    let url_col = 13u32;
+    if url_col >= grid.cols {
+        return;
+    }
+    let avail = (grid.cols - url_col) as usize;
+    if let Some(edit) = chrome.edit.as_ref() {
+        // Edit mode — render the edit buffer, then highlight the cursor
+        // cell. Truncate to `avail` chars; if the cursor falls past the
+        // window, scroll the visible region so it stays on-screen.
+        let chars: Vec<char> = edit.chars().collect();
+        let cursor = chrome.cursor.min(chars.len());
+        let start = if cursor >= avail {
+            cursor - avail + 1
+        } else {
+            0
+        };
+        let end = (start + avail).min(chars.len());
+        let visible: String = chars[start..end].iter().collect();
+        grid.write(url_col, 0, &visible, ACCENT_FG, CLEAR_BG);
+        // Cursor block — repaint the single cell with swapped colors.
+        let cursor_col = url_col + (cursor - start) as u32;
+        if cursor_col < grid.cols {
+            // Use a vertical-bar so it stays visible on top of any
+            // glyph; the underlying char (often a space at EOL) is fine.
+            grid.write(cursor_col, 0, "│", ACCENT_FG, CLEAR_BG);
+        }
+    } else {
+        // Read-only — show the URL truncated to fit. Dim a bit so the
+        // chip glyphs stand out as the interactive elements.
+        let url_str: String = url.chars().take(avail).collect();
+        grid.write(url_col, 0, &url_str, DIM_FG, CLEAR_BG);
+    }
+}
+
+/// Hit-test a chrome-strip click. `local_col` / `local_row` are
+/// pane-local cell coords. Returns `None` outside the strip (row > 0).
+pub(crate) fn browser_chip_at(local_col: u16, local_row: u16) -> Option<BrowserChip> {
+    if local_row != 0 {
+        return None;
+    }
+    match local_col {
+        0..=2 => Some(BrowserChip::Back),
+        4..=6 => Some(BrowserChip::Forward),
+        8..=10 => Some(BrowserChip::Reload),
+        12.. => Some(BrowserChip::UrlBar),
+        _ => None,
+    }
+}
+
 /// Placeholder grid for a Browser pane that has no live `wry::WebView`
 /// yet (Phase 1 scaffolding). Centered "browser" title + the target
 /// URL + a "(webview integration pending)" status line. Phase 2 will
@@ -2022,6 +2134,67 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_chip_at_maps_cells_to_chips() {
+        use BrowserChip::*;
+        // Row 0 — the chrome strip.
+        assert_eq!(browser_chip_at(0, 0), Some(Back));
+        assert_eq!(browser_chip_at(2, 0), Some(Back));
+        assert_eq!(browser_chip_at(3, 0), None); // gap
+        assert_eq!(browser_chip_at(4, 0), Some(Forward));
+        assert_eq!(browser_chip_at(6, 0), Some(Forward));
+        assert_eq!(browser_chip_at(8, 0), Some(Reload));
+        assert_eq!(browser_chip_at(10, 0), Some(Reload));
+        assert_eq!(browser_chip_at(11, 0), None); // gap
+        assert_eq!(browser_chip_at(12, 0), Some(UrlBar));
+        assert_eq!(browser_chip_at(500, 0), Some(UrlBar));
+        // Any non-zero row → no chip (the WebView's territory).
+        assert_eq!(browser_chip_at(0, 1), None);
+        assert_eq!(browser_chip_at(20, 5), None);
+    }
+
+    #[test]
+    fn url_query_encode_handles_unreserved_and_space() {
+        assert_eq!(url_query_encode("abc"), "abc");
+        assert_eq!(url_query_encode("a b c"), "a+b+c");
+        assert_eq!(url_query_encode("foo?bar=baz"), "foo%3Fbar%3Dbaz");
+        assert_eq!(url_query_encode("a-_.~"), "a-_.~");
+        assert_eq!(url_query_encode(""), "");
+    }
+
+    /// Read row `r` of `g` as a `String` for assertion-friendly inspection.
+    fn row_text(g: &Grid, r: u32) -> String {
+        (0..g.cols)
+            .map(|c| g.cells[(r * g.cols + c) as usize].ch)
+            .collect()
+    }
+
+    #[test]
+    fn paint_browser_chrome_renders_chips_and_url() {
+        let mut g = Grid::new(40, 4, CLEAR_BG);
+        let chrome = BrowserChrome::default();
+        paint_browser_chrome(&mut g, "https://example.com", &chrome);
+        let row0 = row_text(&g, 0);
+        assert!(row0.starts_with("[<] [>] [⟳]"), "got {row0:?}");
+        assert!(row0.contains("https://example.com"), "got {row0:?}");
+    }
+
+    #[test]
+    fn paint_browser_chrome_shows_edit_buffer_and_cursor() {
+        let mut g = Grid::new(40, 4, CLEAR_BG);
+        let chrome = BrowserChrome {
+            edit: Some("typing".to_string()),
+            cursor: 6,
+        };
+        paint_browser_chrome(&mut g, "https://example.com", &chrome);
+        let row0 = row_text(&g, 0);
+        // URL bar shows the edit buffer, not the read-only URL.
+        assert!(row0.contains("typing"), "got {row0:?}");
+        assert!(!row0.contains("example.com"), "got {row0:?}");
+        // Cursor block at the end (after `typing`).
+        assert!(row0.contains('│'), "expected cursor block in {row0:?}");
+    }
 
     #[test]
     fn committed_tab_name_trims_and_clears_on_blank() {

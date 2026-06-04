@@ -450,11 +450,16 @@ impl App {
                             paint_idle(grid, *conn, &server.socket_path);
                         }
                     }
-                    PaneKind::Browser { url, webview } => {
-                        // Re-center the placeholder under the webview
-                        // for the new rect (visible only if the wry
-                        // mount failed).
+                    PaneKind::Browser {
+                        url,
+                        webview,
+                        chrome,
+                    } => {
+                        // Paint the chrome strip on row 0 + the
+                        // placeholder underneath (visible only if the
+                        // wry mount failed).
                         paint_browser_placeholder(grid, url);
+                        paint_browser_chrome(grid, url, chrome);
                         if let Some(v) = webview.as_ref() {
                             if tab_visible {
                                 // Project the leaf rect (in cells) to
@@ -462,11 +467,14 @@ impl App {
                                 // and resize the WebView to match.
                                 // `strip_h_px` accounts for the tab strip
                                 // above the body; `inset_px` is the
-                                // body's left/top inset.
+                                // body's left/top inset. Reserve one
+                                // cell row at the top for the chrome
+                                // strip so the WebView doesn't overlay
+                                // it.
                                 let x_px = inset_px + rect.x as f32 * cell_w;
-                                let y_px = strip_h_px + rect.y as f32 * cell_h;
+                                let y_px = strip_h_px + rect.y as f32 * cell_h + cell_h;
                                 let w_px = rect.w as f32 * cell_w;
-                                let h_px = rect.h as f32 * cell_h;
+                                let h_px = (rect.h.saturating_sub(1)) as f32 * cell_h;
                                 let _ = v.set_bounds(wry::Rect {
                                     position: wry::dpi::LogicalPosition::new(
                                         x_px as i32,
@@ -573,6 +581,7 @@ impl App {
             kind: PaneKind::Browser {
                 url: url.clone(),
                 webview,
+                chrome: crate::BrowserChrome::default(),
             },
             grid,
             last_cursor: None,
@@ -1841,11 +1850,134 @@ impl App {
                     server.send_input(&input);
                 }
             }
-            PaneKind::Browser { .. } => {
-                // Phase 1: keyboard input falls on the floor while a
-                // Browser pane is focused. Phase 2 will route it into
-                // the wry WebView via the platform-native input API
-                // (WKWebView -[keyDown:] on macOS, etc.).
+            PaneKind::Browser {
+                url,
+                webview,
+                chrome,
+            } => {
+                // URL bar edit mode: keys go to the edit buffer, not
+                // the WebView. The WebView itself receives keyboard
+                // input directly from the OS (focused NSView /
+                // GtkWidget / HWND) — so when the bar isn't being
+                // edited we don't need to forward anything.
+                if let Some(edit) = chrome.edit.as_mut() {
+                    use winit::keyboard::NamedKey;
+                    let mut redraw = false;
+                    match &ke.logical_key {
+                        Key::Named(NamedKey::Escape) => {
+                            chrome.edit = None;
+                            chrome.cursor = 0;
+                            redraw = true;
+                        }
+                        Key::Named(NamedKey::Enter) => {
+                            // Commit: load whatever's typed. If it
+                            // doesn't look like a URL, prepend https://
+                            // — same heuristic as a browser's address
+                            // bar (clipboard split uses the same one).
+                            let raw = edit.trim().to_string();
+                            let candidate = if raw.starts_with("http://")
+                                || raw.starts_with("https://")
+                                || raw.starts_with("about:")
+                                || raw.starts_with("file://")
+                            {
+                                raw
+                            } else if raw.contains('.') {
+                                format!("https://{raw}")
+                            } else {
+                                // No dot → search query. DuckDuckGo
+                                // is the default landing page; route
+                                // queries there for consistency.
+                                format!(
+                                    "https://duckduckgo.com/?q={}",
+                                    crate::url_query_encode(&raw)
+                                )
+                            };
+                            if let Some(v) = webview.as_ref() {
+                                let _ = v.load_url(&candidate);
+                            }
+                            *url = candidate;
+                            chrome.edit = None;
+                            chrome.cursor = 0;
+                            redraw = true;
+                        }
+                        Key::Named(NamedKey::Backspace) => {
+                            if chrome.cursor > 0 {
+                                // Convert cursor (in chars) to byte
+                                // index, drop the previous char.
+                                let byte = edit
+                                    .char_indices()
+                                    .nth(chrome.cursor - 1)
+                                    .map(|(b, _)| b)
+                                    .unwrap_or(0);
+                                let end = edit
+                                    .char_indices()
+                                    .nth(chrome.cursor)
+                                    .map(|(b, _)| b)
+                                    .unwrap_or_else(|| edit.len());
+                                edit.replace_range(byte..end, "");
+                                chrome.cursor -= 1;
+                                redraw = true;
+                            }
+                        }
+                        Key::Named(NamedKey::Delete) => {
+                            if chrome.cursor < edit.chars().count() {
+                                let byte = edit
+                                    .char_indices()
+                                    .nth(chrome.cursor)
+                                    .map(|(b, _)| b)
+                                    .unwrap_or(0);
+                                let end = edit
+                                    .char_indices()
+                                    .nth(chrome.cursor + 1)
+                                    .map(|(b, _)| b)
+                                    .unwrap_or_else(|| edit.len());
+                                edit.replace_range(byte..end, "");
+                                redraw = true;
+                            }
+                        }
+                        Key::Named(NamedKey::ArrowLeft) => {
+                            if chrome.cursor > 0 {
+                                chrome.cursor -= 1;
+                                redraw = true;
+                            }
+                        }
+                        Key::Named(NamedKey::ArrowRight) => {
+                            if chrome.cursor < edit.chars().count() {
+                                chrome.cursor += 1;
+                                redraw = true;
+                            }
+                        }
+                        Key::Named(NamedKey::Home) => {
+                            chrome.cursor = 0;
+                            redraw = true;
+                        }
+                        Key::Named(NamedKey::End) => {
+                            chrome.cursor = edit.chars().count();
+                            redraw = true;
+                        }
+                        _ => {
+                            // Typed text — only commit printable chars.
+                            if let Some(text) = &ke.text
+                                && !text.is_empty()
+                            {
+                                let byte = edit
+                                    .char_indices()
+                                    .nth(chrome.cursor)
+                                    .map(|(b, _)| b)
+                                    .unwrap_or_else(|| edit.len());
+                                edit.insert_str(byte, text);
+                                chrome.cursor += text.chars().count();
+                                redraw = true;
+                            }
+                        }
+                    }
+                    if redraw {
+                        self.relayout_all_panes();
+                    }
+                }
+                // No edit in progress → keys fall on the floor at the
+                // app layer; the WebView's native widget already has
+                // OS-level keyboard focus and handles its own input.
             }
         }
     }
@@ -2116,6 +2248,52 @@ impl App {
             if pressed {
                 self.tabs[self.active].focused = id;
             }
+            // Browser pane chrome row — intercept the click before
+            // the WebView would otherwise eat it. The WebView
+            // composites over rows 1.., so any click landing at
+            // local row 0 is on our cell-grid chrome strip.
+            if pressed
+                && let PaneKind::Browser {
+                    url,
+                    webview,
+                    chrome,
+                } = &mut self.tabs[self.active].panes[id].kind
+                && let Some(chip) = crate::browser_chip_at(lc, lr)
+            {
+                match chip {
+                    crate::BrowserChip::Back => {
+                        if let Some(v) = webview.as_ref() {
+                            let _ = v.evaluate_script("history.back()");
+                        }
+                    }
+                    crate::BrowserChip::Forward => {
+                        if let Some(v) = webview.as_ref() {
+                            let _ = v.evaluate_script("history.forward()");
+                        }
+                    }
+                    crate::BrowserChip::Reload => {
+                        if let Some(v) = webview.as_ref() {
+                            let _ = v.evaluate_script("location.reload()");
+                        }
+                    }
+                    crate::BrowserChip::UrlBar => {
+                        // Start an edit pre-loaded with the current URL,
+                        // cursor at end.
+                        let s = url.clone();
+                        let cursor = s.chars().count();
+                        chrome.edit = Some(s);
+                        chrome.cursor = cursor;
+                    }
+                }
+                self.relayout_all_panes();
+                return;
+            }
+            // A click outside any chrome row commits-as-cancel any
+            // in-progress URL edit on any Browser pane. Same idea as
+            // the tab-rename inline editor.
+            if pressed {
+                self.cancel_browser_url_edits();
+            }
             if let PaneKind::Native { server, .. } = &self.tabs[self.active].panes[id].kind {
                 server.send_input(&InputEvent::Mouse(MouseInput {
                     kind: if pressed {
@@ -2129,6 +2307,27 @@ impl App {
                     mods: pack_mods(self.mods),
                 }));
             }
+        }
+    }
+
+    /// Drop any in-progress URL edits across every tab's Browser panes.
+    /// Called on a body click outside the chrome strip — same gesture
+    /// that commits a tab rename.
+    fn cancel_browser_url_edits(&mut self) {
+        let mut changed = false;
+        for tab in self.tabs.iter_mut() {
+            for pane in tab.panes.iter_mut() {
+                if let PaneKind::Browser { chrome, .. } = &mut pane.kind
+                    && chrome.edit.is_some()
+                {
+                    chrome.edit = None;
+                    chrome.cursor = 0;
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.relayout_all_panes();
         }
     }
 
