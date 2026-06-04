@@ -248,6 +248,25 @@ fn builtin_commands() -> Vec<Command> {
             },
             when: Some(no_modal_open),
         },
+        // ⌥⌘B — split focused pane vertically, opening a Browser pane.
+        // Phase 1 stub: paints a placeholder grid; Phase 2 mounts a
+        // real wry WebView over the pane's rect.
+        Command {
+            id: "split.browser_right",
+            title: "Split right with browser",
+            group: "Splits",
+            keys: &["cmd+alt+b"],
+            run: |app, _event_loop, _ke| {
+                app.split_active_pane_browser(
+                    crate::layout::SplitDir::Vertical,
+                    "https://duckduckgo.com".to_string(),
+                );
+                if let Some(w) = &app.window {
+                    w.request_redraw();
+                }
+            },
+            when: Some(no_modal_open),
+        },
         // ⌘⇧[ — cycle tab backward.
         Command {
             id: "tab.cycle_back",

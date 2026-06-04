@@ -140,6 +140,21 @@ enum PaneKind {
         /// back to "mnml" in the label-resolution chain.
         client_title: Option<String>,
     },
+    /// Web browser pane — hosts a `wry::WebView` overlaid on the wgpu
+    /// surface in this pane's rect. The grid stays mostly empty
+    /// (only paints a placeholder when the webview hasn't mounted
+    /// yet); the actual page content lives in the webview's own
+    /// native surface compositing above us. See `app.rs::
+    /// split_active_pane_browser` for the open flow.
+    Browser {
+        /// Current URL — the source of truth driving the webview's
+        /// load target + the chip label.
+        url: String,
+        /// `Some` once the webview has been mounted into the parent
+        /// winit window. `None` while wry isn't wired (Phase 1
+        /// scaffolding) or transiently between tab show/hide.
+        webview: Option<()>,
+    },
 }
 
 /// One pane — a leaf in a tab's split layout. Each pane owns its
@@ -1134,6 +1149,32 @@ fn grid_dims(w: u32, h: u32, atlas: &Atlas, inset_px: f32, strip: f32) -> (u32, 
     (cols, rows)
 }
 
+/// Placeholder grid for a Browser pane that has no live `wry::WebView`
+/// yet (Phase 1 scaffolding). Centered "browser" title + the target
+/// URL + a "(webview integration pending)" status line. Phase 2 will
+/// stop painting this once the wgpu surface is overlaid by the
+/// webview.
+pub(crate) fn paint_browser_placeholder(grid: &mut Grid, url: &str) {
+    grid.clear();
+    if grid.rows < 4 || grid.cols < 16 {
+        return;
+    }
+    let row = grid.rows / 2;
+    let title = "browser";
+    let title_col = (grid.cols.saturating_sub(title.chars().count() as u32)) / 2;
+    grid.write(title_col, row.saturating_sub(2), title, ACCENT_FG, CLEAR_BG);
+
+    let url_str = url.chars().take(grid.cols as usize).collect::<String>();
+    let url_col = (grid.cols.saturating_sub(url_str.chars().count() as u32)) / 2;
+    grid.write(url_col, row, &url_str, TEXT_FG, CLEAR_BG);
+
+    let hint = "(webview integration pending)";
+    if hint.chars().count() < grid.cols as usize {
+        let col = (grid.cols.saturating_sub(hint.chars().count() as u32)) / 2;
+        grid.write(col, row + 2, hint, DIM_FG, CLEAR_BG);
+    }
+}
+
 fn paint_idle(grid: &mut Grid, state: ConnState, socket_path: &std::path::Path) {
     grid.clear();
     if grid.rows < 3 || grid.cols < 10 {
@@ -1601,6 +1642,18 @@ fn compute_pane_label(pane: &mut Pane) -> String {
             // "mnml" pre-handshake.
             ConnState::Streaming => client_title.clone().unwrap_or_else(|| "mnml".to_string()),
         },
+        PaneKind::Browser { url, .. } => {
+            // Strip the scheme + path; show the bare host so the chip
+            // stays scannable. `duckduckgo.com` is more useful than
+            // `https://duckduckgo.com/?q=foo` on a tiny tab strip.
+            url.split("://")
+                .nth(1)
+                .unwrap_or(url)
+                .split('/')
+                .next()
+                .unwrap_or(url)
+                .to_string()
+        }
     }
 }
 
@@ -1667,6 +1720,12 @@ fn tick_secondary_pane(pane: &mut Pane, visible: bool) {
                 s.apply_to_grid(grid);
                 *last_cursor = None; // only the focused pane draws a cursor
             }
+        }
+        PaneKind::Browser { .. } => {
+            // No-op in Phase 1 — the placeholder grid was painted at
+            // creation by `app::paint_browser_placeholder`. Phase 2
+            // mounts a wry WebView; this branch will become responsible
+            // for repositioning/hiding the webview on tab show/hide.
         }
     }
 }

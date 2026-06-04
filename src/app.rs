@@ -69,6 +69,9 @@ impl ApplicationHandler for App {
             PaneKind::Native { server, conn, .. } => {
                 paint_idle(grid, *conn, &server.socket_path);
             }
+            PaneKind::Browser { url, .. } => {
+                paint_browser_placeholder(grid, url);
+            }
         }
         window.request_redraw();
         self.window = Some(window);
@@ -431,6 +434,12 @@ impl App {
                             paint_idle(grid, *conn, &server.socket_path);
                         }
                     }
+                    PaneKind::Browser { url, .. } => {
+                        // Re-center the placeholder for the new rect.
+                        // Phase 2 will instead reposition the wry
+                        // WebView's underlying NSView/HWND here.
+                        paint_browser_placeholder(grid, url);
+                    }
                 }
             }
         }
@@ -463,6 +472,42 @@ impl App {
             grid: grid::Grid::new(cols, rows, CLEAR_BG),
             last_cursor: None,
             label,
+            attention: false,
+            last_status: None,
+        });
+        tab.layout.split_leaf(tab.focused, dir, new_id);
+        tab.focused = new_id;
+        self.relayout_all_panes();
+    }
+
+    /// Split the active pane in direction `dir`, opening a Browser
+    /// pane pointed at `url`. Phase 1 paints a placeholder grid;
+    /// Phase 2 mounts a real `wry::WebView` over the pane's rect.
+    pub(crate) fn split_active_pane_browser(&mut self, dir: SplitDir, url: String) {
+        let (cols, rows) = match self.gpu.as_ref() {
+            Some(gpu) => (gpu.grid.cols, gpu.grid.rows),
+            None => return,
+        };
+        let mut grid = grid::Grid::new(cols, rows, CLEAR_BG);
+        paint_browser_placeholder(&mut grid, &url);
+        let host = url
+            .split("://")
+            .nth(1)
+            .unwrap_or(&url)
+            .split('/')
+            .next()
+            .unwrap_or(&url)
+            .to_string();
+        let tab = &mut self.tabs[self.active];
+        let new_id = tab.panes.len();
+        tab.panes.push(Pane {
+            kind: PaneKind::Browser {
+                url: url.clone(),
+                webview: None,
+            },
+            grid,
+            last_cursor: None,
+            label: host,
             attention: false,
             last_status: None,
         });
@@ -981,6 +1026,11 @@ impl App {
                             }
                         }
                     }
+                }
+                PaneKind::Browser { .. } => {
+                    // Phase 1: focused-pane work is a no-op (placeholder
+                    // grid stays put). Phase 2 will route mouse/keyboard
+                    // events into the wry WebView's NSView/HWND.
                 }
             }
         }
@@ -1571,6 +1621,11 @@ impl App {
                     let _ = l.wait_for_exit(std::time::Duration::from_millis(1200));
                 }
             }
+            PaneKind::Browser { webview, .. } => {
+                // Drop the wry WebView (no-op in Phase 1 — `webview`
+                // is the unit-type placeholder).
+                *webview = None;
+            }
         }
     }
 
@@ -1679,6 +1734,12 @@ impl App {
                     });
                     server.send_input(&input);
                 }
+            }
+            PaneKind::Browser { .. } => {
+                // Phase 1: keyboard input falls on the floor while a
+                // Browser pane is focused. Phase 2 will route it into
+                // the wry WebView via the platform-native input API
+                // (WKWebView -[keyDown:] on macOS, etc.).
             }
         }
     }
