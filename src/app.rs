@@ -1609,6 +1609,61 @@ impl App {
         consumed
     }
 
+    /// Greedy modal handler for the command palette. Returns true
+    /// when the key was consumed (so the regular keymap doesn't
+    /// double-fire).
+    pub(crate) fn palette_handle_key(
+        &mut self,
+        event_loop: &winit::event_loop::ActiveEventLoop,
+        ke: &winit::event::KeyEvent,
+    ) -> bool {
+        use winit::keyboard::{Key, NamedKey};
+        let Some(st) = self.palette.as_mut() else {
+            return false;
+        };
+        let consumed = match &ke.logical_key {
+            Key::Named(NamedKey::Escape) => {
+                self.palette = None;
+                true
+            }
+            Key::Named(NamedKey::Enter) => {
+                if let Some(id) = st.current_id() {
+                    // Capture before dropping the modal so the
+                    // borrow stays clean.
+                    let id_owned = id.to_string();
+                    self.palette = None;
+                    crate::command::dispatch_by_id(&id_owned, self, event_loop);
+                } else {
+                    self.palette = None;
+                }
+                true
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                st.move_selection(-1);
+                true
+            }
+            Key::Named(NamedKey::ArrowDown) => {
+                st.move_selection(1);
+                true
+            }
+            Key::Named(NamedKey::Backspace) => {
+                st.backspace();
+                true
+            }
+            Key::Character(s) => {
+                for c in s.chars() {
+                    st.insert_char(c);
+                }
+                true
+            }
+            _ => false,
+        };
+        if consumed && let Some(w) = &self.window {
+            w.request_redraw();
+        }
+        consumed
+    }
+
     /// Route a keystroke into the Settings modal. Returns true if the
     /// key was consumed (mode-specific handlers should skip it).
     fn settings_handle_key(&mut self, ke: &winit::event::KeyEvent) -> bool {
@@ -1807,6 +1862,11 @@ impl App {
         // Help overlay: Esc / ? close, arrows scroll. Greedy while
         // open so a stray ⌘T doesn't open a tab behind it.
         if self.help.is_some() && self.help_handle_key(&ke) {
+            return;
+        }
+        // Command palette: typed text refines filter, Enter
+        // dispatches. Greedy while open.
+        if self.palette.is_some() && self.palette_handle_key(event_loop, &ke) {
             return;
         }
         // Command-registry dispatch — chords migrated to
@@ -2440,6 +2500,14 @@ impl App {
         // Painted last so it sits above settings + welcome.
         if let (Some(gpu), Some(st)) = (self.gpu.as_mut(), self.help.as_ref()) {
             crate::help::draw(&mut gpu.grid, st);
+        }
+        // Command palette overlay — toggled by `view.palette`
+        // (default ⌘⇧P). Painted after help so an open palette
+        // sits above an in-flight help, on the off-chance both
+        // are open (palette opens close help via the modal
+        // dispatch ordering, but defensive ordering doesn't hurt).
+        if let (Some(gpu), Some(st)) = (self.gpu.as_mut(), self.palette.as_ref()) {
+            crate::palette::draw(&mut gpu.grid, st);
         }
         if let Some(gpu) = &mut self.gpu {
             gpu.render();

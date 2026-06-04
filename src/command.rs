@@ -426,7 +426,10 @@ fn goto_tab_or_forward(app: &mut App, ke: Option<&winit::event::KeyEvent>, n: us
 /// dispatch tab-management chords. The default guard for tmnl
 /// chord migrations.
 fn no_modal_open(app: &App) -> bool {
-    app.welcome.is_none() && app.settings.is_none() && app.renaming_tab.is_none()
+    app.welcome.is_none()
+        && app.settings.is_none()
+        && app.renaming_tab.is_none()
+        && app.palette.is_none()
 }
 
 /// Initial command set — `Cmd`-prefixed tab/split management chords.
@@ -569,36 +572,42 @@ fn builtin_commands() -> Vec<Command> {
             },
             when: Some(no_modal_open),
         },
-        // ⌘⇧P — family-wide "command palette" chord. Native pane:
-        // forward as ⌃⇧P so mnml's command palette opens (its
-        // existing `ctrl+shift+p` binding). Shell pane: no-op for
-        // now — tmnl's own palette overlay is a v2 (the registry
-        // exists; just no UI). Same Cmd→Ctrl bridge as Cmd+W /
-        // Cmd+1-9 / Cmd+P, just one chord wider.
+        // ⌘⇧P / F1 — family-wide "command palette" chord. Native
+        // pane: forward as ⌃⇧P so mnml's command palette opens
+        // (its existing `ctrl+shift+p` binding). Anywhere else
+        // (Shell, Browser, no pane): open tmnl's own palette
+        // overlay over the registry. Family-wide single chord.
         Command {
             id: "palette.open_or_forward",
             title: "Command palette",
             group: "View",
-            keys: &["cmd+shift+p"],
+            keys: &["cmd+shift+p", "f1"],
             run: |app, _event_loop, ke| {
                 use crate::PaneKind;
                 use crate::protocol::{InputEvent, KeyInput, MOD_CTRL, MOD_SHIFT};
+                // Native pane + we have a real KeyEvent ⇒ forward.
                 if let Some(ke) = ke
                     && matches!(
                         &app.tabs[app.active].focused_pane().kind,
                         PaneKind::Native { .. }
                     )
-                    && let PaneKind::Native { server, .. } =
-                        &mut app.tabs[app.active].focused_pane_mut().kind
-                    && let Some(code) = crate::translate_key(&ke.logical_key, app.mods)
                 {
-                    server.send_input(&InputEvent::Key(KeyInput {
-                        code,
-                        mods: MOD_CTRL | MOD_SHIFT,
-                        press: true,
-                    }));
-                } else {
-                    eprintln!("tmnl: command palette only opens in a Native (mnml) tab today");
+                    if let PaneKind::Native { server, .. } =
+                        &mut app.tabs[app.active].focused_pane_mut().kind
+                        && let Some(code) = crate::translate_key(&ke.logical_key, app.mods)
+                    {
+                        server.send_input(&InputEvent::Key(KeyInput {
+                            code,
+                            mods: MOD_CTRL | MOD_SHIFT,
+                            press: true,
+                        }));
+                    }
+                    return;
+                }
+                // Otherwise open the standalone palette overlay.
+                app.palette = Some(crate::palette::PaletteState::new());
+                if let Some(w) = &app.window {
+                    w.request_redraw();
                 }
             },
             when: Some(no_modal_open),

@@ -12,6 +12,7 @@ mod launcher;
 mod layout;
 mod menu;
 mod osc133;
+mod palette;
 mod pipeline;
 mod recents;
 mod server;
@@ -290,6 +291,12 @@ struct App {
     /// Help overlay state. `Some` while the overlay is up; `None`
     /// when closed. Toggled by `view.help` (default `cmd+shift+/`).
     help: Option<crate::help::HelpState>,
+    /// Command palette overlay — VS Code-style fuzzy picker over
+    /// every registered command. Opened by `view.palette`
+    /// (default `cmd+shift+p` when no Native pane focused; for
+    /// Native panes the same chord forwards to mnml). `None` when
+    /// closed. Greedy modal — its keys win ahead of everything else.
+    palette: Option<crate::palette::PaletteState>,
     cursor_cell: (u16, u16),
     /// Raw cursor pixel position from the most recent `CursorMoved`.
     /// Cached so `MouseInput` can hit-test the strip region (where pixel
@@ -2077,6 +2084,7 @@ fn main() {
         mods: ModifiersState::empty(),
         keymap: crate::keymap::Keymap::build(),
         help: None,
+        palette: None,
         cursor_cell: (0, 0),
         cursor_px: (0.0, 0.0),
         buttons_down: 0,
