@@ -184,6 +184,30 @@ to the OS clipboard, etc.).
 always switch tmnl tabs, so there's an unambiguous way to leave a Native tab
 when you're inside one.
 
+### Command palette (`Cmd+Shift+P` / `F1`)
+
+A VS Code-style fuzzy picker over the entries in tmnl's command registry.
+Behavior depends on the focused pane kind, matching the rest of the
+Cmd-forward family:
+
+- **Native pane focused** — `Cmd+Shift+P` forwards as `Ctrl+Shift+P` so
+  mnml's own command palette opens (mnml has its `view.palette` bound
+  identically). One muscle-memory chord across the family.
+- **Anywhere else** (Shell, Browser, no pane) — opens a tmnl-side
+  overlay centered on the window listing every registered command,
+  filtered live by typed substring against title + id. `↑↓` moves the
+  highlight, `Enter` runs the selected command via
+  `command::dispatch_by_id`, `Esc` closes. The same `view.palette`
+  command id; just resolved by tmnl rather than forwarded.
+
+`F1` is the terminal-proof alias — Ctrl+Shift+P only arrives distinct
+under the kitty keyboard protocol, and some terminals swallow it.
+
+The picker is a greedy modal: every keystroke goes to it while open,
+so other Cmd chords (`Cmd+T`, `Cmd+W`, …) are inert until you commit
+or cancel. The `no_modal_open` predicate that gates registry chords
+already includes `palette.is_none()`.
+
 ## Phase 1 limitations
 
 The implementation is honest about being early.
