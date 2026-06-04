@@ -135,6 +135,51 @@ fn read_clipboard_url() -> Option<String> {
     }
 }
 
+/// Toggle the Playwright dashboard's left sidebar in the focused
+/// Browser pane. Idempotent — re-running undoes the previous toggle
+/// by re-checking `<style id="tmnl-hide-dashboard-chrome">`. The
+/// CSS hides `.split-view-sidebar` (the session list) + its
+/// resizer; the `.split-view-main` viewport stretches to fill the
+/// pane via the dashboard's own flex layout.
+fn toggle_dashboard_chrome(app: &mut crate::App) {
+    use crate::PaneKind;
+    let focused = app.tabs[app.active].focused;
+    let pane = &app.tabs[app.active].panes[focused];
+    let PaneKind::Browser { webview, .. } = &pane.kind else {
+        eprintln!("tmnl: cmd+alt+h only works in a Browser pane");
+        return;
+    };
+    let Some(v) = webview.as_ref() else {
+        eprintln!("tmnl: this Browser pane's WebView didn't mount");
+        return;
+    };
+    // Self-contained IIFE; toggles by inserting/removing the
+    // `<style>` tag with a known id. Wrapped in try/catch so a
+    // page that hasn't fully loaded doesn't surface as an error.
+    let js = r#"
+        (function() {
+            try {
+                var id = 'tmnl-hide-dashboard-chrome';
+                var existing = document.getElementById(id);
+                if (existing) {
+                    existing.remove();
+                } else {
+                    var s = document.createElement('style');
+                    s.id = id;
+                    s.textContent =
+                        '.split-view-sidebar { display: none !important; }' +
+                        '.split-view-sash { display: none !important; }' +
+                        '.split-view-main { width: 100% !important; flex: 1 1 100% !important; }';
+                    document.head.appendChild(s);
+                }
+            } catch (e) {
+                /* swallow */
+            }
+        })();
+    "#;
+    let _ = v.evaluate_script(js);
+}
+
 fn read_clipboard_text() -> Option<String> {
     let cmd: (&str, &[&str]);
     #[cfg(target_os = "macos")]
@@ -325,6 +370,28 @@ fn builtin_commands() -> Vec<Command> {
                     return;
                 };
                 app.split_active_pane_browser(crate::layout::SplitDir::Vertical, url);
+                if let Some(w) = &app.window {
+                    w.request_redraw();
+                }
+            },
+            when: Some(no_modal_open),
+        },
+        // ⌥⌘H — toggle the Playwright dashboard's chrome (sidebar
+        // + split-view sash) in the focused Browser pane. After
+        // running `playwright-cli show` and pasting its URL with
+        // Cmd+Opt+V, click the session you want, then Cmd+Opt+H to
+        // hide the sidebar — the session's viewport fills the
+        // pane. Cmd+Opt+H again to bring the sidebar back to
+        // switch sessions. Same wry pane, same dashboard URL,
+        // same WebSocket / CDP-screencast performance — we're
+        // just toggling CSS.
+        Command {
+            id: "browser.toggle_dashboard_chrome",
+            title: "Toggle Playwright dashboard chrome (sidebar)",
+            group: "Browser",
+            keys: &["cmd+alt+h"],
+            run: |app, _event_loop, _ke| {
+                toggle_dashboard_chrome(app);
                 if let Some(w) = &app.window {
                     w.request_redraw();
                 }
