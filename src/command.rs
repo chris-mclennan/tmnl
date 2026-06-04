@@ -569,6 +569,40 @@ fn builtin_commands() -> Vec<Command> {
             },
             when: Some(no_modal_open),
         },
+        // ⌘⇧P — family-wide "command palette" chord. Native pane:
+        // forward as ⌃⇧P so mnml's command palette opens (its
+        // existing `ctrl+shift+p` binding). Shell pane: no-op for
+        // now — tmnl's own palette overlay is a v2 (the registry
+        // exists; just no UI). Same Cmd→Ctrl bridge as Cmd+W /
+        // Cmd+1-9 / Cmd+P, just one chord wider.
+        Command {
+            id: "palette.open_or_forward",
+            title: "Command palette",
+            group: "View",
+            keys: &["cmd+shift+p"],
+            run: |app, _event_loop, ke| {
+                use crate::PaneKind;
+                use crate::protocol::{InputEvent, KeyInput, MOD_CTRL, MOD_SHIFT};
+                if let Some(ke) = ke
+                    && matches!(
+                        &app.tabs[app.active].focused_pane().kind,
+                        PaneKind::Native { .. }
+                    )
+                    && let PaneKind::Native { server, .. } =
+                        &mut app.tabs[app.active].focused_pane_mut().kind
+                    && let Some(code) = crate::translate_key(&ke.logical_key, app.mods)
+                {
+                    server.send_input(&InputEvent::Key(KeyInput {
+                        code,
+                        mods: MOD_CTRL | MOD_SHIFT,
+                        press: true,
+                    }));
+                } else {
+                    eprintln!("tmnl: command palette only opens in a Native (mnml) tab today");
+                }
+            },
+            when: Some(no_modal_open),
+        },
         // ⌥⌘⇧D — same as `browser.attach_dashboard` but registers a
         // page-load script that clicks the first session row + hides
         // the chrome as soon as the dashboard's React tree mounts.
