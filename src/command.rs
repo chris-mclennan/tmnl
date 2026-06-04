@@ -135,6 +135,75 @@ fn read_clipboard_url() -> Option<String> {
     }
 }
 
+/// Try to discover an already-running Playwright dashboard via CDP
+/// at `debug_port` first; if nothing's there, spawn one with
+/// `PLAYWRIGHT_DASHBOARD_DEBUG_PORT=debug_port` (headless mode)
+/// and poll CDP until the dashboard target shows up.
+///
+/// Returns the dashboard's local URL (e.g. `http://localhost:54321/`)
+/// — that's what gets opened in the Browser pane.
+fn spawn_or_attach_dashboard(debug_port: u16) -> Result<String, String> {
+    if let Some(url) = discover_dashboard_url(debug_port) {
+        return Ok(url);
+    }
+    spawn_playwright_show(debug_port)?;
+    // ~5s poll. Cold-start of `playwright-cli show` is dominated by
+    // Node bootstrap + chromium download check + persistent context
+    // launch — most of a second on warm caches, longer on first
+    // run after a Playwright upgrade.
+    for _ in 0..25 {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        if let Some(url) = discover_dashboard_url(debug_port) {
+            return Ok(url);
+        }
+    }
+    Err("timed out waiting for dashboard CDP at localhost:9222".into())
+}
+
+/// CDP /json/list returns an array of targets. We want the one
+/// whose URL is the dashboard's HTTP-server URL — `http://localhost:`
+/// prefixed and *not* the `data:text/html,` bootstrap target chromium
+/// opens before navigating.
+fn discover_dashboard_url(debug_port: u16) -> Option<String> {
+    let body = ureq::get(&format!("http://localhost:{debug_port}/json/list"))
+        .timeout(std::time::Duration::from_secs(2))
+        .call()
+        .ok()?
+        .into_string()
+        .ok()?;
+    // Hand-rolled scan — avoid `serde_json` to keep the binary lean
+    // (same call we made in update_check.rs).
+    let needle = "\"url\":\"http://localhost:";
+    let mut from = 0;
+    while let Some(rel) = body[from..].find(needle) {
+        let start = from + rel + "\"url\":\"".len();
+        let after = &body[start..];
+        if let Some(end) = after.find('"') {
+            let url = &after[..end];
+            if !url.contains("data:") && !url.starts_with("chrome://") {
+                return Some(url.to_string());
+            }
+        }
+        from += rel + needle.len();
+    }
+    None
+}
+
+fn spawn_playwright_show(debug_port: u16) -> Result<(), String> {
+    let mut cmd = std::process::Command::new("playwright-cli");
+    cmd.arg("show")
+        .env("PLAYWRIGHT_DASHBOARD_DEBUG_PORT", debug_port.to_string())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    cmd.spawn().map_err(|e| {
+        format!(
+            "spawn playwright-cli: {e}. Is `playwright-cli` on PATH? Try `npm i -g @playwright/cli` or run from a directory with @playwright/cli in node_modules."
+        )
+    })?;
+    Ok(())
+}
+
 /// Toggle the Playwright dashboard's left sidebar in the focused
 /// Browser pane. Idempotent — re-running undoes the previous toggle
 /// by re-checking `<style id="tmnl-hide-dashboard-chrome">`. The
@@ -373,6 +442,39 @@ fn builtin_commands() -> Vec<Command> {
                 if let Some(w) = &app.window {
                     w.request_redraw();
                 }
+            },
+            when: Some(no_modal_open),
+        },
+        // ⌥⌘D — spawn (or attach to an existing) Playwright
+        // dashboard, embed it in a new Browser pane. Handles the
+        // "go to terminal and run playwright-cli show" step + the
+        // "copy URL from Chrome" step in one chord.
+        //
+        // Mechanism: spawns `playwright-cli show` with
+        // `PLAYWRIGHT_DASHBOARD_DEBUG_PORT=9222` set, so the
+        // dashboard's chromium goes headless (no floating window)
+        // but the HTTP server still serves on a random port. We
+        // poll CDP at 9222 for up to ~5s, ask `/json/list` for
+        // the open targets, and pick the one whose URL points at
+        // localhost — that's the dashboard URL. Open it in a wry
+        // pane. After that the user clicks a session in the
+        // dashboard's sidebar + Cmd+Opt+H to hide chrome.
+        //
+        // If `playwright-cli` isn't on PATH the chord no-ops with
+        // an stderr hint.
+        Command {
+            id: "browser.attach_dashboard",
+            title: "Spawn + attach Playwright dashboard",
+            group: "Browser",
+            keys: &["cmd+alt+d"],
+            run: |app, _event_loop, _ke| match spawn_or_attach_dashboard(9222) {
+                Ok(url) => {
+                    app.split_active_pane_browser(crate::layout::SplitDir::Vertical, url);
+                    if let Some(w) = &app.window {
+                        w.request_redraw();
+                    }
+                }
+                Err(e) => eprintln!("tmnl: dashboard attach failed — {e}"),
             },
             when: Some(no_modal_open),
         },
