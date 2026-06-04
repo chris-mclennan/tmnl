@@ -49,6 +49,18 @@ portable-pty = "0.8"
 # Native macOS menu bar (tmnl / Shell / Edit / View / Window / Help).
 # Same crate version as mixr so we share one source-of-truth.
 muda = "0.16"
+# Embedded WebView for `PaneKind::Browser` (split-pane web view).
+# Same version mixr uses for its Beatport login WebView — keeps the
+# family on one wry across the workspace. `build_as_child` (wry 0.45+)
+# mounts a WKWebView/WebKitGTK/WebView2 as a sub-region of an existing
+# winit window using its raw window handle. Linux deps:
+# libwebkit2gtk-4.1-dev + libsoup-3.0-dev (added to release CI in a
+# follow-up); macOS + Windows pull their webviews from the OS.
+wry = "0.45"
+# Bridges winit ↔ wry: we hand wry the parent window's
+# `RawWindowHandle` (the winit window) so it knows where to mount the
+# child WebView.
+raw-window-handle = "0.6"
 # Config persistence — `~/.config/tmnl/config.toml`.
 toml = { version = "0.8", default-features = false, features = ["parse", "display"] }
 # Background "is there a newer release?" probe (src/update_check.rs).

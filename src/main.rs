@@ -141,19 +141,19 @@ enum PaneKind {
         client_title: Option<String>,
     },
     /// Web browser pane — hosts a `wry::WebView` overlaid on the wgpu
-    /// surface in this pane's rect. The grid stays mostly empty
-    /// (only paints a placeholder when the webview hasn't mounted
-    /// yet); the actual page content lives in the webview's own
-    /// native surface compositing above us. See `app.rs::
-    /// split_active_pane_browser` for the open flow.
+    /// surface in this pane's rect. The grid keeps the placeholder
+    /// underneath but the webview's native surface composites over
+    /// it (NSView on macOS, GtkWidget on Linux, HWND on Windows).
+    /// See `app.rs::split_active_pane_browser` for the open flow.
     Browser {
         /// Current URL — the source of truth driving the webview's
         /// load target + the chip label.
         url: String,
-        /// `Some` once the webview has been mounted into the parent
-        /// winit window. `None` while wry isn't wired (Phase 1
-        /// scaffolding) or transiently between tab show/hide.
-        webview: Option<()>,
+        /// The wry WebView mounted as a sub-region of the parent
+        /// winit window. `None` until the GPU/window is available
+        /// (we don't create webviews pre-resume) or while we're
+        /// re-mounting after a tab hide/show cycle.
+        webview: Option<wry::WebView>,
     },
 }
 

@@ -408,8 +408,15 @@ impl App {
     /// the window grid is resized (window resize, font zoom, strip /
     /// inset change) OR a tab's layout changes (split / close).
     fn relayout_all_panes(&mut self) {
-        let (cols, rows) = match self.gpu.as_ref() {
-            Some(gpu) => (gpu.grid.cols, gpu.grid.rows),
+        let (cols, rows, cell_w, cell_h, strip_h_px, inset_px) = match self.gpu.as_ref() {
+            Some(gpu) => (
+                gpu.grid.cols,
+                gpu.grid.rows,
+                gpu.atlas.cell_w,
+                gpu.atlas.cell_h,
+                gpu.strip_h,
+                gpu.inset_px,
+            ),
             None => return,
         };
         let area = Rect::new(0, 0, cols, rows);
@@ -434,11 +441,31 @@ impl App {
                             paint_idle(grid, *conn, &server.socket_path);
                         }
                     }
-                    PaneKind::Browser { url, .. } => {
-                        // Re-center the placeholder for the new rect.
-                        // Phase 2 will instead reposition the wry
-                        // WebView's underlying NSView/HWND here.
+                    PaneKind::Browser { url, webview } => {
+                        // Re-center the placeholder under the webview
+                        // for the new rect (visible only if the wry
+                        // mount failed).
                         paint_browser_placeholder(grid, url);
+                        // Project the leaf rect (in cells) to logical
+                        // pixels inside the parent window and resize
+                        // the WebView to match. `strip_h_px` accounts
+                        // for the tab strip above the body; `inset_px`
+                        // is the body's left/top inset.
+                        if let Some(v) = webview.as_ref() {
+                            let x_px = inset_px + rect.x as f32 * cell_w;
+                            let y_px = strip_h_px + rect.y as f32 * cell_h;
+                            let w_px = rect.w as f32 * cell_w;
+                            let h_px = rect.h as f32 * cell_h;
+                            let _ = v.set_bounds(wry::Rect {
+                                position: wry::dpi::LogicalPosition::new(x_px as i32, y_px as i32)
+                                    .into(),
+                                size: wry::dpi::LogicalSize::new(
+                                    w_px.max(1.0) as u32,
+                                    h_px.max(1.0) as u32,
+                                )
+                                .into(),
+                            });
+                        }
                     }
                 }
             }
@@ -481,8 +508,11 @@ impl App {
     }
 
     /// Split the active pane in direction `dir`, opening a Browser
-    /// pane pointed at `url`. Phase 1 paints a placeholder grid;
-    /// Phase 2 mounts a real `wry::WebView` over the pane's rect.
+    /// pane pointed at `url`. Mounts a `wry::WebView` as a sub-region
+    /// of the parent winit window; the WebView's native surface
+    /// (WKWebView / WebKitGTK / WebView2) composites over the wgpu
+    /// frame. Position is tightened to the pane's rect by
+    /// `relayout_all_panes` at the end.
     pub(crate) fn split_active_pane_browser(&mut self, dir: SplitDir, url: String) {
         let (cols, rows) = match self.gpu.as_ref() {
             Some(gpu) => (gpu.grid.cols, gpu.grid.rows),
@@ -498,12 +528,20 @@ impl App {
             .next()
             .unwrap_or(&url)
             .to_string();
+
+        // Attempt to mount the webview. Initial bounds are 0,0,0,0
+        // — `relayout_all_panes` immediately repositions it to the
+        // pane's actual rect. Failure to create (e.g. WebView2
+        // runtime missing on Windows) leaves `webview = None`; the
+        // placeholder grid is the visible fallback.
+        let webview = self.try_create_webview(&url);
+
         let tab = &mut self.tabs[self.active];
         let new_id = tab.panes.len();
         tab.panes.push(Pane {
             kind: PaneKind::Browser {
                 url: url.clone(),
-                webview: None,
+                webview,
             },
             grid,
             last_cursor: None,
@@ -514,6 +552,31 @@ impl App {
         tab.layout.split_leaf(tab.focused, dir, new_id);
         tab.focused = new_id;
         self.relayout_all_panes();
+    }
+
+    /// Create the `wry::WebView` mounted in `self.window`. Returns
+    /// `None` if there's no parent window yet (pre-`resumed`) or if
+    /// wry's child-mount fails (e.g. missing WebView2 runtime on
+    /// Windows). Same signature on all platforms — wry abstracts the
+    /// per-OS native view.
+    fn try_create_webview(&self, url: &str) -> Option<wry::WebView> {
+        use raw_window_handle::HasWindowHandle;
+        let window = self.window.as_ref()?;
+        let handle = window.window_handle().ok()?;
+        match wry::WebViewBuilder::new_as_child(&handle)
+            .with_url(url)
+            .with_bounds(wry::Rect {
+                position: wry::dpi::LogicalPosition::new(0, 0).into(),
+                size: wry::dpi::LogicalSize::new(1, 1).into(),
+            })
+            .build()
+        {
+            Ok(v) => Some(v),
+            Err(e) => {
+                log::warn!("tmnl: WebView mount failed for {url}: {e}");
+                None
+            }
+        }
     }
 
     /// Open a new Native pane running `command args…` as a vertical
