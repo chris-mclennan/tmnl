@@ -395,10 +395,17 @@ impl App {
     /// grids permanently (the compositor reads them in place), so the
     /// only thing left is clearing the attention badge — the user is
     /// now looking at this tab.
+    ///
+    /// Triggers `relayout_all_panes` so any Browser panes on the
+    /// newly-active tab move on-screen and the just-deactivated tab's
+    /// Browser panes get parked off-screen — wry's native widget
+    /// composites over the wgpu frame regardless of which tab "owns"
+    /// it, so we need to actively reposition them on every tab swap.
     fn on_tab_focused(&mut self) {
         for pane in &mut self.tabs[self.active].panes {
             pane.attention = false;
         }
+        self.relayout_all_panes();
     }
 
     /// Resize every pane in every tab to its leaf rect under the
@@ -420,7 +427,9 @@ impl App {
             None => return,
         };
         let area = Rect::new(0, 0, cols, rows);
-        for tab in self.tabs.iter_mut() {
+        let active_tab = self.active;
+        for (tab_idx, tab) in self.tabs.iter_mut().enumerate() {
+            let tab_visible = tab_idx == active_tab;
             for (pane_id, rect) in tab.layout.leaf_rects(area) {
                 let Some(pane) = tab.panes.get_mut(pane_id) else {
                     continue;
@@ -446,25 +455,47 @@ impl App {
                         // for the new rect (visible only if the wry
                         // mount failed).
                         paint_browser_placeholder(grid, url);
-                        // Project the leaf rect (in cells) to logical
-                        // pixels inside the parent window and resize
-                        // the WebView to match. `strip_h_px` accounts
-                        // for the tab strip above the body; `inset_px`
-                        // is the body's left/top inset.
                         if let Some(v) = webview.as_ref() {
-                            let x_px = inset_px + rect.x as f32 * cell_w;
-                            let y_px = strip_h_px + rect.y as f32 * cell_h;
-                            let w_px = rect.w as f32 * cell_w;
-                            let h_px = rect.h as f32 * cell_h;
-                            let _ = v.set_bounds(wry::Rect {
-                                position: wry::dpi::LogicalPosition::new(x_px as i32, y_px as i32)
+                            if tab_visible {
+                                // Project the leaf rect (in cells) to
+                                // logical pixels inside the parent window
+                                // and resize the WebView to match.
+                                // `strip_h_px` accounts for the tab strip
+                                // above the body; `inset_px` is the
+                                // body's left/top inset.
+                                let x_px = inset_px + rect.x as f32 * cell_w;
+                                let y_px = strip_h_px + rect.y as f32 * cell_h;
+                                let w_px = rect.w as f32 * cell_w;
+                                let h_px = rect.h as f32 * cell_h;
+                                let _ = v.set_bounds(wry::Rect {
+                                    position: wry::dpi::LogicalPosition::new(
+                                        x_px as i32,
+                                        y_px as i32,
+                                    )
                                     .into(),
-                                size: wry::dpi::LogicalSize::new(
-                                    w_px.max(1.0) as u32,
-                                    h_px.max(1.0) as u32,
-                                )
-                                .into(),
-                            });
+                                    size: wry::dpi::LogicalSize::new(
+                                        w_px.max(1.0) as u32,
+                                        h_px.max(1.0) as u32,
+                                    )
+                                    .into(),
+                                });
+                            } else {
+                                // Pane #90: tab isn't active. The wry
+                                // WebView is a native NSView/HWND/
+                                // GtkWidget parented to the window — it
+                                // would otherwise float over whichever
+                                // tab IS active. Park it off-screen at
+                                // 1×1 (set_bounds(0,0,0,0) is rejected
+                                // by some backends). The next relayout
+                                // when this tab regains focus restores
+                                // it to its real rect, preserving page
+                                // state.
+                                let _ = v.set_bounds(wry::Rect {
+                                    position: wry::dpi::LogicalPosition::new(-32_000, -32_000)
+                                        .into(),
+                                    size: wry::dpi::LogicalSize::new(1, 1).into(),
+                                });
+                            }
                         }
                     }
                 }
