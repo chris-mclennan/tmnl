@@ -227,6 +227,64 @@ fn spawn_playwright_show(debug_port: u16) -> Result<(), String> {
     Ok(())
 }
 
+/// Initialization script registered on a `browser.attach_dashboard_auto`
+/// WebView. Runs *before* page scripts on every navigation, but the
+/// `MutationObserver` waits for the dashboard's React tree to mount
+/// the sidebar before clicking the first session + installing the
+/// hide-chrome CSS. Self-disarming once a session is selected; gives
+/// up after 10s to avoid a long-running observer if the page never
+/// settles into the expected shape.
+///
+/// The observer uses the same CSS classes [`toggle_dashboard_chrome`]
+/// targets (`.split-view-sidebar` / `.split-view-sash` /
+/// `.split-view-main`), so `Cmd+Opt+H` can still toggle the chrome
+/// back on if the user wants to switch sessions.
+pub(crate) const DASHBOARD_AUTO_INIT_JS: &str = r#"
+    (function() {
+        if (window.__tmnlDashboardAutoInit) return;
+        window.__tmnlDashboardAutoInit = true;
+        var armed = false;
+        var done = function() {
+            if (armed) return true;
+            var sidebar = document.querySelector('.split-view-sidebar');
+            if (!sidebar) return false;
+            var first = sidebar.querySelector('a[href], [role="treeitem"], [data-testid]')
+                || sidebar.querySelector('li, [role="button"]')
+                || sidebar.querySelector('div > div');
+            if (!first) return false;
+            try { first.click(); } catch (e) { /* swallow */ }
+            armed = true;
+            var styleId = 'tmnl-hide-dashboard-chrome';
+            if (!document.getElementById(styleId)) {
+                var s = document.createElement('style');
+                s.id = styleId;
+                s.textContent =
+                    '.split-view-sidebar { display: none !important; }' +
+                    '.split-view-sash { display: none !important; }' +
+                    '.split-view-main { width: 100% !important; flex: 1 1 100% !important; }';
+                document.head.appendChild(s);
+            }
+            return true;
+        };
+        var attach = function() {
+            if (done()) return;
+            var obs = new MutationObserver(function() {
+                if (done()) obs.disconnect();
+            });
+            obs.observe(document.body || document.documentElement, {
+                childList: true,
+                subtree: true,
+            });
+            setTimeout(function() { obs.disconnect(); }, 10000);
+        };
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', attach, { once: true });
+        } else {
+            attach();
+        }
+    })();
+"#;
+
 /// Toggle the Playwright dashboard's left sidebar in the focused
 /// Browser pane. Idempotent — re-running undoes the previous toggle
 /// by re-checking `<style id="tmnl-hide-dashboard-chrome">`. The
@@ -508,6 +566,31 @@ fn builtin_commands() -> Vec<Command> {
                     }
                 }
                 Err(e) => eprintln!("tmnl: dashboard attach failed — {e}"),
+            },
+            when: Some(no_modal_open),
+        },
+        // ⌥⌘⇧D — same as `browser.attach_dashboard` but registers a
+        // page-load script that clicks the first session row + hides
+        // the chrome as soon as the dashboard's React tree mounts.
+        // One-chord ergonomics for the common "watch the first slot"
+        // case; the user can still Cmd+Opt+H to bring the chrome back.
+        Command {
+            id: "browser.attach_dashboard_auto",
+            title: "Auto-attach Playwright dashboard (first session, hide chrome)",
+            group: "Browser",
+            keys: &["cmd+alt+shift+d"],
+            run: |app, _event_loop, _ke| match spawn_or_attach_dashboard(9222) {
+                Ok(url) => {
+                    app.split_active_pane_browser_with_init(
+                        crate::layout::SplitDir::Vertical,
+                        url,
+                        Some(DASHBOARD_AUTO_INIT_JS),
+                    );
+                    if let Some(w) = &app.window {
+                        w.request_redraw();
+                    }
+                }
+                Err(e) => eprintln!("tmnl: dashboard auto-attach failed — {e}"),
             },
             when: Some(no_modal_open),
         },

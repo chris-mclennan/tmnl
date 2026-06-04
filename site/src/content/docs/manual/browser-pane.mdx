@@ -21,7 +21,8 @@ Three chords, all default-bound:
 | --- | --- |
 | `Cmd+Opt+B` | Split right with a Browser pane at `https://duckduckgo.com`. |
 | `Cmd+Opt+V` | Split right with a Browser pane at the clipboard URL (needs `http://` or `https://`). |
-| `Cmd+Opt+D` | One-shot Playwright dashboard: spawn `playwright-cli show`, attach via CDP, open the dashboard's localhost URL in a Browser pane. |
+| `Cmd+Opt+D` | Spawn `playwright-cli show`, attach via CDP, open the dashboard's localhost URL in a Browser pane (full chrome). |
+| `Cmd+Opt+Shift+D` | Same as `Cmd+Opt+D`, but auto-click the first session row + hide chrome as soon as the dashboard mounts. |
 
 `Cmd+Opt+D` is the headline ergonomic: instead of running `playwright-cli show`
 in a shell, copying the URL out of the chromium that pops up, and pasting it
@@ -82,7 +83,9 @@ the bar.
 ## The Playwright dashboard workflow
 
 The point of the Browser pane in v1 is having the dashboard living inside tmnl
-next to the editor and shell that drive the tests. Three chord chord:
+next to the editor and shell that drive the tests. Two flows:
+
+**Manual (choose your slot).**
 
 1. **`Cmd+Opt+D`** — spawn + attach. A pane appears with the dashboard's full
    chrome (sidebar of sessions + main split-view).
@@ -93,6 +96,20 @@ next to the editor and shell that drive the tests. Three chord chord:
 
 `Cmd+Opt+H` again brings the sidebar back so you can switch sessions. It's
 a pure CSS toggle in the existing WebView; no remount, no reload.
+
+**Auto (one chord, first slot).**
+
+`Cmd+Opt+Shift+D` collapses the manual flow into a single chord — the WebView
+is created with an initialization script registered. The script runs before
+page scripts on every navigation; once the React tree mounts the
+`.split-view-sidebar`, a `MutationObserver` clicks the first session row and
+injects the same hide-chrome CSS as `Cmd+Opt+H`. The observer self-disarms
+after one successful click + a 10s safety timeout, so it never runs hot
+forever if the page never settles into the expected shape.
+
+The chord is useful when you have a single Playwright session running and
+don't need to choose which slot to watch. `Cmd+Opt+H` still toggles chrome
+afterward so you can switch sessions if you spin up more.
 
 ## Tab + pane behavior
 
@@ -133,4 +150,5 @@ build-script failures, install those three packages and try again.
 - `src/app.rs::split_active_pane_browser` — opens a Browser pane at a URL
 - `src/app.rs::relayout_all_panes` — projects the leaf rect to logical pixels,
   parks inactive-tab WebViews off-screen
-- `src/command.rs::split.browser_*` / `browser.*` — the four registered commands
+- `src/command.rs::split.browser_*` / `browser.*` — the five registered commands
+- `src/command.rs::DASHBOARD_AUTO_INIT_JS` — the auto-attach init script

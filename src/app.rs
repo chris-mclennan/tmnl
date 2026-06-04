@@ -553,6 +553,21 @@ impl App {
     /// frame. Position is tightened to the pane's rect by
     /// `relayout_all_panes` at the end.
     pub(crate) fn split_active_pane_browser(&mut self, dir: SplitDir, url: String) {
+        self.split_active_pane_browser_with_init(dir, url, None);
+    }
+
+    /// Variant of [`Self::split_active_pane_browser`] that registers an
+    /// initialization script with the WebView. The script runs on
+    /// every page load *before* page scripts execute. Used by
+    /// `browser.attach_dashboard_auto` to install a MutationObserver
+    /// that clicks the first session row + hides the chrome once the
+    /// dashboard's React tree mounts.
+    pub(crate) fn split_active_pane_browser_with_init(
+        &mut self,
+        dir: SplitDir,
+        url: String,
+        init_script: Option<&str>,
+    ) {
         let (cols, rows) = match self.gpu.as_ref() {
             Some(gpu) => (gpu.grid.cols, gpu.grid.rows),
             None => return,
@@ -573,7 +588,7 @@ impl App {
         // pane's actual rect. Failure to create (e.g. WebView2
         // runtime missing on Windows) leaves `webview = None`; the
         // placeholder grid is the visible fallback.
-        let webview = self.try_create_webview(&url);
+        let webview = self.try_create_webview(&url, init_script);
 
         let tab = &mut self.tabs[self.active];
         let new_id = tab.panes.len();
@@ -599,18 +614,20 @@ impl App {
     /// wry's child-mount fails (e.g. missing WebView2 runtime on
     /// Windows). Same signature on all platforms — wry abstracts the
     /// per-OS native view.
-    fn try_create_webview(&self, url: &str) -> Option<wry::WebView> {
+    fn try_create_webview(&self, url: &str, init_script: Option<&str>) -> Option<wry::WebView> {
         use raw_window_handle::HasWindowHandle;
         let window = self.window.as_ref()?;
         let handle = window.window_handle().ok()?;
-        match wry::WebViewBuilder::new_as_child(&handle)
+        let mut builder = wry::WebViewBuilder::new_as_child(&handle)
             .with_url(url)
             .with_bounds(wry::Rect {
                 position: wry::dpi::LogicalPosition::new(0, 0).into(),
                 size: wry::dpi::LogicalSize::new(1, 1).into(),
-            })
-            .build()
-        {
+            });
+        if let Some(script) = init_script {
+            builder = builder.with_initialization_script(script);
+        }
+        match builder.build() {
             Ok(v) => Some(v),
             Err(e) => {
                 log::warn!("tmnl: WebView mount failed for {url}: {e}");
