@@ -73,6 +73,7 @@ export default defineConfig({
             { label: 'Getting started', slug: 'manual/getting-started' },
             { label: 'Tabs, splits, and panes', slug: 'manual/tabs-and-splits' },
             { label: 'Native tabs', slug: 'manual/native-tabs' },
+            { label: 'Browser pane', slug: 'manual/browser-pane' },
             { label: 'AI completion (offline)', slug: 'manual/ai-completion' },
             { label: 'Updates', slug: 'manual/updates' },
           ],

@@ -1,0 +1,136 @@
+---
+title: Browser pane
+description: The third pane kind — an embedded WebView with a chrome strip. Click-driven URL bar, history controls, and the Playwright-dashboard workflow.
+---
+
+The **Browser** pane is the third `PaneKind` alongside Shell and Native: a
+real WebView (WKWebView on macOS, WebKitGTK on Linux, WebView2 on Windows)
+mounted as a sub-region of the tmnl window via [wry](https://crates.io/crates/wry).
+A cell-grid chrome strip sits on the top row of the pane; the WebView
+composites over the wgpu frame underneath in the rest of the pane.
+
+The driving use case is the [Playwright](https://playwright.dev) dashboard:
+embed the live trace + screencast viewer inside a tmnl pane instead of
+alt-tabbing to Chrome.
+
+## Opening a Browser pane
+
+Three chords, all default-bound:
+
+| Chord | What it does |
+| --- | --- |
+| `Cmd+Opt+B` | Split right with a Browser pane at `https://duckduckgo.com`. |
+| `Cmd+Opt+V` | Split right with a Browser pane at the clipboard URL (needs `http://` or `https://`). |
+| `Cmd+Opt+D` | One-shot Playwright dashboard: spawn `playwright-cli show`, attach via CDP, open the dashboard's localhost URL in a Browser pane. |
+
+`Cmd+Opt+D` is the headline ergonomic: instead of running `playwright-cli show`
+in a shell, copying the URL out of the chromium that pops up, and pasting it
+back here, the single chord chains the whole thing. Mechanism: spawns
+`playwright-cli show` with `PLAYWRIGHT_DASHBOARD_DEBUG_PORT=9222` (which makes
+the chromium go headless but leaves the dashboard's HTTP server alive), then
+polls `http://localhost:9222/json/list` for the dashboard target and opens
+its URL in a new pane.
+
+`playwright-cli` needs to be on `PATH`. If it isn't, the chord no-ops with an
+stderr hint.
+
+## The chrome strip
+
+The top row of every Browser pane is rendered into tmnl's cell grid — not the
+WebView. It always looks like this:
+
+```
+[<] [>] [⟳]  https://duckduckgo.com/?q=foo
+```
+
+Each `[...]` is a click target:
+
+- **`[<]`** — `history.back()` in the WebView
+- **`[>]`** — `history.forward()`
+- **`[⟳]`** — `location.reload()`
+
+The chips fire via `webview.evaluate_script(...)`. There's no separate cache
+for the navigation stack — it's whatever the WebView itself remembers.
+
+### URL bar
+
+Click the URL portion of the strip (any cell from column 13 rightward) to
+start an inline edit. The bar's display switches from the read-only URL to
+the edit buffer with a `│` cursor block, and keyboard input goes to the bar
+instead of the WebView until you commit or cancel.
+
+| Key | Effect |
+| --- | --- |
+| Printable text | Insert at cursor. |
+| `←` / `→` | Move cursor one char. |
+| `Home` / `End` | Jump to start / end. |
+| `Backspace` / `Delete` | Drop the char before / after the cursor. |
+| `Esc` | Cancel — URL bar reverts to the loaded URL. |
+| `Enter` | Commit — load the typed text. |
+| *Click outside any chrome strip* | Same as `Esc` (cancel). |
+
+**Enter heuristic.** Whatever you typed gets normalised before loading:
+
+- Starts with a scheme (`http://`, `https://`, `about:`, `file://`) → load as-is.
+- Contains a `.` → prepend `https://` (so `example.com/foo` works).
+- Otherwise → DuckDuckGo search (`https://duckduckgo.com/?q=<encoded>`).
+
+The same heuristic governs `Cmd+Opt+V` — it accepts only well-formed URLs from
+the clipboard for safety, so a search-by-clipboard would have to come from
+the bar.
+
+## The Playwright dashboard workflow
+
+The point of the Browser pane in v1 is having the dashboard living inside tmnl
+next to the editor and shell that drive the tests. Three chord chord:
+
+1. **`Cmd+Opt+D`** — spawn + attach. A pane appears with the dashboard's full
+   chrome (sidebar of sessions + main split-view).
+2. Click the session you want to watch in the dashboard's sidebar.
+3. **`Cmd+Opt+H`** — hide the dashboard chrome (sidebar + sash). The session's
+   live viewport fills the pane. Same WebSocket + CDP-screencast performance
+   as the dashboard itself — we just inject CSS to hide the sidebar.
+
+`Cmd+Opt+H` again brings the sidebar back so you can switch sessions. It's
+a pure CSS toggle in the existing WebView; no remount, no reload.
+
+## Tab + pane behavior
+
+A Browser pane is a leaf in the split tree like Shell and Native panes, with
+two carve-outs for wry's native-widget compositing model:
+
+- **Inactive tab handling.** A WebView is a native NSView / GtkWidget / HWND
+  parented to the tmnl window — without explicit per-tab housekeeping it'd
+  composite over whatever tab is active. Every tab switch reflows the layout,
+  parking inactive-tab Browser panes at `(-32000, -32000)` with size `1×1`.
+  Page state (scroll position, JS state, WebSockets, …) survives because the
+  WebView is never dropped.
+- **Top-row exclusion zone.** The chrome strip claims row 0 of the pane.
+  The WebView's `set_bounds` starts at row 1 (`strip_h + (rect.y + 1) * cell_h`)
+  with one less row of height. The cell grid underneath still gets cleared and
+  the strip painted on every relayout, so a `set_bounds` race can never leave
+  the chrome visually corrupted.
+
+## Linux dependencies
+
+wry's Linux backend builds against WebKitGTK + libsoup, which need their
+development headers at compile time. tmnl's CI installs them automatically:
+
+```
+sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
+```
+
+macOS and Windows pull their WebView from the OS — nothing extra to install.
+
+If you're building locally on Linux and see `webkit2gtk-sys` / `soup3-sys`
+build-script failures, install those three packages and try again.
+
+## Source pointers
+
+- `src/main.rs::PaneKind::Browser` — the variant + `BrowserChrome` + `BrowserChip`
+- `src/main.rs::paint_browser_chrome` / `browser_chip_at` — the cell-grid
+  chrome painter + hit-test
+- `src/app.rs::split_active_pane_browser` — opens a Browser pane at a URL
+- `src/app.rs::relayout_all_panes` — projects the leaf rect to logical pixels,
+  parks inactive-tab WebViews off-screen
+- `src/command.rs::split.browser_*` / `browser.*` — the four registered commands

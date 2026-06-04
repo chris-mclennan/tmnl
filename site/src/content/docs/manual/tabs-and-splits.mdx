@@ -119,6 +119,12 @@ A pane is the leaf of a tab's split tree. Each one owns a `Grid` and a
   into the pane's `Grid`. No ANSI parsing in the loop. See [Native tabs](./native-tabs/) for the protocol-level
   deep dive — how the socket is minted, what the wire format looks like, and
   how to write your own backing app.
+- **Browser** — a `wry::WebView` mounted as a sub-region of the tmnl window
+  with a cell-grid chrome strip on top (back / forward / reload / URL bar).
+  Opens via `Cmd+Opt+B` (DuckDuckGo), `Cmd+Opt+V` (clipboard URL), or
+  `Cmd+Opt+D` (auto-attach a Playwright dashboard). See [Browser pane](./browser-pane/)
+  for the URL-bar editor, the Playwright workflow, and the inactive-tab
+  visibility handling.
 
 There's no separate "Welcome" pane kind. The welcome overlay on a bare launch
 is painted *on top of* a shell pane that's already there — dismissing it
