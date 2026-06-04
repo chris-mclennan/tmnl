@@ -120,6 +120,49 @@ pub fn try_dispatch(key: &KeyEvent, app: &mut App, event_loop: &ActiveEventLoop)
     false
 }
 
+/// Read a URL string from the OS clipboard. Returns `None` when the
+/// clipboard isn't text or doesn't look URL-ish. macOS uses
+/// `pbpaste`; Linux falls back to `xclip` / `wl-paste`; Windows
+/// `powershell Get-Clipboard`. We shell out to avoid pulling in a
+/// `clipboard` / `arboard` crate just for one button.
+fn read_clipboard_url() -> Option<String> {
+    let raw = read_clipboard_text()?;
+    let url = raw.trim();
+    if url.starts_with("http://") || url.starts_with("https://") {
+        Some(url.to_string())
+    } else {
+        None
+    }
+}
+
+fn read_clipboard_text() -> Option<String> {
+    let cmd: (&str, &[&str]);
+    #[cfg(target_os = "macos")]
+    {
+        cmd = ("pbpaste", &[]);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        cmd = if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+            ("wl-paste", &["--no-newline"])
+        } else {
+            ("xclip", &["-selection", "clipboard", "-o"])
+        };
+    }
+    #[cfg(target_os = "windows")]
+    {
+        cmd = ("powershell", &["-NoProfile", "-Command", "Get-Clipboard"]);
+    }
+    let out = std::process::Command::new(cmd.0)
+        .args(cmd.1)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
 /// Forward the current key event to the focused Native pane with
 /// Cmd → Ctrl modifier remap. Used by Mac-style editing chords
 /// (⌘Z/X/C/V/A/S/F/N/P/B/G/⌘/) so mnml's standard-mode bindings
@@ -248,9 +291,8 @@ fn builtin_commands() -> Vec<Command> {
             },
             when: Some(no_modal_open),
         },
-        // ⌥⌘B — split focused pane vertically, opening a Browser pane.
-        // Phase 1 stub: paints a placeholder grid; Phase 2 mounts a
-        // real wry WebView over the pane's rect.
+        // ⌥⌘B — split focused pane vertically, opening a Browser pane
+        // at duckduckgo. Quick "I want to browse something" default.
         Command {
             id: "split.browser_right",
             title: "Split right with browser",
@@ -261,6 +303,28 @@ fn builtin_commands() -> Vec<Command> {
                     crate::layout::SplitDir::Vertical,
                     "https://duckduckgo.com".to_string(),
                 );
+                if let Some(w) = &app.window {
+                    w.request_redraw();
+                }
+            },
+            when: Some(no_modal_open),
+        },
+        // ⌥⌘V — paste clipboard URL into a new Browser pane split.
+        // The dashboard workflow: run `playwright-cli show` in any
+        // terminal, copy the URL from Chrome's address bar, hit
+        // Cmd+Opt+V here, the dashboard renders inside a tmnl pane.
+        // Same pattern works for any URL.
+        Command {
+            id: "split.browser_clipboard",
+            title: "Split right with browser at clipboard URL",
+            group: "Splits",
+            keys: &["cmd+alt+v"],
+            run: |app, _event_loop, _ke| {
+                let Some(url) = read_clipboard_url() else {
+                    eprintln!("tmnl: clipboard doesn't look like a URL (need http:// or https://)");
+                    return;
+                };
+                app.split_active_pane_browser(crate::layout::SplitDir::Vertical, url);
                 if let Some(w) = &app.window {
                     w.request_redraw();
                 }
