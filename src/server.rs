@@ -48,6 +48,10 @@ pub enum ServerEvent {
     /// `split.browser_clipboard` on tmnl without needing to know
     /// the implementation.
     RunHostCommand(String),
+    /// Client's response to `Message::ListClientCommands`. Tmnl
+    /// aggregates these into the palette overlay alongside its own
+    /// commands. Selecting one sends back a `RunClientCommand(id)`.
+    ClientCommands(Vec<tmnl_protocol::CommandInfo>),
 }
 
 /// Bind a UDS listener at the file path. Identical shape on Unix
@@ -94,6 +98,19 @@ impl Server {
 
     pub fn send_quit(&self) {
         self.send(&Message::Quit);
+    }
+
+    /// Ask the client for its command registry. Response arrives as
+    /// `Message::ClientCommands` on the reader thread and is handed
+    /// to the App via the inbox channel.
+    pub fn send_list_client_commands(&self) {
+        self.send(&Message::ListClientCommands);
+    }
+
+    /// Invoke a command by id on the client side. The id must come
+    /// from a prior `ClientCommands` payload from the same server.
+    pub fn send_run_client_command(&self, id: &str) {
+        self.send(&Message::RunClientCommand(id.to_string()));
     }
 
     fn send(&self, msg: &Message) {
@@ -242,6 +259,12 @@ fn reader_loop(
                     break;
                 }
             }
+            Ok(Message::ClientCommands(items)) => {
+                if event_tx.send(ServerEvent::ClientCommands(items)).is_err() {
+                    log::warn!("event_tx.send(ClientCommands) failed; reader exiting");
+                    break;
+                }
+            }
             // `OpenPaneTransfer` requires SCM_RIGHTS fd-passing on the
             // same `sendmsg` call — incompatible with the BufReader on
             // this stream (which would consume past the cmsg boundary).
@@ -255,6 +278,12 @@ fn reader_loop(
                      this requires SCM_RIGHTS via send_message_with_fd \
                      on a dedicated socket; ignoring (command={command:?})"
                 );
+            }
+            // Host→client messages never arrive on this reader (we're
+            // the server reading from a client stream). Log + drop if
+            // a buggy peer sends them anyway.
+            Ok(Message::ListClientCommands) | Ok(Message::RunClientCommand(_)) => {
+                log::warn!("server reader received host→client message; dropping");
             }
             Err(e) => {
                 if e.kind() != std::io::ErrorKind::UnexpectedEof {

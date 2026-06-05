@@ -606,6 +606,11 @@ fn builtin_commands() -> Vec<Command> {
                 }
                 // Otherwise open the standalone palette overlay.
                 app.palette = Some(crate::palette::PaletteState::new());
+                // Aggregate commands from every connected Native pane.
+                // Each responds independently via `Message::ClientCommands`;
+                // the App side appends them to `palette.remote_commands`
+                // tagged with source pane index.
+                app.request_client_commands_for_palette();
                 if let Some(w) = &app.window {
                     w.request_redraw();
                 }

@@ -1821,6 +1821,11 @@ fn tick_secondary_pane(pane: &mut Pane, visible: bool) {
                     // focused pane's client should be firing host
                     // commands at us.
                     ServerEvent::RunHostCommand(_) => {}
+                    // ClientCommands responses route through the
+                    // App-level tick loop; the per-pane idle tick
+                    // ignores them (the focused-pane path handles
+                    // aggregation into the palette).
+                    ServerEvent::ClientCommands(_) => {}
                 }
             }
             while let Ok(f) = server.frame_rx.try_recv() {

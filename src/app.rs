@@ -743,6 +743,34 @@ impl App {
         self.relayout_all_panes();
     }
 
+    /// Ask every connected Native pane for its command registry so
+    /// the palette can aggregate them with tmnl's own commands. Fires
+    /// `Message::ListClientCommands`; responses arrive asynchronously
+    /// as `ServerEvent::ClientCommands` and populate
+    /// `App.palette.remote_commands`. v1: queries every Native pane;
+    /// multi-source aggregation across panes is a v2 follow-up.
+    pub(crate) fn request_client_commands_for_palette(&mut self) {
+        for tab in &mut self.tabs {
+            for pane in tab.panes.iter_mut() {
+                if let PaneKind::Native { server, .. } = &mut pane.kind {
+                    server.send_list_client_commands();
+                }
+            }
+        }
+    }
+
+    /// Forward a command id back to the focused Native pane via
+    /// `Message::RunClientCommand`. No-op when the focused pane
+    /// isn't Native — the palette's Enter handler only routes Remote
+    /// entries here, and Remote entries only exist when at least one
+    /// Native pane is connected.
+    pub(crate) fn send_run_client_command_to_focused_pane(&mut self, id: &str) {
+        let tab = &mut self.tabs[self.active];
+        if let PaneKind::Native { server, .. } = &mut tab.focused_pane_mut().kind {
+            server.send_run_client_command(id);
+        }
+    }
+
     /// Move keyboard focus to the pane nearest the focused one in
     /// `dir`. No-op if there's no pane in that direction.
     pub(crate) fn focus_dir(&mut self, dir: FocusDir) {
@@ -1052,6 +1080,10 @@ impl App {
         // tick, applied below once the pane borrow is released.
         let mut open_pane_reqs: Vec<(String, Vec<String>)> = Vec::new();
         let mut host_command_reqs: Vec<String> = Vec::new();
+        // Aggregated `Message::ClientCommands` responses from connected
+        // Native panes. Flushed into `palette.remote_commands` after
+        // the per-pane borrow loop completes.
+        let mut client_commands_responses: Vec<Vec<tmnl_protocol::CommandInfo>> = Vec::new();
 
         // Tick the active tab's focused pane.
         let want_ghost_refresh = self.fim_redraw;
@@ -1118,6 +1150,9 @@ impl App {
                             ServerEvent::RunHostCommand(id) => {
                                 host_command_reqs.push(id);
                             }
+                            ServerEvent::ClientCommands(items) => {
+                                client_commands_responses.push(items);
+                            }
                         }
                     }
                     // Diffs are cumulative — apply every frame in order.
@@ -1171,6 +1206,23 @@ impl App {
         for id in host_command_reqs.drain(..) {
             if !crate::command::dispatch_by_id(&id, self, event_loop) {
                 eprintln!("tmnl: RunHostCommand unknown or guarded id {id:?}");
+            }
+        }
+        // Drop any ClientCommands responses straight onto the palette
+        // (if one is open). Multiple panes may respond — we concat
+        // their lists; selection routing in v1 sends back to the
+        // focused pane regardless of source, which works as long as
+        // every pane uses unique-ish ids (mnml's "git.commit" wouldn't
+        // collide with mixr's "deck.play"). De-dup by id so palette
+        // doesn't show double rows when both panes briefly serve the
+        // same command set.
+        if let Some(st) = self.palette.as_mut() {
+            for items in client_commands_responses.drain(..) {
+                for info in items {
+                    if !st.remote_commands.iter().any(|r| r.id == info.id) {
+                        st.remote_commands.push(info);
+                    }
+                }
             }
         }
 
@@ -1627,14 +1679,22 @@ impl App {
                 true
             }
             Key::Named(NamedKey::Enter) => {
-                if let Some(id) = st.current_id() {
-                    // Capture before dropping the modal so the
-                    // borrow stays clean.
-                    let id_owned = id.to_string();
-                    self.palette = None;
-                    crate::command::dispatch_by_id(&id_owned, self, event_loop);
-                } else {
-                    self.palette = None;
+                // Snapshot the entry before dropping the modal —
+                // local entries route through the local dispatcher;
+                // remote entries are forwarded to the focused Native
+                // pane via `send_run_client_command`. Closing the
+                // palette first releases the &mut borrow on `self`.
+                let entry = st.current_entry();
+                self.palette = None;
+                match entry {
+                    Some(crate::palette::PaletteEntry::Local(id)) => {
+                        let id_owned = id.to_string();
+                        crate::command::dispatch_by_id(&id_owned, self, event_loop);
+                    }
+                    Some(crate::palette::PaletteEntry::Remote(info)) => {
+                        self.send_run_client_command_to_focused_pane(&info.id);
+                    }
+                    None => {}
                 }
                 true
             }

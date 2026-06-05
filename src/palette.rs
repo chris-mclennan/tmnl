@@ -34,7 +34,24 @@ const HINT: &str = "type to filter · ↑↓ move · Enter run · Esc close";
 pub struct PaletteState {
     pub filter: String,
     pub cursor: usize,
+    /// Combined-list index of the highlighted entry. Local commands
+    /// come first (0..`local_len`), then remote (local_len..end).
     pub selected: usize,
+    /// Commands aggregated from the focused Native pane via
+    /// `Message::ClientCommands`. Populated lazily after the palette
+    /// opens; an empty Vec means we've sent the request but haven't
+    /// received the response yet (or there's no Native pane focused).
+    /// v1: single source — the focused pane only.
+    pub remote_commands: Vec<tmnl_protocol::CommandInfo>,
+}
+
+/// One row's identity. Returned by `current_entry` so the dispatcher
+/// can route Local entries through the local registry and Remote
+/// entries back to the focused Native pane via `send_run_client_command`.
+#[derive(Debug, Clone)]
+pub enum PaletteEntry {
+    Local(&'static str),
+    Remote(tmnl_protocol::CommandInfo),
 }
 
 impl PaletteState {
@@ -42,22 +59,53 @@ impl PaletteState {
         Self::default()
     }
 
-    /// Indices into `registry().all()` matching the current filter
-    /// (case-insensitive substring against title + id). Empty filter
-    /// ⇒ every command.
+    /// Length of the local segment in the combined list — local
+    /// commands come first; remote commands are indices >= this.
+    pub fn local_len(&self) -> usize {
+        registry().all().len()
+    }
+
+    pub fn total_len(&self) -> usize {
+        self.local_len() + self.remote_commands.len()
+    }
+
+    /// Indices into the combined (local + remote) list matching the
+    /// current filter (case-insensitive substring against title +
+    /// id). Empty filter ⇒ every entry.
     pub fn visible_indices(&self) -> Vec<usize> {
-        let all = registry().all();
+        let local_len = self.local_len();
+        let total = self.total_len();
         if self.filter.is_empty() {
-            return (0..all.len()).collect();
+            return (0..total).collect();
         }
         let needle = self.filter.to_ascii_lowercase();
-        all.iter()
-            .enumerate()
-            .filter_map(|(i, c)| {
-                let hay = format!("{} {}", c.title, c.id).to_ascii_lowercase();
-                hay.contains(&needle).then_some(i)
-            })
-            .collect()
+        let mut out = Vec::with_capacity(total);
+        for (i, c) in registry().all().iter().enumerate() {
+            let hay = format!("{} {}", c.title, c.id).to_ascii_lowercase();
+            if hay.contains(&needle) {
+                out.push(i);
+            }
+        }
+        for (j, info) in self.remote_commands.iter().enumerate() {
+            let hay = format!("{} {} {}", info.title, info.id, info.group).to_ascii_lowercase();
+            if hay.contains(&needle) {
+                out.push(local_len + j);
+            }
+        }
+        out
+    }
+
+    /// Resolve a combined-list index to a Local or Remote entry.
+    pub fn entry_at(&self, idx: usize) -> Option<PaletteEntry> {
+        let local_len = self.local_len();
+        if idx < local_len {
+            registry().all().get(idx).map(|c| PaletteEntry::Local(c.id))
+        } else {
+            self.remote_commands
+                .get(idx - local_len)
+                .cloned()
+                .map(PaletteEntry::Remote)
+        }
     }
 
     pub fn move_selection(&mut self, delta: isize) {
@@ -113,15 +161,27 @@ impl PaletteState {
     }
 
     /// Issue id of the currently-highlighted command, or `None` if
-    /// the filtered set is empty.
+    /// the filtered set is empty. Local entries return the static id;
+    /// remote entries fall through `current_entry` for routing. Kept
+    /// for callers that only care about the static-id case; the Enter
+    /// dispatcher in `app.rs` uses `current_entry` directly.
+    #[allow(dead_code)]
     pub fn current_id(&self) -> Option<&'static str> {
+        match self.current_entry()? {
+            PaletteEntry::Local(id) => Some(id),
+            PaletteEntry::Remote(_) => None,
+        }
+    }
+
+    /// Highlighted entry (Local or Remote). Drives the Enter dispatch
+    /// in `app.rs`.
+    pub fn current_entry(&self) -> Option<PaletteEntry> {
         let visible = self.visible_indices();
         if visible.is_empty() {
             return None;
         }
         let pos = visible.iter().position(|&i| i == self.selected)?;
-        let idx = visible[pos];
-        Some(registry().all()[idx].id)
+        self.entry_at(visible[pos])
     }
 }
 
@@ -151,9 +211,9 @@ pub fn draw(grid: &mut Grid, st: &PaletteState) {
     }
     draw_border(grid, x0, y0, w, h);
 
-    let all = registry().all();
     let visible = st.visible_indices();
-    let title = format!(" command palette ({}/{}) ", visible.len(), all.len());
+    let total = st.total_len();
+    let title = format!(" command palette ({}/{}) ", visible.len(), total);
     let t_x = x0 + (w.saturating_sub(title.chars().count() as u32)) / 2;
     grid.write(t_x, y0, &title, ACCENT, BG);
 
@@ -194,18 +254,38 @@ pub fn draw(grid: &mut Grid, st: &PaletteState) {
         let start_pos = sel_pos.saturating_sub(body_h / 2);
         let end_pos = (start_pos + body_h).min(visible.len());
 
-        // Key column width — capped at 22 to leave room for titles.
-        let key_col_w: usize = visible[start_pos..end_pos]
+        // Pre-resolve every visible entry once — local entries use the
+        // command's key hint as the left column; remote entries use a
+        // dim "mnml" / "<group>" prefix instead since they don't have
+        // keybindings on tmnl's side.
+        let resolved: Vec<(usize, Option<PaletteEntry>)> = visible[start_pos..end_pos]
             .iter()
-            .map(|&i| all[i].key_hint().chars().count())
+            .map(|&i| (i, st.entry_at(i)))
+            .collect();
+
+        // Key column width — capped at 22 to leave room for titles.
+        let key_col_w: usize = resolved
+            .iter()
+            .map(|(_, e)| match e {
+                Some(PaletteEntry::Local(id)) => registry()
+                    .all()
+                    .iter()
+                    .find(|c| c.id == *id)
+                    .map(|c| c.key_hint().chars().count())
+                    .unwrap_or(0),
+                Some(PaletteEntry::Remote(info)) => {
+                    // Remote source label: lowercase group, capped.
+                    info.group.chars().count() + 2 // brackets
+                }
+                None => 0,
+            })
             .max()
             .unwrap_or(0)
             .clamp(0, 22);
 
-        for (i, &cmd_idx) in visible[start_pos..end_pos].iter().enumerate() {
-            let cmd = &all[cmd_idx];
+        for (i, (cmd_idx, entry)) in resolved.iter().enumerate() {
             let row_y = body_top + i as u32;
-            let is_sel = cmd_idx == st.selected;
+            let is_sel = *cmd_idx == st.selected;
             let (row_fg, row_bg) = if is_sel { (SEL_FG, SEL_BG) } else { (FG, BG) };
             // Highlight the full row by painting a space first.
             if is_sel {
@@ -213,18 +293,38 @@ pub fn draw(grid: &mut Grid, st: &PaletteState) {
                     grid.put(c, row_y, ' ', row_fg, row_bg);
                 }
             }
-            // Key column (left).
-            let keys = cmd.key_hint();
-            let keys_color = if is_sel { SEL_FG } else { KEY };
+            let (keys, title, is_remote) = match entry {
+                Some(PaletteEntry::Local(id)) => {
+                    match registry().all().iter().find(|c| c.id == *id) {
+                        Some(cmd) => (cmd.key_hint().to_string(), cmd.title.to_string(), false),
+                        None => continue,
+                    }
+                }
+                Some(PaletteEntry::Remote(info)) => {
+                    let group = if info.group.is_empty() {
+                        "remote".to_string()
+                    } else {
+                        info.group.clone()
+                    };
+                    (format!("[{group}]"), info.title.clone(), true)
+                }
+                None => continue,
+            };
+            let keys_color = if is_sel {
+                SEL_FG
+            } else if is_remote {
+                FG_DIM
+            } else {
+                KEY
+            };
             grid.write(inner_x, row_y, &keys, keys_color, row_bg);
-            // Title (after the keys column + 2-cell gutter).
             let title_x = inner_x + (key_col_w as u32) + 2;
             let max_title = inner_w.saturating_sub(key_col_w + 2);
-            let s = if cmd.title.chars().count() <= max_title {
-                cmd.title.to_string()
+            let s = if title.chars().count() <= max_title {
+                title
             } else {
                 let take = max_title.saturating_sub(1);
-                let truncated: String = cmd.title.chars().take(take).collect();
+                let truncated: String = title.chars().take(take).collect();
                 format!("{truncated}…")
             };
             grid.write(title_x, row_y, &s, row_fg, row_bg);
