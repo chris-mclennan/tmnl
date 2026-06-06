@@ -1784,7 +1784,8 @@ fn compute_pane_label(pane: &mut Pane) -> String {
 /// left to refresh on focus (its pty reader thread keeps vt100
 /// current meanwhile). Never handles launcher restart/exit — that's
 /// the focused-pane path.
-fn tick_secondary_pane(pane: &mut Pane, visible: bool) {
+fn tick_secondary_pane(pane: &mut Pane, visible: bool) -> Vec<Vec<tmnl_protocol::CommandInfo>> {
+    let mut collected: Vec<Vec<tmnl_protocol::CommandInfo>> = Vec::new();
     let Pane {
         kind,
         grid,
@@ -1821,11 +1822,13 @@ fn tick_secondary_pane(pane: &mut Pane, visible: bool) {
                     // focused pane's client should be firing host
                     // commands at us.
                     ServerEvent::RunHostCommand(_) => {}
-                    // ClientCommands responses route through the
-                    // App-level tick loop; the per-pane idle tick
-                    // ignores them (the focused-pane path handles
-                    // aggregation into the palette).
-                    ServerEvent::ClientCommands(_) => {}
+                    // ClientCommands from non-focused Native panes:
+                    // collect them so the App-level tick can tag with
+                    // (tab, pane) and route remote-invokes back to
+                    // the source pane (v2 multi-source aggregation).
+                    ServerEvent::ClientCommands(items) => {
+                        collected.push(items);
+                    }
                 }
             }
             while let Ok(f) = server.frame_rx.try_recv() {
@@ -1856,6 +1859,7 @@ fn tick_secondary_pane(pane: &mut Pane, visible: bool) {
             // for repositioning/hiding the webview on tab show/hide.
         }
     }
+    collected
 }
 
 /// When tmnl.app is double-clicked from /Applications, macOS launches

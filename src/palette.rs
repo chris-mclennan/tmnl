@@ -37,21 +37,33 @@ pub struct PaletteState {
     /// Combined-list index of the highlighted entry. Local commands
     /// come first (0..`local_len`), then remote (local_len..end).
     pub selected: usize,
-    /// Commands aggregated from the focused Native pane via
-    /// `Message::ClientCommands`. Populated lazily after the palette
-    /// opens; an empty Vec means we've sent the request but haven't
-    /// received the response yet (or there's no Native pane focused).
-    /// v1: single source — the focused pane only.
-    pub remote_commands: Vec<tmnl_protocol::CommandInfo>,
+    /// Commands aggregated from connected Native panes via
+    /// `Message::ClientCommands`. Each entry remembers the source
+    /// pane's `(tab_idx, pane_idx)` so the invoke path can route
+    /// back to the exact pane that supplied the command. v2 multi-
+    /// source: distinct panes' command sets coexist; dedup happens
+    /// per-id only if two panes happen to expose the same id (last
+    /// writer wins — defensive, real-world unique ids).
+    pub remote_commands: Vec<RemoteCommand>,
+}
+
+/// One remote command with its source pane address. Used to route
+/// `Message::RunClientCommand` back to the specific Native pane that
+/// supplied the entry.
+#[derive(Debug, Clone)]
+pub struct RemoteCommand {
+    pub info: tmnl_protocol::CommandInfo,
+    pub source_tab: usize,
+    pub source_pane: usize,
 }
 
 /// One row's identity. Returned by `current_entry` so the dispatcher
 /// can route Local entries through the local registry and Remote
-/// entries back to the focused Native pane via `send_run_client_command`.
+/// entries back to the source pane via `send_run_client_command_to`.
 #[derive(Debug, Clone)]
 pub enum PaletteEntry {
     Local(&'static str),
-    Remote(tmnl_protocol::CommandInfo),
+    Remote(RemoteCommand),
 }
 
 impl PaletteState {
@@ -86,8 +98,9 @@ impl PaletteState {
                 out.push(i);
             }
         }
-        for (j, info) in self.remote_commands.iter().enumerate() {
-            let hay = format!("{} {} {}", info.title, info.id, info.group).to_ascii_lowercase();
+        for (j, rc) in self.remote_commands.iter().enumerate() {
+            let hay =
+                format!("{} {} {}", rc.info.title, rc.info.id, rc.info.group).to_ascii_lowercase();
             if hay.contains(&needle) {
                 out.push(local_len + j);
             }
@@ -273,9 +286,9 @@ pub fn draw(grid: &mut Grid, st: &PaletteState) {
                     .find(|c| c.id == *id)
                     .map(|c| c.key_hint().chars().count())
                     .unwrap_or(0),
-                Some(PaletteEntry::Remote(info)) => {
+                Some(PaletteEntry::Remote(rc)) => {
                     // Remote source label: lowercase group, capped.
-                    info.group.chars().count() + 2 // brackets
+                    rc.info.group.chars().count() + 2 // brackets
                 }
                 None => 0,
             })
@@ -300,13 +313,13 @@ pub fn draw(grid: &mut Grid, st: &PaletteState) {
                         None => continue,
                     }
                 }
-                Some(PaletteEntry::Remote(info)) => {
-                    let group = if info.group.is_empty() {
+                Some(PaletteEntry::Remote(rc)) => {
+                    let group = if rc.info.group.is_empty() {
                         "remote".to_string()
                     } else {
-                        info.group.clone()
+                        rc.info.group.clone()
                     };
-                    (format!("[{group}]"), info.title.clone(), true)
+                    (format!("[{group}]"), rc.info.title.clone(), true)
                 }
                 None => continue,
             };

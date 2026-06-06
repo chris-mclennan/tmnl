@@ -760,13 +760,36 @@ impl App {
     }
 
     /// Forward a command id back to the focused Native pane via
-    /// `Message::RunClientCommand`. No-op when the focused pane
-    /// isn't Native — the palette's Enter handler only routes Remote
-    /// entries here, and Remote entries only exist when at least one
-    /// Native pane is connected.
+    /// `Message::RunClientCommand`. Kept for callers that don't need
+    /// per-source routing (legacy v1 path). The v2 multi-source
+    /// palette flow uses [`Self::send_run_client_command_to_pane`].
+    #[allow(dead_code)]
     pub(crate) fn send_run_client_command_to_focused_pane(&mut self, id: &str) {
         let tab = &mut self.tabs[self.active];
         if let PaneKind::Native { server, .. } = &mut tab.focused_pane_mut().kind {
+            server.send_run_client_command(id);
+        }
+    }
+
+    /// Send `RunClientCommand(id)` to a specific Native pane addressed
+    /// by `(tab_idx, pane_idx)`. Used by the v2 multi-source palette
+    /// routing — each remote command's source is captured when its
+    /// `ClientCommands` response arrives. Falls back to a no-op when
+    /// the addressed pane no longer exists or isn't Native (panes can
+    /// close between the palette open and the user's Enter).
+    pub(crate) fn send_run_client_command_to_pane(
+        &mut self,
+        tab_idx: usize,
+        pane_idx: usize,
+        id: &str,
+    ) {
+        let Some(tab) = self.tabs.get_mut(tab_idx) else {
+            return;
+        };
+        let Some(pane) = tab.panes.get_mut(pane_idx) else {
+            return;
+        };
+        if let PaneKind::Native { server, .. } = &mut pane.kind {
             server.send_run_client_command(id);
         }
     }
@@ -945,6 +968,12 @@ impl App {
         // switch back is instant). The active tab's focused pane is
         // ticked separately below.
         let active_idx = self.active;
+        // Aggregated `Message::ClientCommands` responses from every
+        // Native pane (focused + secondary). Tagged with
+        // `(tab_idx, pane_idx)` so the palette can route
+        // `RunClientCommand` back to the source pane.
+        let mut client_commands_responses: Vec<(usize, usize, Vec<tmnl_protocol::CommandInfo>)> =
+            Vec::new();
         for (i, tab) in self.tabs.iter_mut().enumerate() {
             let focused = tab.focused;
             for (pi, pane) in tab.panes.iter_mut().enumerate() {
@@ -978,7 +1007,10 @@ impl App {
                 // the active tab) also refreshes its grid. The focused
                 // pane gets its full tick below.
                 if !is_focused_active {
-                    tick_secondary_pane(pane, i == active_idx);
+                    let from_secondary = tick_secondary_pane(pane, i == active_idx);
+                    for items in from_secondary {
+                        client_commands_responses.push((i, pi, items));
+                    }
                 }
             }
             // A user-set custom name wins over the auto-derived label.
@@ -1080,10 +1112,8 @@ impl App {
         // tick, applied below once the pane borrow is released.
         let mut open_pane_reqs: Vec<(String, Vec<String>)> = Vec::new();
         let mut host_command_reqs: Vec<String> = Vec::new();
-        // Aggregated `Message::ClientCommands` responses from connected
-        // Native panes. Flushed into `palette.remote_commands` after
-        // the per-pane borrow loop completes.
-        let mut client_commands_responses: Vec<Vec<tmnl_protocol::CommandInfo>> = Vec::new();
+        // (client_commands_responses is declared at the top of tick
+        // so the secondary-pane loop can push into it too.)
 
         // Tick the active tab's focused pane.
         let want_ghost_refresh = self.fim_redraw;
@@ -1151,7 +1181,7 @@ impl App {
                                 host_command_reqs.push(id);
                             }
                             ServerEvent::ClientCommands(items) => {
-                                client_commands_responses.push(items);
+                                client_commands_responses.push((self.active, focused, items));
                             }
                         }
                     }
@@ -1210,17 +1240,24 @@ impl App {
         }
         // Drop any ClientCommands responses straight onto the palette
         // (if one is open). Multiple panes may respond — we concat
-        // their lists; selection routing in v1 sends back to the
-        // focused pane regardless of source, which works as long as
-        // every pane uses unique-ish ids (mnml's "git.commit" wouldn't
-        // collide with mixr's "deck.play"). De-dup by id so palette
-        // doesn't show double rows when both panes briefly serve the
-        // same command set.
+        // v2 multi-source: tag each command with `(tab_idx, pane_idx)`
+        // so the palette's Enter handler can route `RunClientCommand`
+        // back to the exact source pane. De-dup by `(source, id)` so
+        // a pane re-responding to ListClientCommands doesn't show
+        // double rows, but different panes' identically-named commands
+        // remain distinct entries (rare in practice — mnml's
+        // `git.commit` wouldn't collide with mixr's `deck.play`).
         if let Some(st) = self.palette.as_mut() {
-            for items in client_commands_responses.drain(..) {
+            for (tab_idx, pane_idx, items) in client_commands_responses.drain(..) {
                 for info in items {
-                    if !st.remote_commands.iter().any(|r| r.id == info.id) {
-                        st.remote_commands.push(info);
+                    if !st.remote_commands.iter().any(|r| {
+                        r.source_tab == tab_idx && r.source_pane == pane_idx && r.info.id == info.id
+                    }) {
+                        st.remote_commands.push(crate::palette::RemoteCommand {
+                            info,
+                            source_tab: tab_idx,
+                            source_pane: pane_idx,
+                        });
                     }
                 }
             }
@@ -1691,8 +1728,12 @@ impl App {
                         let id_owned = id.to_string();
                         crate::command::dispatch_by_id(&id_owned, self, event_loop);
                     }
-                    Some(crate::palette::PaletteEntry::Remote(info)) => {
-                        self.send_run_client_command_to_focused_pane(&info.id);
+                    Some(crate::palette::PaletteEntry::Remote(rc)) => {
+                        self.send_run_client_command_to_pane(
+                            rc.source_tab,
+                            rc.source_pane,
+                            &rc.info.id,
+                        );
                     }
                     None => {}
                 }
