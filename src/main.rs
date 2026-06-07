@@ -972,12 +972,24 @@ impl Gpu {
         let start_x_px = (window_w_px - total_w_px) / 2.0;
         let start_col = (start_x_px - self.inset_px) / cell_w;
 
-        // Chrome colors — buttons sit on the strip bg (same as the
-        // chip body so the cluster reads as one continuous group);
-        // chip body is slightly lifted so it reads as the dominant
-        // search affordance.
-        const BTN_BG: [f32; 4] = [0.13, 0.15, 0.18, 1.0];
+        // Chrome colors — all three button surfaces (back arrow,
+        // forward arrow, search chip + dropdown) share the same
+        // lifted bg so they read as pills on the strip, not glyphs
+        // blended into it. Matches mnml's bufferline reference
+        // (image #10 in the 2026-06-07 thread: arrow buttons sit
+        // on distinct rectangles, not flush with the strip).
+        //
+        // Earlier `BTN_BG = [0.13, 0.15, 0.18]` was the SAME color
+        // as STRIP_BG (`[0.133, 0.149, 0.180]`), so arrows had no
+        // visible pill — only the chip body was visibly lifted.
+        // Now all share `CHIP_BG`, the bufferline's standard
+        // button-fill color (≈ mnml's `lightbg`).
         const CHIP_BG: [f32; 4] = [0.18, 0.20, 0.24, 1.0];
+        const BTN_BG: [f32; 4] = CHIP_BG;
+        // Foreground glyphs: brighter on the arrow buttons (the
+        // navigation affordance reads as "actionable"), slightly
+        // dimmer on the chip body where the search-text placeholder
+        // lives. Both still well-contrasted against CHIP_BG.
         const BTN_FG: [f32; 4] = [0.70, 0.72, 0.78, 1.0];
         const CHIP_FG: [f32; 4] = [0.55, 0.58, 0.65, 1.0];
 
