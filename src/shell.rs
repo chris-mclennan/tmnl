@@ -531,6 +531,106 @@ impl ShellSession {
         let _ = self.writer.flush();
     }
 
+    /// Forward a mouse event to the pty child when its mouse-tracking
+    /// mode is active. Returns `true` if the event was encoded + sent,
+    /// `false` if the child didn't enable mouse capture (e.g. a plain
+    /// shell prompt) — no point sending bytes the shell would just
+    /// echo as garbage.
+    ///
+    /// `col` + `row` are 0-indexed cell coordinates inside this pty's
+    /// grid. `button` uses **tmnl-protocol values** (`BUTTON_LEFT=0`,
+    /// `BUTTON_RIGHT=1`, `BUTTON_MIDDLE=2`, plus `BUTTON_WHEEL_UP=4`,
+    /// `BUTTON_WHEEL_DOWN=5` defined locally below) — this method
+    /// remaps to xterm's order internally. `mods` is the packed
+    /// bitmask from `pack_mods` (`MOD_SHIFT=1`, `MOD_CTRL=2`,
+    /// `MOD_ALT=4`, `MOD_SUPER=8`) — remapped to xterm's button-byte
+    /// positions (shift=bit2, alt=bit3, ctrl=bit4).
+    ///
+    /// Honors the parser's active encoding: SGR 1006 (`ESC[<…M/m`)
+    /// when set, X10 / default (`ESC[M<bytes>`) otherwise. Releases
+    /// are encoded as button-3 in X10 (the protocol doesn't carry
+    /// the released button) and as a lowercase `m` terminator in
+    /// SGR.
+    pub fn write_mouse(&mut self, col: u16, row: u16, button: u8, pressed: bool, mods: u8) -> bool {
+        use vt100::{MouseProtocolEncoding, MouseProtocolMode};
+        // Local button codes that don't exist in tmnl-protocol —
+        // tmnl's wheel handler picks them up from the wheel-scroll
+        // path before calling this.
+        const BUTTON_WHEEL_UP: u8 = 4;
+        const BUTTON_WHEEL_DOWN: u8 = 5;
+
+        let (mode, encoding) = {
+            let Ok(p) = self.parser.lock() else {
+                return false;
+            };
+            (
+                p.screen().mouse_protocol_mode(),
+                p.screen().mouse_protocol_encoding(),
+            )
+        };
+        // No tracking ⇒ drop the event. The child wouldn't have
+        // requested DECSET 1000+, so sending bytes would corrupt
+        // its stdin.
+        if matches!(mode, MouseProtocolMode::None) {
+            return false;
+        }
+        // Press-only mode skips releases.
+        if !pressed && matches!(mode, MouseProtocolMode::Press) {
+            return false;
+        }
+
+        // Protocol button → xterm button index (LEFT=0, MID=1,
+        // RIGHT=2 in xterm; LEFT=0, RIGHT=1, MID=2 in tmnl-protocol).
+        // Wheels stay distinct (handled below).
+        let xterm_button = match button {
+            0 => 0,                  // LEFT
+            1 => 2,                  // protocol RIGHT → xterm right
+            2 => 1,                  // protocol MIDDLE → xterm middle
+            BUTTON_WHEEL_UP => 64,   // wheel up
+            BUTTON_WHEEL_DOWN => 65, // wheel down
+            _ => return false,
+        };
+
+        // tmnl-protocol mod bits → xterm button-byte mod bits.
+        //   protocol: shift=bit0, ctrl=bit1, alt=bit2
+        //   xterm:    shift=bit2, alt=bit3,  ctrl=bit4
+        let mut mod_bits: u8 = 0;
+        if mods & 0b0001 != 0 {
+            mod_bits |= 0b0000_0100; // shift
+        }
+        if mods & 0b0010 != 0 {
+            mod_bits |= 0b0001_0000; // ctrl
+        }
+        if mods & 0b0100 != 0 {
+            mod_bits |= 0b0000_1000; // alt
+        }
+
+        let bb = xterm_button | mod_bits;
+
+        let bytes = match encoding {
+            MouseProtocolEncoding::Sgr => {
+                let term = if pressed { 'M' } else { 'm' };
+                format!("\x1b[<{};{};{}{}", bb, col + 1, row + 1, term).into_bytes()
+            }
+            // X10 / Utf8 / Urxvt — fall back to X10 (`ESC[M<button><x><y>`,
+            // each byte offset by 32 (button) or 33 (coords — 1-indexed
+            // and offset). Release encodes button-bits as 3 (any-button).
+            _ => {
+                let b_byte = if pressed { bb } else { 3 | mod_bits };
+                vec![
+                    0x1b,
+                    b'[',
+                    b'M',
+                    b_byte + 32,
+                    (col as u8).saturating_add(33),
+                    (row as u8).saturating_add(33),
+                ]
+            }
+        };
+        self.write_bytes(&bytes);
+        true
+    }
+
     /// Scroll the terminal's scrollback view. Positive `lines` moves
     /// back into history; negative moves toward the live bottom. vt100
     /// clamps to the available history.

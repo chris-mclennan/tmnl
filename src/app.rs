@@ -2515,18 +2515,28 @@ impl App {
             if pressed {
                 self.cancel_browser_url_edits();
             }
-            if let PaneKind::Native { server, .. } = &self.tabs[self.active].panes[id].kind {
-                server.send_input(&InputEvent::Mouse(MouseInput {
-                    kind: if pressed {
-                        MouseKind::Down
-                    } else {
-                        MouseKind::Up
-                    },
-                    button: b,
-                    col: lc,
-                    row: lr,
-                    mods: pack_mods(self.mods),
-                }));
+            match &mut self.tabs[self.active].panes[id].kind {
+                PaneKind::Native { server, .. } => {
+                    server.send_input(&InputEvent::Mouse(MouseInput {
+                        kind: if pressed {
+                            MouseKind::Down
+                        } else {
+                            MouseKind::Up
+                        },
+                        button: b,
+                        col: lc,
+                        row: lr,
+                        mods: pack_mods(self.mods),
+                    }));
+                }
+                // Forward to the pty child when the child has requested
+                // mouse tracking (DECSET 1000/1002/1006). When it hasn't
+                // (e.g. a bare shell prompt), `write_mouse` returns false
+                // and we drop the event silently — no garbage in stdin.
+                PaneKind::Shell { session: Some(s) } => {
+                    s.write_mouse(lc, lr, b, pressed, pack_mods(self.mods));
+                }
+                _ => {}
             }
         }
     }
@@ -2573,13 +2583,33 @@ impl App {
         };
         let mods = pack_mods(self.mods);
         match &mut self.tabs[self.active].panes[id].kind {
-            // Shell mode — scroll vt100's scrollback. Skipped
-            // while a full-screen TUI owns the alt-screen (it
-            // manages its own view). Wheel up → into history.
+            // Shell mode, alt-screen NOT active — scroll vt100's
+            // scrollback. Wheel up → into history.
             PaneKind::Shell { session: Some(s) } if !s.altscreen_active() => {
                 let lines = (dy * 3.0).round() as i32;
                 if lines != 0 {
                     s.scroll(lines);
+                }
+            }
+            // Shell mode, alt-screen IS active — forward each tick of
+            // wheel motion to the pty child as xterm wheel events.
+            // Mouse-tracking-aware via `write_mouse`: if the child
+            // hasn't enabled mouse capture, the call no-ops silently
+            // (no garbage on stdin). TUIs like mnml that DO want
+            // wheel events receive them as crossterm scroll events.
+            PaneKind::Shell { session: Some(s) } => {
+                const BUTTON_WHEEL_UP: u8 = 4;
+                const BUTTON_WHEEL_DOWN: u8 = 5;
+                let ticks = (dy.abs() * 3.0).round() as i32;
+                if ticks > 0 {
+                    let button = if dy > 0.0 {
+                        BUTTON_WHEEL_UP
+                    } else {
+                        BUTTON_WHEEL_DOWN
+                    };
+                    for _ in 0..ticks {
+                        s.write_mouse(col, row, button, true, mods);
+                    }
                 }
             }
             // Native mode — forward the scroll to the backing app.
