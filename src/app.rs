@@ -198,6 +198,47 @@ impl App {
         })
     }
 
+    /// Headless-friendly: fire a synthetic mouse-press at the given
+    /// pixel coordinates. Drives the same `handle_cursor_moved` +
+    /// `handle_mouse_input` sequence the winit loop would invoke,
+    /// so chip clicks / palette clicks / splitter drags exercise
+    /// the same hit-rect math as real mode. Down + Up pair.
+    pub fn synthetic_click(
+        &mut self,
+        px: f64,
+        py: f64,
+        button: winit::event::MouseButton,
+        mods: winit::keyboard::ModifiersState,
+    ) {
+        // Real flow: CursorMoved arrives first, updating cursor_px;
+        // then MouseInput reads cursor_px to decide what was clicked.
+        let position = winit::dpi::PhysicalPosition::new(px, py);
+        self.handle_cursor_moved(position);
+        self.mods = mods;
+        self.handle_mouse_input(winit::event::ElementState::Pressed, button);
+        self.handle_mouse_input(winit::event::ElementState::Released, button);
+    }
+
+    /// Headless-friendly: fire a synthetic hover (Moved with no
+    /// button held) at the given pixel coordinates. Updates the
+    /// cursor_px state through the same handler the winit loop uses,
+    /// so any side-effects (chip-reorder drag follow, hover tooltip
+    /// resolution) fire identically.
+    pub fn synthetic_hover(&mut self, px: f64, py: f64) {
+        let position = winit::dpi::PhysicalPosition::new(px, py);
+        self.handle_cursor_moved(position);
+    }
+
+    /// Headless-friendly: fire a synthetic wheel event at the given
+    /// pixel coordinates. `dy` is the vertical scroll delta in lines
+    /// (positive ⇒ scroll up / into history). Uses LineDelta to
+    /// match the most common natural-scroll path.
+    pub fn synthetic_wheel(&mut self, px: f64, py: f64, dy: f32) {
+        let position = winit::dpi::PhysicalPosition::new(px, py);
+        self.handle_cursor_moved(position);
+        self.handle_mouse_wheel(winit::event::MouseScrollDelta::LineDelta(0.0, dy));
+    }
+
     /// Spawn a new Native (editor) tab — fresh socket, fresh Server,
     /// fresh Launcher pointing at the same `editor_template.command`
     /// the original tab used. No-op when shell mode is active

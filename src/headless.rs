@@ -67,10 +67,19 @@ use crate::shell::ShellSession;
 ///   tab.close     — close active tab (quits if last tab)
 ///   tab.next      — focus next tab
 ///   tab.prev      — focus previous tab
+///   click <px> <py> [left|middle|right] [mods]
+///                 — fire a synthetic Down+Up mouse-press at pixel
+///                   coords. Routes through the same handler the
+///                   winit loop uses (chip rects, palette rects,
+///                   splitter regions all reachable).
+///   hover <px> <py>
+///                 — fire a synthetic Moved event (no button).
+///   wheel <dy> <px> <py>
+///                 — fire a synthetic wheel scroll. dy > 0 ⇒ up.
 ///   state-json    — dump tabs + focused + chip layout + sidebar + strip_h
 ///   quit          — stop the loop
 ///
-/// Future: pixel-coord click/hover/wheel, palette open, key dispatch.
+/// Future: palette open, key dispatch, native-tab spawn.
 pub fn run_app() {
     let cols: u32 = env_dim("TMNL_COLS", 120);
     let rows: u32 = env_dim("TMNL_ROWS", 36);
@@ -93,7 +102,7 @@ pub fn run_app() {
     for line in stdin.lock().lines() {
         let Ok(line) = line else { break };
         let line = line.trim_end_matches('\r');
-        let (cmd, _arg) = line.split_once(' ').unwrap_or((line, ""));
+        let (cmd, arg) = line.split_once(' ').unwrap_or((line, ""));
         match cmd {
             "" => {}
             "tab.new" => {
@@ -118,6 +127,20 @@ pub fn run_app() {
                     app.switch_to_tab(prev);
                 }
             }
+            "click" => match parse_pixel_click_arg(arg) {
+                Some((px, py, button, mods)) => app.synthetic_click(px, py, button, mods),
+                None => eprintln!(
+                    "tmnl --headless --app: usage: click <px> <py> [left|middle|right] [mods]"
+                ),
+            },
+            "hover" => match parse_pixel_pair(arg) {
+                Some((px, py)) => app.synthetic_hover(px, py),
+                None => eprintln!("tmnl --headless --app: usage: hover <px> <py>"),
+            },
+            "wheel" => match parse_pixel_wheel_arg(arg) {
+                Some((dy, px, py)) => app.synthetic_wheel(px, py, dy),
+                None => eprintln!("tmnl --headless --app: usage: wheel <dy> <px> <py>"),
+            },
             "state-json" => {
                 println!("{}", app_state_json(&app));
             }
@@ -128,6 +151,75 @@ pub fn run_app() {
             break;
         }
     }
+}
+
+/// Parse `<px> <py> [button] [mods]` for the App-headless `click`
+/// command. Returns `(px, py, winit MouseButton, winit ModifiersState)`.
+fn parse_pixel_click_arg(
+    arg: &str,
+) -> Option<(
+    f64,
+    f64,
+    winit::event::MouseButton,
+    winit::keyboard::ModifiersState,
+)> {
+    use winit::event::MouseButton;
+    use winit::keyboard::ModifiersState;
+    let parts: Vec<&str> = arg.split_whitespace().collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let px: f64 = parts[0].parse().ok()?;
+    let py: f64 = parts[1].parse().ok()?;
+    let button = parts
+        .get(2)
+        .map(|s| s.to_ascii_lowercase())
+        .map(|s| match s.as_str() {
+            "middle" | "m" => MouseButton::Middle,
+            "right" | "r" => MouseButton::Right,
+            _ => MouseButton::Left,
+        })
+        .unwrap_or(MouseButton::Left);
+    let mods = parts
+        .get(3)
+        .map(|s| parse_winit_mods(s))
+        .unwrap_or(ModifiersState::empty());
+    Some((px, py, button, mods))
+}
+
+fn parse_pixel_pair(arg: &str) -> Option<(f64, f64)> {
+    let parts: Vec<&str> = arg.split_whitespace().collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    Some((parts[0].parse().ok()?, parts[1].parse().ok()?))
+}
+
+fn parse_pixel_wheel_arg(arg: &str) -> Option<(f32, f64, f64)> {
+    let parts: Vec<&str> = arg.split_whitespace().collect();
+    if parts.len() < 3 {
+        return None;
+    }
+    let dy: f32 = parts[0].parse().ok()?;
+    let px: f64 = parts[1].parse().ok()?;
+    let py: f64 = parts[2].parse().ok()?;
+    Some((dy, px, py))
+}
+
+/// Parse winit `ModifiersState` from `"ctrl,alt,shift,super"`.
+fn parse_winit_mods(s: &str) -> winit::keyboard::ModifiersState {
+    use winit::keyboard::ModifiersState;
+    let mut out = ModifiersState::empty();
+    for token in s.split(',') {
+        match token.trim().to_ascii_lowercase().as_str() {
+            "ctrl" | "control" => out |= ModifiersState::CONTROL,
+            "alt" | "option" => out |= ModifiersState::ALT,
+            "shift" => out |= ModifiersState::SHIFT,
+            "super" | "cmd" | "meta" => out |= ModifiersState::SUPER,
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Format the App's headline state as a single-line JSON object.
