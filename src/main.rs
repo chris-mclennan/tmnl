@@ -101,19 +101,34 @@ const MACOS_TAB_STRIP_PX_SINGLE: f32 = 32.0;
 const MACOS_TAB_STRIP_PX_SHELL: f32 = 42.0;
 #[cfg(not(target_os = "macos"))]
 const MACOS_TAB_STRIP_PX_SHELL: f32 = 24.0;
+// Chrome palette — sourced from mnml's `theme.rs` (the family's
+// canonical default theme) so the chrome reads identically whether
+// you're looking at mnml-in-terminal or tmnl-native. Verbatim hex
+// → f32 (n/255), do NOT round; keep them in lockstep with
+// `mnml/src/ui/theme.rs` if it ever changes.
+//
+//   mnml name      hex        f32                  role
+//   ─────────────  ─────────  ───────────────────  ─────────────────
+//   bg_darker      #1b1f27    [0.106, 0.122, 0.153] tree rail, bufferline,
+//                                                   tmnl strip + letterbox
+//   bg_dark        #1e222a    [0.118, 0.133, 0.165] editor body / cells
+//   statusline_bg  #22262e    [0.133, 0.149, 0.180] mnml's bottom statusline
+//   lightbg        #2d3139    [0.176, 0.192, 0.224] file-tab body, button pills
+//   bg2            #353b45    [0.208, 0.231, 0.271] active tab, selected row
+//
 // Frame background — fills (a) the top pad reserved for the macOS
 // traffic-light buttons, (b) the letterbox gutter at the bottom when
 // the window height isn't a clean row multiple, and (c) any sub-cell
-// pixel overflow on the right. Matches mnml's `bg_darker` (the chrome
-// color used by tree rail + bufferline) so the inner padding reads as
-// "extension of the app chrome" instead of a hard black border around
-// the cell grid. Apps with different chrome would want to override
-// this through the protocol (TODO once a second app talks to tmnl).
+// pixel overflow on the right.
 const CLEAR_BG: [f32; 4] = [0.106, 0.122, 0.153, 1.0];
 // Tab-strip background — the chrome row across the top of the window
-// where the traffic-light buttons + tab chips sit. `#22262e` matches
-// mnml's `statusline_bg` so the top and bottom chrome share a palette.
-const STRIP_BG: [f32; 4] = [0.133, 0.149, 0.180, 1.0];
+// where the traffic-light buttons + tab chips sit. **Matches CLEAR_BG**
+// (= mnml's `bg_darker`, the same color mnml uses for its bufferline)
+// so strip + top pad render as one seamless chrome band, just like
+// mnml's bufferline. Previously this was `statusline_bg` (#22262e), one
+// tone too light — readable as a separate stripe instead of part of the
+// chrome.
+const STRIP_BG: [f32; 4] = CLEAR_BG;
 const TEXT_FG: [f32; 4] = [0.86, 0.87, 0.92, 1.0];
 const ACCENT_FG: [f32; 4] = [0.93, 0.73, 0.45, 1.0];
 const DIM_FG: [f32; 4] = [0.48, 0.50, 0.58, 1.0];
@@ -763,9 +778,12 @@ impl Gpu {
         let chips: Vec<(String, bool, bool)> = self.strip_chips.clone();
         let (slots, plus_slot, _rows) = self.chip_layout(&chips);
 
-        // Active chip's bg — a lightened version of STRIP_BG so the
-        // active tab stands out as a pill. Roughly `STRIP_BG + 0.06`.
-        const ACTIVE_CHIP_BG: [f32; 4] = [0.21, 0.24, 0.28, 1.0];
+        // Active chip's bg — matches mnml's `bg2` = #353b45 (one tone
+        // above lightbg, the "selected row / hover" color in mnml's
+        // theme). Makes the focused tab read as a brighter pill while
+        // staying inside the chrome palette. See the chrome-palette
+        // table at the top of this file.
+        const ACTIVE_CHIP_BG: [f32; 4] = [0.208, 0.231, 0.271, 1.0];
         // Attention dot color — red, matches OSC 1337 "needs attention".
         const ATTENTION_FG: [f32; 4] = [0.95, 0.32, 0.32, 1.0];
         // Muted close glyph color — dimmer than dim_fg.
@@ -975,16 +993,10 @@ impl Gpu {
         // Chrome colors — all three button surfaces (back arrow,
         // forward arrow, search chip + dropdown) share the same
         // lifted bg so they read as pills on the strip, not glyphs
-        // blended into it. Matches mnml's bufferline reference
-        // (image #10 in the 2026-06-07 thread: arrow buttons sit
-        // on distinct rectangles, not flush with the strip).
-        //
-        // Earlier `BTN_BG = [0.13, 0.15, 0.18]` was the SAME color
-        // as STRIP_BG (`[0.133, 0.149, 0.180]`), so arrows had no
-        // visible pill — only the chip body was visibly lifted.
-        // Now all share `CHIP_BG`, the bufferline's standard
-        // button-fill color (≈ mnml's `lightbg`).
-        const CHIP_BG: [f32; 4] = [0.18, 0.20, 0.24, 1.0];
+        // blended into it. Value matches mnml's `lightbg` = #2d3139,
+        // the standard file-tab / button-pill color in mnml's theme.
+        // See the chrome-palette table at the top of this file.
+        const CHIP_BG: [f32; 4] = [0.176, 0.192, 0.224, 1.0];
         const BTN_BG: [f32; 4] = CHIP_BG;
         // Foreground glyphs: brighter on the arrow buttons (the
         // navigation affordance reads as "actionable"), slightly
@@ -1043,15 +1055,16 @@ impl Gpu {
             col += 1.0;
         }
         // Gap — render strip-bg spaces so the chip looks visually
-        // detached from the arrows.
-        const STRIP_BG_LOCAL: [f32; 4] = [0.13, 0.15, 0.18, 1.0];
+        // detached from the arrows. (Currently `gap_text` is empty,
+        // so this loop is a no-op; bg sourced from STRIP_BG anyway
+        // so the dead branch doesn't drift from the chrome palette.)
         for ch in gap_text.chars() {
             push(
                 &mut out,
                 col,
                 ch,
                 BTN_FG,
-                STRIP_BG_LOCAL,
+                STRIP_BG,
                 &mut self.atlas,
                 &self.queue,
             );
