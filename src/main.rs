@@ -54,23 +54,28 @@ const FONT_PX: f32 = 14.0;
 /// surface extend through this area; the `StripPipeline` paints the
 /// background, and the cell pipeline draws on top with no overlap
 /// (offset by `inset_px + gpu.strip_h`).
-/// Multi-tab chrome height — when there's more than one tab, the
-/// strip holds TWO visual rows: the centered command-palette cluster
-/// in the upper third + the tab chips in the lower third. They were
-/// previously both centered on the same Y and collided horizontally
-/// once enough chips reached the palette's column (2026-06-07).
+/// Multi-tab chrome height — the strip is the single-tab strip
+/// PLUS a new row below for the tab chips. The palette cluster
+/// stays at its single-tab vertical position so it doesn't appear
+/// to move when a 2nd tab opens; the new row is purely additive
+/// space at the bottom.
 ///
-/// Sized for cell_h ~20px logical: upper row label_y ≈ 0.25 * (72-20)
-/// = 13, lower row label_y ≈ 0.75 * (72-20) = 39. 6px gap between
-/// rows reads as deliberate separation, not crowding.
+/// Sized for cell_h ~20px logical:
+///   * macOS: 52 (single) + 28 (tab row: cell_h + padding) = 80
+///   * non-macOS: 32 + 28 = 60
+///
+/// See `TAB_ROW_H_PX` below for the row height shared across both.
 #[cfg(target_os = "macos")]
-const MACOS_TAB_STRIP_PX_MULTI: f32 = 72.0;
-// Linux + Windows: no traffic-light row above us (the WM owns the
-// title bar), so the strip just needs height for two rows + a
-// little breathing room. Bumped 32 → 56 to match the macOS
-// two-row layout (palette upper, chips lower).
+const MACOS_TAB_STRIP_PX_MULTI: f32 = MACOS_TAB_STRIP_PX_SINGLE + TAB_ROW_H_PX;
 #[cfg(not(target_os = "macos"))]
-const MACOS_TAB_STRIP_PX_MULTI: f32 = 56.0;
+const MACOS_TAB_STRIP_PX_MULTI: f32 = MACOS_TAB_STRIP_PX_SINGLE + TAB_ROW_H_PX;
+
+/// Pixel height of the tab-chip row added below the palette in
+/// multi-tab mode. Sized to fit one cell of glyph + a bit of
+/// padding above and below; matches the visual rhythm of a single
+/// row of pill-shaped tab chips. Constant across macOS / Linux /
+/// Windows so the layout's the same regardless of platform.
+const TAB_ROW_H_PX: f32 = 28.0;
 /// Single-tab chrome height — a small breathing-room band above the
 /// grid so the first row of content isn't kissing the macOS traffic
 /// lights, but no visible chrome strip (the strip pipeline paints this
@@ -639,11 +644,15 @@ impl Gpu {
         }
         let cell_w = self.atlas.cell_w;
         let cell_h = self.atlas.cell_h;
-        // Multi-tab strip is laid out in two rows — palette cluster
-        // upper third, tab chips lower third. Chips sit at the 0.75
-        // mark of the available vertical space so they clear the
-        // palette without bumping into the strip's bottom edge.
-        let label_y_px = ((self.strip_h - cell_h) * 0.75).max(0.0);
+        // Tab chips sit on a NEW row below the palette. The palette
+        // occupies the top `MACOS_TAB_STRIP_PX_SINGLE` pixels (same
+        // vertical position as in single-tab mode, so the palette
+        // doesn't appear to shift when a 2nd tab opens). Chips live
+        // in the remaining `TAB_ROW_H_PX` band below, centered
+        // within it.
+        let tab_zone_top_px = MACOS_TAB_STRIP_PX_SINGLE;
+        let tab_zone_h_px = self.strip_h - tab_zone_top_px;
+        let label_y_px = (tab_zone_top_px + (tab_zone_h_px - cell_h) * 0.5).max(0.0);
         let inset_y_total = self.inset_px + self.strip_h;
         let base_y = (label_y_px - inset_y_total) / cell_h;
         // Active chip's bg — a lightened version of STRIP_BG so the
@@ -802,12 +811,14 @@ impl Gpu {
         }
         let cell_w = self.atlas.cell_w;
         let cell_h = self.atlas.cell_h;
-        // Multi-tab mode: palette in upper third (0.25), chips in
-        // lower third (0.75) — see `strip_chip_instances`. Single-tab
-        // mode: palette stays centered (no chips to collide with).
-        let multi_tab = self.strip_chips.len() > 1;
-        let y_frac = if multi_tab { 0.25 } else { 0.5 };
-        let label_y_px = ((self.strip_h - cell_h) * y_frac).max(0.0);
+        // Palette always centers within the single-tab strip
+        // region — even when chips are showing below. The strip
+        // height grows in multi-tab mode (palette zone +
+        // TAB_ROW_H_PX), but the palette's vertical position
+        // stays put. Keeps the palette from appearing to "jump up"
+        // when a 2nd tab opens.
+        let palette_zone_h = MACOS_TAB_STRIP_PX_SINGLE;
+        let label_y_px = ((palette_zone_h - cell_h) * 0.5).max(0.0);
         let inset_y_total = self.inset_px + self.strip_h;
         let base_y = (label_y_px - inset_y_total) / cell_h;
 
