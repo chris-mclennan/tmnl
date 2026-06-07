@@ -55,14 +55,22 @@ const FONT_PX: f32 = 14.0;
 /// background, and the cell pipeline draws on top with no overlap
 /// (offset by `inset_px + gpu.strip_h`).
 /// Multi-tab chrome height — when there's more than one tab, the
-/// strip is tall enough to hold a row of chips plus generous padding.
+/// strip holds TWO visual rows: the centered command-palette cluster
+/// in the upper third + the tab chips in the lower third. They were
+/// previously both centered on the same Y and collided horizontally
+/// once enough chips reached the palette's column (2026-06-07).
+///
+/// Sized for cell_h ~20px logical: upper row label_y ≈ 0.25 * (72-20)
+/// = 13, lower row label_y ≈ 0.75 * (72-20) = 39. 6px gap between
+/// rows reads as deliberate separation, not crowding.
 #[cfg(target_os = "macos")]
-const MACOS_TAB_STRIP_PX_MULTI: f32 = 64.0;
+const MACOS_TAB_STRIP_PX_MULTI: f32 = 72.0;
 // Linux + Windows: no traffic-light row above us (the WM owns the
-// title bar), so the strip just needs height for the chip row +
-// palette cluster + a little breathing room.
+// title bar), so the strip just needs height for two rows + a
+// little breathing room. Bumped 32 → 56 to match the macOS
+// two-row layout (palette upper, chips lower).
 #[cfg(not(target_os = "macos"))]
-const MACOS_TAB_STRIP_PX_MULTI: f32 = 32.0;
+const MACOS_TAB_STRIP_PX_MULTI: f32 = 56.0;
 /// Single-tab chrome height — a small breathing-room band above the
 /// grid so the first row of content isn't kissing the macOS traffic
 /// lights, but no visible chrome strip (the strip pipeline paints this
@@ -631,7 +639,11 @@ impl Gpu {
         }
         let cell_w = self.atlas.cell_w;
         let cell_h = self.atlas.cell_h;
-        let label_y_px = ((self.strip_h - cell_h) * 0.5).max(0.0);
+        // Multi-tab strip is laid out in two rows — palette cluster
+        // upper third, tab chips lower third. Chips sit at the 0.75
+        // mark of the available vertical space so they clear the
+        // palette without bumping into the strip's bottom edge.
+        let label_y_px = ((self.strip_h - cell_h) * 0.75).max(0.0);
         let inset_y_total = self.inset_px + self.strip_h;
         let base_y = (label_y_px - inset_y_total) / cell_h;
         // Active chip's bg — a lightened version of STRIP_BG so the
@@ -790,7 +802,12 @@ impl Gpu {
         }
         let cell_w = self.atlas.cell_w;
         let cell_h = self.atlas.cell_h;
-        let label_y_px = ((self.strip_h - cell_h) * 0.5).max(0.0);
+        // Multi-tab mode: palette in upper third (0.25), chips in
+        // lower third (0.75) — see `strip_chip_instances`. Single-tab
+        // mode: palette stays centered (no chips to collide with).
+        let multi_tab = self.strip_chips.len() > 1;
+        let y_frac = if multi_tab { 0.25 } else { 0.5 };
+        let label_y_px = ((self.strip_h - cell_h) * y_frac).max(0.0);
         let inset_y_total = self.inset_px + self.strip_h;
         let base_y = (label_y_px - inset_y_total) / cell_h;
 
