@@ -21,13 +21,19 @@ pub fn maybe_offer_at_launch() {
         .copied()
         .filter(|name| *name != SELF && !is_installed(name))
         .collect();
+    // Persist the marker BEFORE the empty-check return. The
+    // `is_installed()` probe stat's `/Applications/<app>.app` on
+    // macOS, which Sequoia (15.x) gates behind the "App Management /
+    // Files and Folders" privacy prompt. macOS only persists
+    // Allow/Deny per binary hash — cargo builds change the hash —
+    // so the prompt would re-fire every launch without this marker.
+    mark_shown();
     if missing.is_empty() {
         return;
     }
     for app in &missing {
         eprintln!("tmnl: try {app} too — {}", hint_for(app));
     }
-    mark_shown();
 }
 
 fn hint_for(app: &str) -> String {

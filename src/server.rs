@@ -265,6 +265,15 @@ fn reader_loop(
                     break;
                 }
             }
+            // Client → server: hosted app wants the renderer to open
+            // `path` in its editor. Wire-level handled; concrete
+            // routing into a tmnl editor pane is queued for v0.x. v1
+            // logs + drops so the connection stays healthy.
+            Ok(Message::OpenFile { path }) => {
+                log::info!(
+                    "OpenFile received (path={path:?}) — v0.1 ignores; will wire to editor pane in a follow-up"
+                );
+            }
             // `OpenPaneTransfer` requires SCM_RIGHTS fd-passing on the
             // same `sendmsg` call — incompatible with the BufReader on
             // this stream (which would consume past the cmsg boundary).
