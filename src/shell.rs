@@ -767,6 +767,34 @@ impl ShellSession {
         }
     }
 
+    /// Read the vt100 parser's current mouse-protocol state. Useful
+    /// for headless harnesses + tests verifying that a child process
+    /// has DECSET-enabled mouse tracking (so the next `write_mouse`
+    /// won't silently drop). Returns `None` if the parser mutex is
+    /// poisoned (defensive — never observed in practice).
+    pub fn mouse_protocol_state(
+        &self,
+    ) -> Option<(vt100::MouseProtocolMode, vt100::MouseProtocolEncoding)> {
+        self.parser.lock().ok().map(|p| {
+            let screen = p.screen();
+            (
+                screen.mouse_protocol_mode(),
+                screen.mouse_protocol_encoding(),
+            )
+        })
+    }
+
+    /// Cursor cell coordinates inside the pty's grid: `(row, col)`.
+    /// Reads through the vt100 parser, so reflects whatever the pty
+    /// child has drawn (cursor positioning escape sequences applied).
+    /// Returns `(0, 0)` on a poisoned mutex.
+    pub fn cursor_position(&self) -> (u16, u16) {
+        match self.parser.lock() {
+            Ok(p) => p.screen().cursor_position(),
+            Err(_) => (0, 0),
+        }
+    }
+
     /// Scan the visible screen for Claude Code's status-line pattern
     /// (`✽ Wandering…`, `✶ Pondering…`, etc.) and return it if found.
     /// Lets tmnl mirror Claude's live spinner — the glyph cycles and

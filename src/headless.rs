@@ -172,6 +172,25 @@ pub fn run() {
                 }
                 None => eprintln!("tmnl --headless: usage: wheel <dy> <col> <row>"),
             },
+            // `state-json` — dump session state as a single JSON line
+            // for scripted assertion. Useful to verify pre-conditions
+            // before sending a `click`/`hover`/`wheel` (was the child's
+            // DECSET 1006 actually picked up?) + as oracle for the
+            // post-condition (did the click reach where it should?).
+            //
+            // Schema (all fields always present):
+            //   { "shell": "<shell-basename>", "title": "<osc>", ...
+            //     "altscreen": true|false,
+            //     "exited": true|false, "scrollback": <int>,
+            //     "cursor": [<row>, <col>],
+            //     "mouse_mode": "None|Press|PressRelease|ButtonMotion|AnyMotion",
+            //     "mouse_encoding": "Default|Utf8|Sgr|Urxvt",
+            //     "integration": {"active": ..., "running": ...} }
+            "state-json" => {
+                settle(&mut session, &mut grid);
+                let _ = session.apply_to_grid(&mut grid);
+                println!("{}", session_state_json(&session));
+            }
             "quit" => break,
             other => eprintln!("tmnl --headless: unknown command '{other}'"),
         }
@@ -184,6 +203,66 @@ pub fn run() {
         eprintln!("tmnl --headless: {failures} expectation(s) FAILED");
         std::process::exit(1);
     }
+}
+
+/// Format the current shell session state as a single-line JSON
+/// object for the `state-json` headless command. Manually-formatted
+/// instead of `serde_json` so we don't pull in another dep just for
+/// this — the schema is small + stable.
+fn session_state_json(session: &ShellSession) -> String {
+    use vt100::{MouseProtocolEncoding, MouseProtocolMode};
+    let (mode, encoding) = session
+        .mouse_protocol_state()
+        .unwrap_or((MouseProtocolMode::None, MouseProtocolEncoding::default()));
+    let mode_str = match mode {
+        MouseProtocolMode::None => "None",
+        MouseProtocolMode::Press => "Press",
+        MouseProtocolMode::PressRelease => "PressRelease",
+        MouseProtocolMode::ButtonMotion => "ButtonMotion",
+        MouseProtocolMode::AnyMotion => "AnyMotion",
+    };
+    let encoding_str = match encoding {
+        MouseProtocolEncoding::Default => "Default",
+        MouseProtocolEncoding::Utf8 => "Utf8",
+        MouseProtocolEncoding::Sgr => "Sgr",
+    };
+    let (cursor_row, cursor_col) = session.cursor_position();
+    // Escape just the two things that can break a JSON string: `"` and `\`.
+    let escape = |s: &str| -> String {
+        let mut out = String::with_capacity(s.len() + 2);
+        for c in s.chars() {
+            match c {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+                c => out.push(c),
+            }
+        }
+        out
+    };
+    format!(
+        concat!(
+            r#"{{"shell":"{shell}","title":"{title}","altscreen":{altscreen},"#,
+            r#""exited":{exited},"scrollback":{scrollback},"#,
+            r#""cursor":[{cursor_row},{cursor_col}],"#,
+            r#""mouse_mode":"{mode}","mouse_encoding":"{encoding}","#,
+            r#""integration":{{"active":{integ_active},"running":{integ_running}}}}}"#
+        ),
+        shell = escape(session.shell_name()),
+        title = escape(&session.osc_title()),
+        altscreen = session.altscreen_active(),
+        exited = session.exited(),
+        scrollback = session.scrollback_offset(),
+        cursor_row = cursor_row,
+        cursor_col = cursor_col,
+        mode = mode_str,
+        encoding = encoding_str,
+        integ_active = session.shell_integration_active(),
+        integ_running = session.command_running(),
+    )
 }
 
 /// Parse `<col> <row> [button] [mods]` into the tuple `write_mouse`
