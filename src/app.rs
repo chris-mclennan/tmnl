@@ -1919,21 +1919,32 @@ impl App {
                 self.apply_inset_from_cfg(&edited);
                 true
             }
+            Key::Named(NamedKey::ArrowUp) => {
+                st.focus_prev();
+                true
+            }
+            Key::Named(NamedKey::ArrowDown) => {
+                st.focus_next();
+                true
+            }
             Key::Named(NamedKey::ArrowLeft) => {
                 st.nudge(-1.0);
                 let edited = st.cfg.clone();
+                self.cfg = edited.clone();
                 self.apply_inset_from_cfg(&edited);
                 true
             }
             Key::Named(NamedKey::ArrowRight) => {
                 st.nudge(1.0);
                 let edited = st.cfg.clone();
+                self.cfg = edited.clone();
                 self.apply_inset_from_cfg(&edited);
                 true
             }
             Key::Named(NamedKey::Backspace) | Key::Named(NamedKey::Delete) => {
                 st.reset_row();
                 let edited = st.cfg.clone();
+                self.cfg = edited.clone();
                 self.apply_inset_from_cfg(&edited);
                 true
             }
@@ -1942,15 +1953,15 @@ impl App {
             Key::Character(s) if s.as_str() == "r" => {
                 st.reset_row();
                 let edited = st.cfg.clone();
+                self.cfg = edited.clone();
                 self.apply_inset_from_cfg(&edited);
                 true
             }
-            // `R` (shift+r) — reset all. Same as `r` while there's only
-            // one setting; keymap matches the family convention so it
-            // doesn't have to change when more settings land.
+            // `R` (shift+r) — reset all.
             Key::Character(s) if s.as_str() == "R" => {
                 st.reset_all();
                 let edited = st.cfg.clone();
+                self.cfg = edited.clone();
                 self.apply_inset_from_cfg(&edited);
                 true
             }
@@ -2695,17 +2706,30 @@ impl App {
     }
 
     fn handle_mouse_wheel(&mut self, delta: MouseScrollDelta) {
-        // Don't scroll the terminal when the wheel event lands in
-        // the chrome strip OR the vertical-tab sidebar — chip-
-        // scrolling can come later but forwarding now would scroll
-        // the underlying terminal, which is surprising when the
-        // cursor is on a chip.
+        // Wheel-in-sidebar scrolls the chip list (vertical mode
+        // overflow). Wheel-in-top-strip does nothing (chip-row
+        // scrolling for horizontal wrap is a separate v2). Either
+        // way the body terminal doesn't see the event.
         if let Some(gpu) = &self.gpu {
             let (px, py) = self.cursor_px;
             let in_top_strip = py < (gpu.inset_px + gpu.strip_h) as f64;
             let in_left_sidebar =
                 gpu.sidebar_w_px > 0.0 && px < (gpu.inset_px + gpu.sidebar_w_px) as f64;
-            if in_top_strip || in_left_sidebar {
+            if in_left_sidebar {
+                let dy = match delta {
+                    MouseScrollDelta::LineDelta(_x, y) => y,
+                    MouseScrollDelta::PixelDelta(p) => p.y as f32 / 24.0,
+                };
+                let chip_count = self.tabs.len();
+                let gpu = self.gpu.as_mut().unwrap();
+                if gpu.scroll_sidebar(dy, chip_count)
+                    && let Some(w) = &self.window
+                {
+                    w.request_redraw();
+                }
+                return;
+            }
+            if in_top_strip {
                 return;
             }
         }

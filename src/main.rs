@@ -472,6 +472,12 @@ struct Gpu {
     /// `inset_px` for the x-axis so the body shifts right to make
     /// room.
     sidebar_w_px: f32,
+    /// Number of chip-rows scrolled past in the vertical sidebar.
+    /// Increments when the user wheels DOWN over the sidebar (more
+    /// chips slide UP / off the top). Capped at `chip_count -
+    /// visible_chips + 1` by [`Self::clamp_sidebar_scroll`] so the
+    /// `+` button stays reachable. 0 in horizontal mode.
+    sidebar_scroll_rows: f32,
 }
 
 const FONT_ZOOM_MIN: f32 = 0.6;
@@ -576,6 +582,7 @@ impl Gpu {
             // configured value.
             tab_layout: crate::config::TabLayout::default(),
             sidebar_w_px: 0.0,
+            sidebar_scroll_rows: 0.0,
         }
     }
 
@@ -870,21 +877,44 @@ impl Gpu {
         } else {
             tab_zone_top_px
         };
+        // Vertical mode: shift visible rows up by `sidebar_scroll_rows`
+        // so wheel-scroll over the sidebar reveals chips below the
+        // visible window. Horizontal mode never scrolls.
+        let scroll_rows = if vertical {
+            self.sidebar_scroll_rows
+        } else {
+            0.0
+        };
+        // Bottom of the chip-render area — used to skip chips that
+        // would land below the visible window in vertical mode.
+        let viewport_h = self.config.height as f32;
+        let max_chip_y_px = viewport_h - TAB_ROW_H_PX;
         // Per-row Y coordinates — pre-compute so the chip render loop
         // doesn't need to recalculate per glyph.
         let row_geom = |row: usize| -> (f32, f32, f32) {
             // (y0_px, y1_px, base_y_in_cell_coords)
-            let y0 = first_row_top_px + row as f32 * TAB_ROW_H_PX;
+            let y0 = first_row_top_px + (row as f32 - scroll_rows) * TAB_ROW_H_PX;
             let y1 = y0 + TAB_ROW_H_PX;
             let label_y = (y0 + (TAB_ROW_H_PX - cell_h) * 0.5).max(0.0);
             (y0, y1, (label_y - inset_y_total) / cell_h)
         };
+        // Vertical mode: skip chips whose row falls outside the
+        // visible window — above (y0 < first_row_top_px) or below
+        // (y0 > max_chip_y_px). Hit rects are also skipped, so
+        // off-screen chips can't be clicked.
+        let row_visible = |y0: f32| !vertical || (y0 >= first_row_top_px && y0 <= max_chip_y_px);
         let space_g = self.atlas.glyph(' ', style_from_attrs(0), &self.queue);
         let mut out: Vec<pipeline::Instance> = Vec::new();
 
         for (i, (label, active, attention)) in chips.iter().enumerate() {
             let (row, slot_col) = slots[i];
             let (chip_y0_px, chip_y1_px, base_y) = row_geom(row);
+            // Vertical mode: skip chips scrolled off-screen so we
+            // don't paint glyphs over the body grid above/below the
+            // sidebar.
+            if !row_visible(chip_y0_px) {
+                continue;
+            }
             let mut col_offset = slot_col;
             let chip_x0_px = start_x_px + col_offset * cell_w;
             let (fg, bg, attrs) = if *active {
@@ -965,11 +995,14 @@ impl Gpu {
         }
         // `+` new-tab button — wraps to its own row if the last chip
         // row didn't have space (the chip_layout helper figured this
-        // out for us).
+        // out for us). In vertical mode skipped when scrolled off the
+        // bottom; `clamp_sidebar_scroll` keeps it reachable.
         let (plus_row, plus_col_offset) = plus_slot;
         let (plus_y0_px, plus_y1_px, plus_base_y) = row_geom(plus_row);
-        let plus_x_px = start_x_px + plus_col_offset * cell_w;
-        self.push_plus_button(&mut out, plus_x_px, plus_base_y, plus_y0_px, plus_y1_px);
+        if row_visible(plus_y0_px) {
+            let plus_x_px = start_x_px + plus_col_offset * cell_w;
+            self.push_plus_button(&mut out, plus_x_px, plus_base_y, plus_y0_px, plus_y1_px);
+        }
         out
     }
 
@@ -1342,6 +1375,47 @@ impl Gpu {
         true
     }
 
+    /// Number of chip rows that fit in the sidebar's visible region
+    /// (between the top strip and the bottom of the window).
+    /// Used by [`Self::clamp_sidebar_scroll`] to keep the `+` button
+    /// reachable.
+    fn sidebar_visible_rows(&self) -> f32 {
+        let avail = (self.config.height as f32 - self.strip_h).max(0.0);
+        (avail / TAB_ROW_H_PX).max(1.0)
+    }
+
+    /// Apply a wheel-scroll delta to the vertical sidebar. Positive
+    /// `dy` (wheel up) scrolls toward the top (reveals earlier
+    /// chips); negative scrolls down. Clamped so the first chip
+    /// never moves below the top of the sidebar and the `+` button
+    /// stays reachable at the bottom. Returns `true` iff the scroll
+    /// actually moved (caller requests a redraw).
+    pub fn scroll_sidebar(&mut self, dy: f32, chip_count: usize) -> bool {
+        if !matches!(self.tab_layout, crate::config::TabLayout::Vertical) {
+            return false;
+        }
+        // Total rows the sidebar would need: one per chip + one for
+        // the `+` button. Visible rows in the sidebar viewport.
+        let total = chip_count as f32 + 1.0;
+        let visible = self.sidebar_visible_rows();
+        // No overflow ⇒ scrolling is a no-op.
+        if total <= visible {
+            if self.sidebar_scroll_rows != 0.0 {
+                self.sidebar_scroll_rows = 0.0;
+                return true;
+            }
+            return false;
+        }
+        let max_scroll = (total - visible).max(0.0);
+        // Wheel up (dy > 0) shows earlier chips ⇒ scroll DECREASES.
+        let new_scroll = (self.sidebar_scroll_rows - dy).clamp(0.0, max_scroll);
+        if (new_scroll - self.sidebar_scroll_rows).abs() < f32::EPSILON {
+            return false;
+        }
+        self.sidebar_scroll_rows = new_scroll;
+        true
+    }
+
     fn render(&mut self) {
         let frame = match self.surface.get_current_texture() {
             Ok(f) => f,
@@ -1393,6 +1467,7 @@ impl Gpu {
             &self.queue,
             [self.config.width as f32, self.config.height as f32],
             self.strip_h,
+            self.sidebar_w_px,
             strip_color,
         );
         let mut instances = CellPipeline::build_instances(&self.grid, &mut self.atlas, &self.queue);
@@ -1430,10 +1505,15 @@ impl Gpu {
                 occlusion_query_set: None,
                 timestamp_writes: None,
             });
-            // Strip background first — the cell pipeline draws on top.
+            // Chrome backgrounds first — the cell pipeline draws on
+            // top. Two instances: the top tab strip + (in vertical-
+            // tab mode) the left-edge sidebar. The shader collapses
+            // the sidebar quad to zero area when `sidebar_w == 0`,
+            // so passing 2 instances unconditionally is cheap and
+            // simpler than branching the draw call.
             pass.set_pipeline(&self.strip_pipeline.pipeline);
             pass.set_bind_group(0, &self.strip_pipeline.bind_group, &[]);
-            pass.draw(0..4, 0..1);
+            pass.draw(0..4, 0..2);
             // Cell grid (body content).
             pass.set_pipeline(&self.pipeline.pipeline);
             pass.set_bind_group(0, &self.pipeline.bind_group, &[]);

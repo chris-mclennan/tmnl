@@ -288,7 +288,11 @@ impl CellPipeline {
 pub struct StripGlobals {
     pub viewport: [f32; 2],
     pub strip_h: f32,
-    pub _pad0: f32,
+    /// Pixel width of the left-edge tab sidebar (when
+    /// `tab_layout = Vertical`). `0.0` ⇒ no sidebar — the second
+    /// quad collapses to zero area and the strip pipeline draws only
+    /// the top strip.
+    pub sidebar_w: f32,
     pub strip_color: [f32; 4],
 }
 
@@ -382,12 +386,13 @@ impl StripPipeline {
         queue: &wgpu::Queue,
         viewport: [f32; 2],
         strip_h: f32,
+        sidebar_w: f32,
         strip_color: [f32; 4],
     ) {
         let g = StripGlobals {
             viewport,
             strip_h,
-            _pad0: 0.0,
+            sidebar_w,
             strip_color,
         };
         queue.write_buffer(&self.globals_buf, 0, bytemuck::bytes_of(&g));
