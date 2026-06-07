@@ -47,6 +47,13 @@ pub enum TransferEvent {
         #[cfg(unix)]
         fd: OwnedFd,
     },
+    /// A peer sent `Message::OpenPane` with NO fd attached — used by
+    /// child processes (e.g. mnml on auto-promote at startup) to ask
+    /// tmnl to launch them as a fresh native tab. The blit-channel
+    /// `OpenPane` (in `server.rs`) splits inside the focused tab;
+    /// this transfer-socket variant is for outside-in promotion and
+    /// adds a new top-level tab instead.
+    PromoteToNative { command: String, args: Vec<String> },
 }
 
 /// Handle for the transfer listener thread. Drop closes the listening
@@ -149,6 +156,28 @@ fn accept_loop(listener: UnixListener, tx: Sender<TransferEvent>) {
                     "OpenPaneTransfer from {command} arrived without an attached fd — dropping"
                 );
             }
+            Ok((Message::OpenPane { command, args }, None)) => {
+                // Outside-in promotion request — a child (typically
+                // mnml at startup, having detected TMNL_TRANSFER_SOCKET)
+                // is asking us to relaunch it as a native tab. Different
+                // from the blit-channel OpenPane (split-inside-focused-
+                // tab semantics): this lands as a new top-level tab.
+                if tx
+                    .send(TransferEvent::PromoteToNative { command, args })
+                    .is_err()
+                {
+                    log::warn!("transfer event_tx closed; listener exiting");
+                    return;
+                }
+            }
+            Ok((Message::OpenPane { command, .. }, Some(raw))) => {
+                log::warn!(
+                    "transfer listener: OpenPane from {command} arrived WITH an fd — \
+                     ignoring (PromoteToNative shouldn't carry SCM_RIGHTS)"
+                );
+                #[cfg(unix)]
+                let _ = unsafe { OwnedFd::from_raw_fd(raw) };
+            }
             Ok((other, maybe_fd)) => {
                 log::warn!(
                     "transfer listener: ignoring unexpected {other:?} (fd attached: {})",
@@ -219,7 +248,9 @@ mod tests {
             .events
             .recv_timeout(Duration::from_secs(2))
             .expect("transfer event");
-        let TransferEvent::OpenPaneTransfer { command, args, fd } = ev;
+        let TransferEvent::OpenPaneTransfer { command, args, fd } = ev else {
+            panic!("expected OpenPaneTransfer, got {ev:?}");
+        };
         assert_eq!(command, "claude");
         assert_eq!(args, vec!["--continue".to_string()]);
         let received_raw = fd.as_raw_fd();
@@ -240,5 +271,32 @@ mod tests {
         unsafe {
             libc::close(sv[0]);
         }
+    }
+
+    #[test]
+    fn listener_surfaces_open_pane_without_fd_as_promote_to_native() {
+        // The auto-promote path: a child (e.g. mnml at startup) sends
+        // `OpenPane` with no fd attached. The listener should map it
+        // to a `PromoteToNative` event so the app loop can spawn a
+        // new native tab.
+        let path = unique_socket();
+        let listener = TransferListener::start(path.clone()).expect("listener start");
+
+        let sender = UnixStream::connect(&path).expect("sender connect");
+        let msg = Message::OpenPane {
+            command: "mnml".to_string(),
+            args: vec!["/tmp/some-workspace".to_string()],
+        };
+        send_message_with_fd(&sender, &msg, None).expect("send");
+
+        let ev = listener
+            .events
+            .recv_timeout(Duration::from_secs(2))
+            .expect("transfer event");
+        let TransferEvent::PromoteToNative { command, args } = ev else {
+            panic!("expected PromoteToNative, got {ev:?}");
+        };
+        assert_eq!(command, "mnml");
+        assert_eq!(args, vec!["/tmp/some-workspace".to_string()]);
     }
 }

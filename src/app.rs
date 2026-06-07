@@ -211,10 +211,83 @@ impl App {
                 transfer::TransferEvent::OpenPaneTransfer { command, args, fd } => {
                     self.adopt_pty_into_new_tab(command, args, fd);
                 }
+                transfer::TransferEvent::PromoteToNative { command, args } => {
+                    self.spawn_native_in_new_tab(command, args);
+                }
                 #[cfg(not(unix))]
                 _ => {}
             }
         }
+    }
+
+    /// Append a new top-level tab running `command [args…]` as a
+    /// native blit client. The companion to [`Self::open_pane_with_command`]
+    /// (which splits inside the focused tab) for outside-in promotion
+    /// requests arriving over the transfer socket — e.g. mnml at
+    /// startup detecting tmnl's env var and asking to be relaunched
+    /// natively.
+    fn spawn_native_in_new_tab(&mut self, command: String, args: Vec<String>) {
+        let (cols, rows) = match self.gpu.as_ref() {
+            Some(gpu) => (gpu.grid.cols, gpu.grid.rows),
+            None => return,
+        };
+        let socket_path = native_tab_socket_path(self.native_tab_nonce);
+        self.native_tab_nonce = self.native_tab_nonce.saturating_add(1);
+        let server = match Server::start(socket_path.clone()) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("tmnl: promote-to-native server start failed: {e}");
+                return;
+            }
+        };
+        let workspace = std::env::current_dir().unwrap_or_else(|_| ".".into());
+        let label = std::path::Path::new(&command)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("app")
+            .to_string();
+        let cfg = LauncherConfig {
+            command: std::path::PathBuf::from(&command),
+            workspace,
+            socket: socket_path.clone(),
+            extra_args: args,
+        };
+        let mut l = Launcher::new(cfg);
+        let launcher = match l.spawn() {
+            Ok(()) => Some(l),
+            Err(e) => {
+                eprintln!(
+                    "tmnl: promote-to-native launch failed ({e}); start it manually with --blit {}",
+                    socket_path.display()
+                );
+                None
+            }
+        };
+        let mut grid = grid::Grid::new(cols, rows, palette().clear_bg);
+        paint_idle(&mut grid, ConnState::Waiting, &socket_path);
+        let pane = Pane {
+            kind: PaneKind::Native {
+                server,
+                conn: ConnState::Waiting,
+                launcher,
+                client_title: None,
+            },
+            grid,
+            last_cursor: None,
+            label: label.clone(),
+            attention: false,
+            last_status: None,
+        };
+        self.tabs.push(Tab {
+            layout: Layout::Leaf(0),
+            panes: vec![pane],
+            focused: 0,
+            label,
+            custom_name: None,
+        });
+        self.active = self.tabs.len() - 1;
+        self.on_tab_focused();
+        self.relayout_all_panes();
     }
 
     /// Create a new tab whose pane owns an adopted pty master fd —
