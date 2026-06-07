@@ -54,27 +54,17 @@ const FONT_PX: f32 = 14.0;
 /// surface extend through this area; the `StripPipeline` paints the
 /// background, and the cell pipeline draws on top with no overlap
 /// (offset by `inset_px + gpu.strip_h`).
-/// Multi-tab chrome height — the strip is the single-tab strip
-/// PLUS a new row below for the tab chips. The palette cluster
-/// stays at its single-tab vertical position so it doesn't appear
-/// to move when a 2nd tab opens; the new row is purely additive
-/// space at the bottom.
-///
-/// Sized for cell_h ~20px logical:
-///   * macOS: 52 (single) + 28 (tab row: cell_h + padding) = 80
-///   * non-macOS: 32 + 28 = 60
-///
-/// See `TAB_ROW_H_PX` below for the row height shared across both.
-#[cfg(target_os = "macos")]
-const MACOS_TAB_STRIP_PX_MULTI: f32 = MACOS_TAB_STRIP_PX_SINGLE + TAB_ROW_H_PX;
-#[cfg(not(target_os = "macos"))]
-const MACOS_TAB_STRIP_PX_MULTI: f32 = MACOS_TAB_STRIP_PX_SINGLE + TAB_ROW_H_PX;
-
 /// Pixel height of the tab-chip row added below the palette in
 /// multi-tab mode. Sized to fit one cell of glyph + a bit of
 /// padding above and below; matches the visual rhythm of a single
 /// row of pill-shaped tab chips. Constant across macOS / Linux /
 /// Windows so the layout's the same regardless of platform.
+///
+/// Multi-tab strip height = `MACOS_TAB_STRIP_PX_SINGLE` (palette
+/// zone) + `rows * TAB_ROW_H_PX`. See `Gpu::required_strip_h`.
+/// `MACOS_TAB_STRIP_PX_MULTI` was retired in favor of the
+/// row-aware computation — when chips wrap, the strip grows per
+/// row instead of fixed at a single-row height.
 const TAB_ROW_H_PX: f32 = 28.0;
 /// Single-tab chrome height — a small breathing-room band above the
 /// grid so the first row of content isn't kissing the macOS traffic
@@ -420,7 +410,11 @@ struct Gpu {
     /// captured by `strip_chip_instances`. Used by the main event loop
     /// to route strip-region mouse clicks (left → switch_to_tab,
     /// middle → close_tab_at).
-    strip_chip_rects: Vec<(f32, f32, usize)>,
+    /// Per-chip click hit-rect: `(x0, x1, y0, y1, chip_idx)`.
+    /// Includes Y bounds so wrap-layout chips on different rows are
+    /// distinguished — a click at "this column" on row 1 vs row 2
+    /// otherwise resolves to the same chip without the Y check.
+    strip_chip_rects: Vec<(f32, f32, f32, f32, usize)>,
     /// Pixel rects of the four palette-cluster hit-targets in the
     /// chrome strip — `(x0, x1, y0, y1)`. Order: back, forward,
     /// search-chip, dropdown-chevron. Click on each sends a different
@@ -434,10 +428,15 @@ struct Gpu {
     /// badge on each non-active chip. Click → `close_tab_at`. Active
     /// chip has no close badge (the user closes the active tab via
     /// ⌘W or middle-click).
-    strip_chip_close_rects: Vec<(f32, f32, usize)>,
-    /// Pixel-x extent `(x0, x1)` of the trailing `+` new-tab button.
-    /// Painted only when chips are visible. Click → `new_shell_tab`.
-    strip_new_tab_rect: Option<(f32, f32)>,
+    /// Per-chip close-badge hit-rect: `(x0, x1, y0, y1, chip_idx)`.
+    /// Same shape as `strip_chip_rects` — Y bounds make wrap-layout
+    /// safe.
+    strip_chip_close_rects: Vec<(f32, f32, f32, f32, usize)>,
+    /// Pixel rect `(x0, x1, y0, y1)` of the trailing `+` new-tab
+    /// button. Painted only when chips are visible. Click →
+    /// `new_shell_tab`. Y bounds make it correct on the last chip
+    /// row regardless of how many wrap-rows there are.
+    strip_new_tab_rect: Option<(f32, f32, f32, f32)>,
     /// Tab chips painted in the strip. `(label, is_active, attention)` per tab,
     /// in display order. App rewrites this each tick. Empty Vec ⇒
     /// strip is bg only. Length 1 ⇒ single label, centered (Safari-
@@ -588,6 +587,100 @@ impl Gpu {
         None
     }
 
+    /// Total cell width of one chip's pill body. Components:
+    /// `pad + (attention ? 2 : 0) + label + gap + close + pad`.
+    /// Used by `chip_layout` to decide when to wrap to a new row.
+    /// Inter-chip gap is added separately (after each chip except
+    /// the last) — see `chip_layout`.
+    fn chip_cells(label: &str, active: bool, attention: bool) -> f32 {
+        let pad = Self::CHIP_PAD_CELLS * 2.0;
+        let attn = if attention && !active { 2.0 } else { 0.0 };
+        let label_cells = label.chars().count() as f32;
+        let gap_before_close = 1.0;
+        let close = 1.0;
+        pad + attn + label_cells + gap_before_close + close
+    }
+
+    /// Compute the wrap layout for a given chip list: how many rows
+    /// they need and where each chip sits (row + col-offset within
+    /// the row). The `+` new-tab button slot is included so it
+    /// doesn't get cut off the right edge.
+    ///
+    /// Returns `(slots, plus_slot, row_count)` where `slots[i]` is
+    /// `(row_idx, col_offset_cells)` for chip `i`, `plus_slot` is
+    /// the slot the `+` button occupies, and `row_count` is the
+    /// total number of rows needed (≥ 1 when chips are present).
+    fn chip_layout(
+        &self,
+        chips: &[(String, bool, bool)],
+    ) -> (Vec<(usize, f32)>, (usize, f32), usize) {
+        let cell_w = self.atlas.cell_w;
+        let window_w = self.config.width as f32;
+        let start_x = Self::CHIP_START_X_PX;
+        // Right edge safe area: traffic-lights-equivalent + room for
+        // the `+` button. The button is 3 cells wide (pad + glyph +
+        // pad); add a comfortable margin so chips don't kiss the
+        // window edge.
+        let right_margin_px = 16.0;
+        let max_x_px = window_w - right_margin_px;
+        let row_max_cells = ((max_x_px - start_x) / cell_w).max(0.0);
+        let plus_cells = 3.0;
+        let gap = Self::CHIP_GAP_CELLS;
+
+        let mut slots: Vec<(usize, f32)> = Vec::with_capacity(chips.len());
+        let mut row = 0_usize;
+        let mut col = 0.0_f32;
+        for (label, active, attention) in chips {
+            let cells = Self::chip_cells(label, *active, *attention);
+            // Wrap if this chip doesn't fit AND we've placed at least
+            // one chip on the current row (avoids infinite-wrap loop
+            // when one chip alone exceeds the available width — it
+            // just gets cut off the right; better than spinning).
+            if col > 0.0 && col + cells > row_max_cells {
+                row += 1;
+                col = 0.0;
+            }
+            slots.push((row, col));
+            col += cells + gap;
+        }
+        // `+` button — wraps to a new row if it wouldn't fit after the
+        // last chip.
+        let plus_slot = if col + plus_cells > row_max_cells && col > 0.0 {
+            (row + 1, 0.0)
+        } else {
+            (row, col)
+        };
+        let row_count = plus_slot.0 + 1;
+        (slots, plus_slot, row_count)
+    }
+
+    /// Required strip height for the current chip list under
+    /// `tab_layout = horizontal` (default). Single-tab → palette zone
+    /// only. Multi-tab → palette zone + (rows × `TAB_ROW_H_PX`).
+    /// Vertical mode is a v0.x follow-up; for now it falls through
+    /// to horizontal so the app doesn't break.
+    pub fn required_strip_h(chips: &[(String, bool, bool)], rows: usize, tui_active: bool) -> f32 {
+        if chips.len() <= 1 {
+            if tui_active {
+                MACOS_TAB_STRIP_PX_SINGLE
+            } else {
+                MACOS_TAB_STRIP_PX_SHELL
+            }
+        } else {
+            MACOS_TAB_STRIP_PX_SINGLE + rows.max(1) as f32 * TAB_ROW_H_PX
+        }
+    }
+
+    /// Public surface for `chip_layout` so the App can ask "how many
+    /// rows do the current chips need?" before deciding the strip
+    /// height.
+    pub fn chip_row_count(&self, chips: &[(String, bool, bool)]) -> usize {
+        if chips.len() <= 1 {
+            return 1;
+        }
+        self.chip_layout(chips).2
+    }
+
     /// Set the chip list rendered in the tab strip. App calls this
     /// each tick with one entry per open tab
     /// (`(label, is_active, attention)`). Skips the write when
@@ -636,120 +729,104 @@ impl Gpu {
         self.strip_chip_rects.clear();
         self.strip_chip_close_rects.clear();
         self.strip_new_tab_rect = None;
-        // Skip rendering chips when there's only one tab — the user
-        // sees just the bare title-bar inset (pre-tabs look). Also
-        // bail when strip is disabled (non-macOS).
+        // Skip rendering chips when there's only one tab. Also bail
+        // when strip is disabled (non-macOS without strip support).
         if self.strip_chips.len() <= 1 || self.strip_h <= 0.0 {
             return Vec::new();
         }
         let cell_w = self.atlas.cell_w;
         let cell_h = self.atlas.cell_h;
-        // Tab chips sit on a NEW row below the palette. The palette
-        // occupies the top `MACOS_TAB_STRIP_PX_SINGLE` pixels (same
-        // vertical position as in single-tab mode, so the palette
-        // doesn't appear to shift when a 2nd tab opens). Chips live
-        // in the remaining `TAB_ROW_H_PX` band below, centered
-        // within it.
+
+        // Tab chips render in rows BELOW the palette. The palette
+        // occupies the top `MACOS_TAB_STRIP_PX_SINGLE` pixels (so it
+        // doesn't shift between single-tab and multi-tab modes).
+        // When chips don't fit on one row, they wrap to a new row;
+        // each row adds `TAB_ROW_H_PX` to the strip. The total strip
+        // height was set by App tick via `Gpu::required_strip_h` so
+        // there's already vertical room for every row.
         let tab_zone_top_px = MACOS_TAB_STRIP_PX_SINGLE;
-        let tab_zone_h_px = self.strip_h - tab_zone_top_px;
-        let label_y_px = (tab_zone_top_px + (tab_zone_h_px - cell_h) * 0.5).max(0.0);
-        let inset_y_total = self.inset_px + self.strip_h;
-        let base_y = (label_y_px - inset_y_total) / cell_h;
+        // Compute the wrap layout — per-chip (row, col_offset).
+        let chips: Vec<(String, bool, bool)> = self.strip_chips.clone();
+        let (slots, plus_slot, _rows) = self.chip_layout(&chips);
+
         // Active chip's bg — a lightened version of STRIP_BG so the
         // active tab stands out as a pill. Roughly `STRIP_BG + 0.06`.
         const ACTIVE_CHIP_BG: [f32; 4] = [0.21, 0.24, 0.28, 1.0];
-        // Attention dot color — red, matches OSC 1337 "needs attention"
-        // urgency level.
+        // Attention dot color — red, matches OSC 1337 "needs attention".
         const ATTENTION_FG: [f32; 4] = [0.95, 0.32, 0.32, 1.0];
-        // Muted close glyph color — dimmer than dim_fg so the `×` reads
-        // as chrome rather than a callout. Brighter on the active chip
-        // (TEXT_FG-dimmed) so it's discoverable but not loud.
+        // Muted close glyph color — dimmer than dim_fg.
         const CLOSE_FG_INACTIVE: [f32; 4] = [0.40, 0.42, 0.48, 1.0];
         const CLOSE_FG_ACTIVE: [f32; 4] = [0.70, 0.72, 0.78, 1.0];
         const ATTR_BOLD: u32 = 1;
 
-        // Always left-align starting from CHIP_START_X_PX — no Safari-style
-        // centering for the single-tab case (it caused a jarring shift left
-        // when the user opened a second tab).
         let start_x_px = Self::CHIP_START_X_PX;
         let base_x = (start_x_px - self.inset_px) / cell_w;
-        let mut col_offset = 0.0_f32;
-        // Snapshot chips so we don't borrow self.strip_chips through
-        // the loop (atlas.glyph wants &mut self.atlas concurrently).
-        let chips: Vec<(String, bool, bool)> = self.strip_chips.clone();
+        let inset_y_total = self.inset_px + self.strip_h;
+        // Per-row Y coordinates — pre-compute so the chip render loop
+        // doesn't need to recalculate per glyph.
+        let row_geom = |row: usize| -> (f32, f32, f32) {
+            // (y0_px, y1_px, base_y_in_cell_coords)
+            let y0 = tab_zone_top_px + row as f32 * TAB_ROW_H_PX;
+            let y1 = y0 + TAB_ROW_H_PX;
+            let label_y = (y0 + (TAB_ROW_H_PX - cell_h) * 0.5).max(0.0);
+            (y0, y1, (label_y - inset_y_total) / cell_h)
+        };
         let space_g = self.atlas.glyph(' ', style_from_attrs(0), &self.queue);
         let mut out: Vec<pipeline::Instance> = Vec::new();
 
-        let push_pad = |out: &mut Vec<pipeline::Instance>,
-                        col_offset: &mut f32,
-                        bg: [f32; 4],
-                        fg: [f32; 4],
-                        space_g: &crate::atlas::AtlasGlyph| {
-            out.push(pipeline::Instance {
-                cell_pos: [base_x + *col_offset, base_y],
-                fg,
-                bg,
-                uv_min: space_g.uv_min,
-                uv_max: space_g.uv_max,
-                glyph_offset: space_g.offset,
-                glyph_size: space_g.size,
-                attrs: 0,
-                _pad: 0,
-            });
-            *col_offset += 1.0;
-        };
-
         for (i, (label, active, attention)) in chips.iter().enumerate() {
+            let (row, slot_col) = slots[i];
+            let (chip_y0_px, chip_y1_px, base_y) = row_geom(row);
+            let mut col_offset = slot_col;
             let chip_x0_px = start_x_px + col_offset * cell_w;
             let (fg, bg, attrs) = if *active {
                 (TEXT_FG, ACTIVE_CHIP_BG, ATTR_BOLD)
             } else {
                 (DIM_FG, STRIP_BG, 0)
             };
+
+            // Helper: emit one cell at (base_x + col_offset, base_y),
+            // advancing col_offset. Inlined so the borrow checker
+            // is happy across the mutable &mut self.atlas calls in
+            // the per-char glyph loop below.
+            macro_rules! push_cell {
+                ($glyph:expr, $cell_fg:expr, $cell_bg:expr, $cell_attrs:expr) => {{
+                    let g = $glyph;
+                    out.push(pipeline::Instance {
+                        cell_pos: [base_x + col_offset, base_y],
+                        fg: $cell_fg,
+                        bg: $cell_bg,
+                        uv_min: g.uv_min,
+                        uv_max: g.uv_max,
+                        glyph_offset: g.offset,
+                        glyph_size: g.size,
+                        attrs: $cell_attrs,
+                        _pad: 0,
+                    });
+                    col_offset += 1.0;
+                }};
+            }
+
             // Left pad.
             for _ in 0..Self::CHIP_PAD_CELLS as usize {
-                push_pad(&mut out, &mut col_offset, bg, fg, &space_g);
+                push_cell!(space_g, fg, bg, 0);
             }
-            // Attention dot — only on inactive chips (active tab clears
-            // the flag on focus). Red `●` + a trailing space.
+            // Attention dot (red ● + trailing space) on inactive chips
+            // that have the flag set. Active chips clear the flag on
+            // focus so we don't repeat.
             if *attention && !*active {
                 let dot_g = self.atlas.glyph('●', style_from_attrs(0), &self.queue);
-                out.push(pipeline::Instance {
-                    cell_pos: [base_x + col_offset, base_y],
-                    fg: ATTENTION_FG,
-                    bg,
-                    uv_min: dot_g.uv_min,
-                    uv_max: dot_g.uv_max,
-                    glyph_offset: dot_g.offset,
-                    glyph_size: dot_g.size,
-                    attrs: 0,
-                    _pad: 0,
-                });
-                col_offset += 1.0;
-                push_pad(&mut out, &mut col_offset, bg, fg, &space_g);
+                push_cell!(dot_g, ATTENTION_FG, bg, 0);
+                push_cell!(space_g, fg, bg, 0);
             }
             // Label glyphs.
             for ch in label.chars() {
                 let g = self.atlas.glyph(ch, style_from_attrs(attrs), &self.queue);
-                out.push(pipeline::Instance {
-                    cell_pos: [base_x + col_offset, base_y],
-                    fg,
-                    bg,
-                    uv_min: g.uv_min,
-                    uv_max: g.uv_max,
-                    glyph_offset: g.offset,
-                    glyph_size: g.size,
-                    attrs,
-                    _pad: 0,
-                });
-                col_offset += 1.0;
+                push_cell!(g, fg, bg, attrs);
             }
-            // One-cell gap between label and the `×` close glyph — the
-            // close used to sit flush against the label and crowded it.
-            push_pad(&mut out, &mut col_offset, bg, fg, &space_g);
-            // `×` close glyph — painted on every chip (single and
-            // multi-tab, active and inactive). Muted on inactive,
-            // slightly brighter on active.
+            // Gap before close.
+            push_cell!(space_g, fg, bg, 0);
+            // Close glyph.
             let close_fg = if *active {
                 CLOSE_FG_ACTIVE
             } else {
@@ -759,34 +836,32 @@ impl Gpu {
                 .atlas
                 .glyph('\u{00D7}', style_from_attrs(0), &self.queue);
             let close_x_px = start_x_px + col_offset * cell_w;
-            out.push(pipeline::Instance {
-                cell_pos: [base_x + col_offset, base_y],
-                fg: close_fg,
-                bg,
-                uv_min: close_g.uv_min,
-                uv_max: close_g.uv_max,
-                glyph_offset: close_g.offset,
-                glyph_size: close_g.size,
-                attrs: 0,
-                _pad: 0,
-            });
-            col_offset += 1.0;
+            push_cell!(close_g, close_fg, bg, 0);
             // Right pad.
             for _ in 0..Self::CHIP_PAD_CELLS as usize {
-                push_pad(&mut out, &mut col_offset, bg, fg, &space_g);
+                push_cell!(space_g, fg, bg, 0);
             }
-            // Record the chip's pixel-x extent BEFORE moving past the
-            // gap so the click region matches the painted chip exactly.
+
+            // Record hit-rects with Y bounds so wrap rows are
+            // distinguished on click.
             let chip_x1_px = start_x_px + col_offset * cell_w;
-            self.strip_chip_rects.push((chip_x0_px, chip_x1_px, i));
-            self.strip_chip_close_rects
-                .push((close_x_px, close_x_px + cell_w, i));
-            // Inter-chip gap.
-            col_offset += Self::CHIP_GAP_CELLS;
+            self.strip_chip_rects
+                .push((chip_x0_px, chip_x1_px, chip_y0_px, chip_y1_px, i));
+            self.strip_chip_close_rects.push((
+                close_x_px,
+                close_x_px + cell_w,
+                chip_y0_px,
+                chip_y1_px,
+                i,
+            ));
         }
-        // `+` new-tab button after the gap past the last chip.
-        let plus_x_px = start_x_px + col_offset * cell_w;
-        self.push_plus_button(&mut out, plus_x_px, base_y);
+        // `+` new-tab button — wraps to its own row if the last chip
+        // row didn't have space (the chip_layout helper figured this
+        // out for us).
+        let (plus_row, plus_col_offset) = plus_slot;
+        let (plus_y0_px, plus_y1_px, plus_base_y) = row_geom(plus_row);
+        let plus_x_px = start_x_px + plus_col_offset * cell_w;
+        self.push_plus_button(&mut out, plus_x_px, plus_base_y, plus_y0_px, plus_y1_px);
         out
     }
 
@@ -1008,7 +1083,14 @@ impl Gpu {
     /// its pixel-x extent on `strip_new_tab_rect`. The chrome is a
     /// single glyph (`+`) padded left/right with two spaces so the
     /// click target is comfortably-sized.
-    fn push_plus_button(&mut self, out: &mut Vec<pipeline::Instance>, plus_x_px: f32, base_y: f32) {
+    fn push_plus_button(
+        &mut self,
+        out: &mut Vec<pipeline::Instance>,
+        plus_x_px: f32,
+        base_y: f32,
+        y0_px: f32,
+        y1_px: f32,
+    ) {
         use crate::atlas::style_from_attrs;
         // Slightly lifted bg so the button reads as chrome rather than
         // strip filler. Same shade as the active chip.
@@ -1031,7 +1113,7 @@ impl Gpu {
                 _pad: 0,
             });
         }
-        self.strip_new_tab_rect = Some((plus_x_px, plus_x_px + 3.0 * cell_w));
+        self.strip_new_tab_rect = Some((plus_x_px, plus_x_px + 3.0 * cell_w, y0_px, y1_px));
     }
 
     fn resize(&mut self, w: u32, h: u32) -> Option<(u16, u16)> {

@@ -26,6 +26,27 @@ pub struct Config {
     /// minimal padding, or higher for more if you'd rather the host
     /// own the margin than the TUI.
     pub inset_native: f32,
+    /// How tab chips lay out when 2+ tabs are open.
+    ///
+    /// * `Horizontal` (default) — chips flow left-to-right in the
+    ///   chrome strip below the palette cluster. When the row fills,
+    ///   chips wrap to a new row; the strip grows downward by one
+    ///   `TAB_ROW_H_PX` per added row.
+    /// * `Vertical` — chips stack down a left-edge sidebar. Strip
+    ///   stays single-row (just the palette); the grid's `inset_x`
+    ///   grows to accommodate the sidebar. Better for narrow
+    ///   windows or users who keep many tabs open. (v0.x — currently
+    ///   logs a "not yet implemented" message on apply; falls back
+    ///   to horizontal.)
+    pub tab_layout: TabLayout,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TabLayout {
+    #[default]
+    Horizontal,
+    Vertical,
 }
 
 impl Default for Config {
@@ -33,6 +54,7 @@ impl Default for Config {
         Self {
             inset: 20.0,
             inset_native: 0.0,
+            tab_layout: TabLayout::Horizontal,
         }
     }
 }
@@ -103,6 +125,7 @@ mod tests {
         Config {
             inset,
             inset_native,
+            tab_layout: TabLayout::Horizontal,
         }
     }
 
@@ -152,5 +175,22 @@ mod tests {
         let back: Config = toml::from_str(&text).expect("re-parse");
         assert_eq!(back.inset, 31.0);
         assert_eq!(back.inset_native, 4.0);
+    }
+
+    #[test]
+    fn tab_layout_defaults_to_horizontal() {
+        assert_eq!(Config::default().tab_layout, TabLayout::Horizontal);
+    }
+
+    #[test]
+    fn toml_parses_tab_layout_horizontal() {
+        let c: Config = toml::from_str("tab_layout = \"horizontal\"").expect("toml parses");
+        assert_eq!(c.tab_layout, TabLayout::Horizontal);
+    }
+
+    #[test]
+    fn toml_parses_tab_layout_vertical() {
+        let c: Config = toml::from_str("tab_layout = \"vertical\"").expect("toml parses");
+        assert_eq!(c.tab_layout, TabLayout::Vertical);
     }
 }

@@ -1074,16 +1074,20 @@ impl App {
             PaneKind::Native { .. }
         );
         let tui_active = active_is_native || self.altscreen_active;
-        let target_strip = if multi_tab {
-            MACOS_TAB_STRIP_PX_MULTI
-        } else if tui_active {
-            MACOS_TAB_STRIP_PX_SINGLE
-        } else {
-            MACOS_TAB_STRIP_PX_SHELL
-        };
+        // Pre-flight the chip wrap layout to know how many rows the
+        // chips will need at the current window width. The strip
+        // grows by one TAB_ROW_H_PX per row of chips (palette stays
+        // at its single-tab position above). Single-tab path skips
+        // the layout call.
         let strip_resize = {
             let gpu = self.gpu.as_mut().unwrap();
             gpu.set_strip_chips(&chips);
+            let rows = if multi_tab {
+                gpu.chip_row_count(&chips)
+            } else {
+                1
+            };
+            let target_strip = Gpu::required_strip_h(&chips, rows, tui_active);
             gpu.set_strip_h(target_strip)
         };
         if strip_resize.is_some() {
@@ -2208,8 +2212,13 @@ impl App {
                 let dst = gpu
                     .strip_chip_rects
                     .iter()
-                    .find(|(x0, x1, _)| position.x >= *x0 as f64 && position.x < *x1 as f64)
-                    .map(|(_, _, idx)| *idx);
+                    .find(|(x0, x1, y0, y1, _)| {
+                        position.x >= *x0 as f64
+                            && position.x < *x1 as f64
+                            && position.y >= *y0 as f64
+                            && position.y < *y1 as f64
+                    })
+                    .map(|(_, _, _, _, idx)| *idx);
                 if let Some(dst) = dst
                     && dst != src
                     && dst < self.tabs.len()
@@ -2351,7 +2360,9 @@ impl App {
                     // check it first since its rect is disjoint.
                     let on_plus = gpu
                         .strip_new_tab_rect
-                        .map(|(x0, x1)| px >= x0 as f64 && px < x1 as f64)
+                        .map(|(x0, x1, y0, y1)| {
+                            px >= x0 as f64 && px < x1 as f64 && py >= y0 as f64 && py < y1 as f64
+                        })
                         .unwrap_or(false);
                     if on_plus && button == MouseButton::Left {
                         if self.editor_template.is_some() {
@@ -2368,8 +2379,13 @@ impl App {
                     let close_hit = gpu
                         .strip_chip_close_rects
                         .iter()
-                        .find(|(x0, x1, _)| px >= *x0 as f64 && px < *x1 as f64)
-                        .map(|(_, _, idx)| *idx);
+                        .find(|(x0, x1, y0, y1, _)| {
+                            px >= *x0 as f64
+                                && px < *x1 as f64
+                                && py >= *y0 as f64
+                                && py < *y1 as f64
+                        })
+                        .map(|(_, _, _, _, idx)| *idx);
                     if let Some(idx) = close_hit
                         && button == MouseButton::Left
                     {
@@ -2379,8 +2395,13 @@ impl App {
                     let hit = gpu
                         .strip_chip_rects
                         .iter()
-                        .find(|(x0, x1, _)| px >= *x0 as f64 && px < *x1 as f64)
-                        .map(|(_, _, idx)| *idx);
+                        .find(|(x0, x1, y0, y1, _)| {
+                            px >= *x0 as f64
+                                && px < *x1 as f64
+                                && py >= *y0 as f64
+                                && py < *y1 as f64
+                        })
+                        .map(|(_, _, _, _, idx)| *idx);
                     if let Some(idx) = hit {
                         match button {
                             MouseButton::Left => {
