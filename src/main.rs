@@ -101,37 +101,43 @@ const MACOS_TAB_STRIP_PX_SINGLE: f32 = 32.0;
 const MACOS_TAB_STRIP_PX_SHELL: f32 = 42.0;
 #[cfg(not(target_os = "macos"))]
 const MACOS_TAB_STRIP_PX_SHELL: f32 = 24.0;
-// Chrome palette — sourced from mnml's `theme.rs` (the family's
-// canonical default theme) so the chrome reads identically whether
-// you're looking at mnml-in-terminal or tmnl-native. Verbatim hex
-// → f32 (n/255), do NOT round; keep them in lockstep with
-// `mnml/src/ui/theme.rs` if it ever changes.
+// Chrome palette — calibrated against the rendered pixels of mnml's
+// default theme (eyedropped from a live screenshot, not the raw hex
+// in `mnml/src/ui/theme.rs` — terminal apps apply a small color
+// transform between the hex code and what reaches the screen, so
+// f32 = source_hex / 255 doesn't visually match). These values
+// produce on-screen bytes that match what the user sees from mnml.
 //
-//   mnml name      hex        f32                  role
-//   ─────────────  ─────────  ───────────────────  ─────────────────
-//   bg_darker      #1b1f27    [0.106, 0.122, 0.153] tree rail, bufferline,
-//                                                   tmnl strip + letterbox
-//   bg_dark        #1e222a    [0.118, 0.133, 0.165] editor body / cells
-//   statusline_bg  #22262e    [0.133, 0.149, 0.180] mnml's bottom statusline
-//   lightbg        #2d3139    [0.176, 0.192, 0.224] file-tab body, button pills
-//   bg2            #353b45    [0.208, 0.231, 0.271] active tab, selected row
+//   role                 byte rgb        f32                  hex
+//   ───────────────────  ──────────────  ───────────────────  ───────
+//   strip / chrome bg    26  29  34      [0.102, 0.114, 0.133] #1A1D22
+//   arrow button pill    30  34  40      [0.118, 0.133, 0.157] #1E2228
+//   tab pill (active)    36  39  45      [0.141, 0.153, 0.176] #24272D
+//   search-chip body     41  45  53      [0.161, 0.176, 0.208] #292D35
+//   tab text fg          159 167 180     [0.624, 0.655, 0.706] #9FA7B4
+//
+// When mnml is installed and the user has a custom theme, tmnl
+// should adopt those colors at startup (follow-up — currently
+// these defaults are used unconditionally).
 //
 // Frame background — fills (a) the top pad reserved for the macOS
 // traffic-light buttons, (b) the letterbox gutter at the bottom when
 // the window height isn't a clean row multiple, and (c) any sub-cell
 // pixel overflow on the right.
-const CLEAR_BG: [f32; 4] = [0.106, 0.122, 0.153, 1.0];
-// Tab-strip background — the chrome row across the top of the window
-// where the traffic-light buttons + tab chips sit. **Matches CLEAR_BG**
-// (= mnml's `bg_darker`, the same color mnml uses for its bufferline)
-// so strip + top pad render as one seamless chrome band, just like
-// mnml's bufferline. Previously this was `statusline_bg` (#22262e), one
-// tone too light — readable as a separate stripe instead of part of the
-// chrome.
+const CLEAR_BG: [f32; 4] = [0.1020, 0.1137, 0.1333, 1.0];
+// Tab-strip background — same as `CLEAR_BG` so strip + top pad
+// render as one seamless chrome band, matching how mnml's bufferline
+// sits flush with its surrounding chrome.
 const STRIP_BG: [f32; 4] = CLEAR_BG;
 const TEXT_FG: [f32; 4] = [0.86, 0.87, 0.92, 1.0];
 const ACCENT_FG: [f32; 4] = [0.93, 0.73, 0.45, 1.0];
 const DIM_FG: [f32; 4] = [0.48, 0.50, 0.58, 1.0];
+// Tab label foreground — brighter than `DIM_FG` because tabs are a
+// primary navigation surface (need to be readable at a glance, not
+// "dim hint" territory). Eyedropped from mnml at (159, 167, 180).
+// Used by both inactive and active tab chips; the active chip
+// distinguishes via its lifted pill bg, not via fg color.
+const TAB_FG: [f32; 4] = [0.624, 0.655, 0.706, 1.0];
 /// How far a non-focused split pane's text is faded toward its own
 /// background — the focus cue. Per-pane, so it sidesteps the
 /// shared-divider-cell problem the old divider tint had.
@@ -778,12 +784,12 @@ impl Gpu {
         let chips: Vec<(String, bool, bool)> = self.strip_chips.clone();
         let (slots, plus_slot, _rows) = self.chip_layout(&chips);
 
-        // Active chip's bg — matches mnml's `bg2` = #353b45 (one tone
-        // above lightbg, the "selected row / hover" color in mnml's
-        // theme). Makes the focused tab read as a brighter pill while
-        // staying inside the chrome palette. See the chrome-palette
-        // table at the top of this file.
-        const ACTIVE_CHIP_BG: [f32; 4] = [0.208, 0.231, 0.271, 1.0];
+        // Active tab pill bg — the visible "lifted" rectangle behind
+        // the focused tab. Eyedropped from mnml at (36, 39, 45). Sits
+        // between the strip and the search-chip body in the 3-tier
+        // chrome gradient — see the chrome-palette table at the top
+        // of this file.
+        const ACTIVE_CHIP_BG: [f32; 4] = [0.1412, 0.1529, 0.1765, 1.0];
         // Attention dot color — red, matches OSC 1337 "needs attention".
         const ATTENTION_FG: [f32; 4] = [0.95, 0.32, 0.32, 1.0];
         // Muted close glyph color — dimmer than dim_fg.
@@ -814,7 +820,7 @@ impl Gpu {
             let (fg, bg, attrs) = if *active {
                 (TEXT_FG, ACTIVE_CHIP_BG, ATTR_BOLD)
             } else {
-                (DIM_FG, STRIP_BG, 0)
+                (TAB_FG, STRIP_BG, 0)
             };
 
             // Helper: emit one cell at (base_x + col_offset, base_y),
@@ -990,14 +996,13 @@ impl Gpu {
         let start_x_px = (window_w_px - total_w_px) / 2.0;
         let start_col = (start_x_px - self.inset_px) / cell_w;
 
-        // Chrome colors — all three button surfaces (back arrow,
-        // forward arrow, search chip + dropdown) share the same
-        // lifted bg so they read as pills on the strip, not glyphs
-        // blended into it. Value matches mnml's `lightbg` = #2d3139,
-        // the standard file-tab / button-pill color in mnml's theme.
-        // See the chrome-palette table at the top of this file.
-        const CHIP_BG: [f32; 4] = [0.176, 0.192, 0.224, 1.0];
-        const BTN_BG: [f32; 4] = CHIP_BG;
+        // Chrome colors. Mnml uses a 3-tier gradient inside the
+        // bufferline cluster: arrow buttons are slightly lifted off
+        // the strip; the search-chip input is lifted more so it
+        // reads as the primary affordance. Eyedropped values from
+        // the chrome-palette table at the top of this file.
+        const BTN_BG: [f32; 4] = [0.1176, 0.1333, 0.1569, 1.0]; // arrows
+        const CHIP_BG: [f32; 4] = [0.1608, 0.1765, 0.2078, 1.0]; // search
         // Foreground glyphs: brighter on the arrow buttons (the
         // navigation affordance reads as "actionable"), slightly
         // dimmer on the chip body where the search-text placeholder
