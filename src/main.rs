@@ -55,17 +55,27 @@ const FONT_PX: f32 = 14.0;
 /// background, and the cell pipeline draws on top with no overlap
 /// (offset by `inset_px + gpu.strip_h`).
 /// Pixel height of the tab-chip row added below the palette in
-/// multi-tab mode. Sized to fit one cell of glyph + a bit of
-/// padding above and below; matches the visual rhythm of a single
-/// row of pill-shaped tab chips. Constant across macOS / Linux /
-/// Windows so the layout's the same regardless of platform.
+/// multi-tab mode. Sized to fit one cell of glyph + comfortable
+/// padding above and below — matches mnml's bufferline rhythm
+/// (image 8 in the 2026-06-07 issue: clear whitespace around
+/// each pill, not flush with row edges).
+///
+/// Bumped 28 → 38 (2026-06-07) — earlier sizing left only ~4px
+/// above and below the chip glyph, which read as cramped AND let
+/// the chip bg's bottom edge bleed into the grid below. 38px
+/// gives ~9px on each side at cell_h ≈ 20.
 ///
 /// Multi-tab strip height = `MACOS_TAB_STRIP_PX_SINGLE` (palette
-/// zone) + `rows * TAB_ROW_H_PX`. See `Gpu::required_strip_h`.
-/// `MACOS_TAB_STRIP_PX_MULTI` was retired in favor of the
-/// row-aware computation — when chips wrap, the strip grows per
-/// row instead of fixed at a single-row height.
-const TAB_ROW_H_PX: f32 = 28.0;
+/// zone) + `TAB_GAP_PX` (breathing room between palette and the
+/// first tab row) + `rows * TAB_ROW_H_PX`. See
+/// `Gpu::required_strip_h`.
+const TAB_ROW_H_PX: f32 = 38.0;
+
+/// Vertical gap between the bottom of the palette zone and the
+/// top of the first tab row. Without this gap the tabs sit
+/// directly under the palette and read as a single tight
+/// chrome block; ~6px reads as deliberate separation.
+const TAB_GAP_PX: f32 = 6.0;
 /// Single-tab chrome height — a small breathing-room band above the
 /// grid so the first row of content isn't kissing the macOS traffic
 /// lights, but no visible chrome strip (the strip pipeline paints this
@@ -667,7 +677,7 @@ impl Gpu {
                 MACOS_TAB_STRIP_PX_SHELL
             }
         } else {
-            MACOS_TAB_STRIP_PX_SINGLE + rows.max(1) as f32 * TAB_ROW_H_PX
+            MACOS_TAB_STRIP_PX_SINGLE + TAB_GAP_PX + rows.max(1) as f32 * TAB_ROW_H_PX
         }
     }
 
@@ -739,12 +749,14 @@ impl Gpu {
 
         // Tab chips render in rows BELOW the palette. The palette
         // occupies the top `MACOS_TAB_STRIP_PX_SINGLE` pixels (so it
-        // doesn't shift between single-tab and multi-tab modes).
-        // When chips don't fit on one row, they wrap to a new row;
-        // each row adds `TAB_ROW_H_PX` to the strip. The total strip
-        // height was set by App tick via `Gpu::required_strip_h` so
-        // there's already vertical room for every row.
-        let tab_zone_top_px = MACOS_TAB_STRIP_PX_SINGLE;
+        // doesn't shift between single-tab and multi-tab modes); a
+        // `TAB_GAP_PX` separator follows so the tab row reads as
+        // distinct from the palette chrome above. When chips don't
+        // fit on one row, they wrap to a new row; each row adds
+        // `TAB_ROW_H_PX` to the strip. The total strip height was
+        // set by App tick via `Gpu::required_strip_h` so there's
+        // already vertical room for every row.
+        let tab_zone_top_px = MACOS_TAB_STRIP_PX_SINGLE + TAB_GAP_PX;
         // Compute the wrap layout — per-chip (row, col_offset).
         let chips: Vec<(String, bool, bool)> = self.strip_chips.clone();
         let (slots, plus_slot, _rows) = self.chip_layout(&chips);
