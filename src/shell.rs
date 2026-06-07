@@ -531,6 +531,86 @@ impl ShellSession {
         let _ = self.writer.flush();
     }
 
+    /// Forward a mouse-motion event (hover or drag) to the pty child.
+    /// `held_button` is `Some(b)` while a button is pressed (drag);
+    /// `None` for hover. Honors the parser's motion-tracking mode:
+    /// `AnyMotion` (`?1003h`) wants both hover and drag; `ButtonMotion`
+    /// (`?1002h`) wants drag only; other modes (`Press`,
+    /// `PressRelease`, `None`) drop motion events. Same encoding rules
+    /// as [`Self::write_mouse`].
+    ///
+    /// Useful for TUIs that paint hover hints (mnml's tooltips, vim
+    /// folds-on-hover, etc.) when running as a pty child of tmnl.
+    pub fn write_mouse_motion(
+        &mut self,
+        col: u16,
+        row: u16,
+        held_button: Option<u8>,
+        mods: u8,
+    ) -> bool {
+        use vt100::{MouseProtocolEncoding, MouseProtocolMode};
+        let (mode, encoding) = {
+            let Ok(p) = self.parser.lock() else {
+                return false;
+            };
+            (
+                p.screen().mouse_protocol_mode(),
+                p.screen().mouse_protocol_encoding(),
+            )
+        };
+        let want = match mode {
+            MouseProtocolMode::AnyMotion => true,
+            MouseProtocolMode::ButtonMotion => held_button.is_some(),
+            _ => false,
+        };
+        if !want {
+            return false;
+        }
+
+        // Button bits: drag uses the held button's xterm code;
+        // pure hover (no button) uses 3 (xterm's "released" sentinel
+        // — also the convention for motion-without-button).
+        let xterm_button = match held_button {
+            Some(0) => 0,
+            Some(1) => 2, // protocol RIGHT → xterm right
+            Some(2) => 1, // protocol MIDDLE → xterm middle
+            _ => 3,       // no button held
+        };
+
+        // Same mod remap as write_mouse.
+        let mut mod_bits: u8 = 0;
+        if mods & 0b0001 != 0 {
+            mod_bits |= 0b0000_0100;
+        }
+        if mods & 0b0010 != 0 {
+            mod_bits |= 0b0001_0000;
+        }
+        if mods & 0b0100 != 0 {
+            mod_bits |= 0b0000_1000;
+        }
+
+        // Bit 5 (=32) marks the event as motion.
+        let bb = xterm_button | mod_bits | 0b0010_0000;
+
+        let bytes = match encoding {
+            MouseProtocolEncoding::Sgr => {
+                // SGR motion always uses `M`; the release-vs-press
+                // distinction (`m`/`M`) doesn't apply to motion.
+                format!("\x1b[<{};{};{}M", bb, col + 1, row + 1).into_bytes()
+            }
+            _ => vec![
+                0x1b,
+                b'[',
+                b'M',
+                bb + 32,
+                (col as u8).saturating_add(33),
+                (row as u8).saturating_add(33),
+            ],
+        };
+        self.write_bytes(&bytes);
+        true
+    }
+
     /// Forward a mouse event to the pty child when its mouse-tracking
     /// mode is active. Returns `true` if the event was encoded + sent,
     /// `false` if the child didn't enable mouse capture (e.g. a plain

@@ -843,6 +843,24 @@ fn builtin_commands() -> Vec<Command> {
             },
             when: Some(no_modal_open),
         },
+        // Manual theme reload. The tick loop already polls mnml's
+        // config file for mtime changes so live reload is automatic
+        // in the common case; this is the escape hatch for situations
+        // where the auto-poll missed (mnml writing the file
+        // out-of-band, network-mounted homedir, etc.).
+        Command {
+            id: "theme.refresh",
+            title: "Theme: reload chrome palette from mnml",
+            group: "View",
+            keys: &[],
+            run: |app, _event_loop, _ke| {
+                let changed = crate::theme::refresh();
+                if changed && let Some(w) = &app.window {
+                    w.request_redraw();
+                }
+            },
+            when: None,
+        },
         // ⌘⇧/ — Toggle the help overlay (lists every chord in the
         // registry, grouped by section). macOS Help-key convention.
         Command {

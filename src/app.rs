@@ -1063,6 +1063,14 @@ impl App {
         // Drain pending pty-fd handoffs (task #50). Each handoff
         // produces a new adopted-shell tab in the focused window.
         self.drain_transfer_events();
+        // Cheap stat() on mnml's config file — fires the heavier
+        // TOML reload only when its mtime moves. Lets tmnl track
+        // the user's theme choice in mnml without restart.
+        if crate::theme::poll_mnml_config()
+            && let Some(w) = &self.window
+        {
+            w.request_redraw();
+        }
 
         if self.gpu.is_none() {
             return;
@@ -2367,8 +2375,23 @@ impl App {
                 row: lr,
                 mods: pack_mods(self.mods),
             };
-            if let PaneKind::Native { server, .. } = &self.tabs[self.active].panes[id].kind {
-                server.send_input(&InputEvent::Mouse(mouse));
+            match &mut self.tabs[self.active].panes[id].kind {
+                PaneKind::Native { server, .. } => {
+                    server.send_input(&InputEvent::Mouse(mouse));
+                }
+                // Forward hover + drag to a pty child when it has
+                // requested motion tracking (DECSET 1002 / 1003).
+                // No tracking ⇒ `write_mouse_motion` no-ops silently
+                // (no garbage on stdin from idle hover).
+                PaneKind::Shell { session: Some(s) } => {
+                    let held_button = if held {
+                        Some(first_button(self.buttons_down))
+                    } else {
+                        None
+                    };
+                    s.write_mouse_motion(lc, lr, held_button, pack_mods(self.mods));
+                }
+                _ => {}
             }
         }
     }

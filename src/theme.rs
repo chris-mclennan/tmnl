@@ -17,11 +17,12 @@
 //! to defaults silently (with a log line — not a crash).
 
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock, RwLock};
+use std::time::SystemTime;
 
 /// All chrome colors tmnl renders. Each field is a straight-sRGB
 /// `[r, g, b, a]` quad, alpha always 1.0.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Palette {
     /// Top-of-window letterbox + sub-cell overflow. Same as `strip_bg`
     /// so the strip blends into the chrome.
@@ -83,7 +84,7 @@ impl Palette {
 /// specify a theme — that way users on the stock config still get
 /// theme adoption.
 fn read_mnml_theme_name() -> Option<String> {
-    let cfg_path = dirs::config_dir()?.join("mnml").join("config.toml");
+    let cfg_path = mnml_config_path()?;
     let text = std::fs::read_to_string(&cfg_path).ok()?;
     let parsed: toml::Value = toml::from_str(&text).ok()?;
     let name = parsed
@@ -207,13 +208,28 @@ fn hex(s: &str) -> Option<[f32; 4]> {
     ])
 }
 
-static PALETTE: OnceLock<Palette> = OnceLock::new();
+/// Global chrome palette. `RwLock` so live theme reload (when mnml's
+/// config file mtime changes) can swap in a new palette without
+/// restarting tmnl. Reads happen on every render frame — they hold
+/// the read lock just long enough to copy out the 160-byte struct;
+/// writes (theme reload) are rare so contention is negligible.
+static PALETTE: OnceLock<RwLock<Palette>> = OnceLock::new();
+
+/// Mtime of mnml's config file at the most recent `poll_mnml_config`
+/// — refresh fires only when this changes, so the once-per-tick
+/// `stat()` is the only cost in the steady state.
+static LAST_MNML_CONFIG_MTIME: Mutex<Option<SystemTime>> = Mutex::new(None);
+
+fn storage() -> &'static RwLock<Palette> {
+    PALETTE.get_or_init(|| RwLock::new(Palette::defaults()))
+}
 
 /// Initialize the global palette from mnml (best-effort) or
-/// defaults. Idempotent — first call wins, later calls are no-ops.
+/// defaults. Idempotent — first call wins; later calls are reloads
+/// (use [`refresh`] explicitly for clarity in that case).
 /// Call once at startup before any render path uses `palette()`.
 pub fn init() {
-    let _ = PALETTE.set(match Palette::from_mnml() {
+    let chosen = match Palette::from_mnml() {
         Some(p) => {
             log::info!("theme: adopted from mnml");
             p
@@ -222,18 +238,86 @@ pub fn init() {
             log::debug!("theme: using tmnl defaults (no mnml config found)");
             Palette::defaults()
         }
-    });
+    };
+    let lk = storage();
+    if let Ok(mut g) = lk.write() {
+        *g = chosen;
+    }
+    // Prime the mtime tracker so the first `poll_mnml_config` doesn't
+    // fire a redundant refresh on the very next tick.
+    if let Some(path) = mnml_config_path()
+        && let Ok(meta) = std::fs::metadata(&path)
+        && let Ok(mtime) = meta.modified()
+        && let Ok(mut last) = LAST_MNML_CONFIG_MTIME.lock()
+    {
+        *last = Some(mtime);
+    }
 }
 
-/// The active chrome palette. Returns defaults if `init()` was
-/// never called (defensive — render paths shouldn't crash if
-/// startup ordering changes).
+/// A snapshot of the active chrome palette. Returns defaults if
+/// `init()` was never called (defensive — render paths shouldn't
+/// crash if startup ordering changes).
 ///
 /// Named `palette()` rather than `chrome()` to avoid colliding with
 /// the `chrome` field on the Browser pane variant and the `chrome`
 /// param on `paint_browser_chrome`.
-pub fn palette() -> &'static Palette {
-    PALETTE.get_or_init(Palette::defaults)
+///
+/// **Returns by value (Copy)** — for tight inner loops, hoist into
+/// a `let` binding to avoid re-acquiring the read lock per glyph.
+pub fn palette() -> Palette {
+    match storage().read() {
+        Ok(g) => *g,
+        // RwLock can only be poisoned by a panic in a writer. In
+        // that case fall back to defaults so render paths still get
+        // a sane palette.
+        Err(_) => Palette::defaults(),
+    }
+}
+
+/// Re-read mnml's selected theme and swap it into the global palette.
+/// Returns `true` iff the new palette differs from the old (caller
+/// requests a redraw on `true`). Called by [`poll_mnml_config`] and
+/// by the `theme.refresh` palette command for manual refresh.
+pub fn refresh() -> bool {
+    let new = Palette::from_mnml().unwrap_or_else(Palette::defaults);
+    let lk = storage();
+    let mut guard = match lk.write() {
+        Ok(g) => g,
+        Err(_) => return false,
+    };
+    if *guard == new {
+        return false;
+    }
+    *guard = new;
+    log::info!("theme: live-reloaded from mnml");
+    true
+}
+
+/// One-stat-per-tick check that mnml's config file hasn't changed.
+/// Cheap enough to call once per frame; only triggers `refresh` (and
+/// hence the heavier TOML read) when the mtime actually moves.
+/// Returns `true` iff the palette changed (caller requests a redraw).
+pub fn poll_mnml_config() -> bool {
+    let Some(path) = mnml_config_path() else {
+        return false;
+    };
+    let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+    let mut last = match LAST_MNML_CONFIG_MTIME.lock() {
+        Ok(g) => g,
+        Err(_) => return false,
+    };
+    if *last == mtime {
+        return false;
+    }
+    *last = mtime;
+    // Mtime changed (or file appeared/disappeared) — try a refresh.
+    // Drop the mutex guard first so refresh() doesn't double-lock.
+    drop(last);
+    refresh()
+}
+
+fn mnml_config_path() -> Option<PathBuf> {
+    Some(dirs::config_dir()?.join("mnml").join("config.toml"))
 }
 
 #[cfg(test)]
