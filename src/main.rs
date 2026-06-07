@@ -2026,22 +2026,34 @@ fn tick_secondary_pane(pane: &mut Pane, visible: bool) -> Vec<Vec<tmnl_protocol:
 /// stripped env, breaking integrations that rely on those exports
 /// + tools installed outside `/usr/bin`.
 ///
-/// Detection: if `current_exe()` lives inside an `.app` bundle AND
-/// stdin isn't a tty (parent process is `launchd`, not a shell), we
-/// assume we need to backfill. Run the user's login shell with
-/// `-l -c env` to dump its environment and re-export each var onto
-/// our own process so subsequent spawns inherit the full shell env.
+/// Detection: stdin isn't a tty (parent is `launchd`, not a shell).
+/// This catches both:
+///   * `current_exe()` inside `.app/Contents/MacOS/` (the standard
+///     bundle case), and
+///   * `current_exe()` outside any bundle when a launcher script (like
+///     `tmnl-nightly-launcher`) `exec`-ed into the dev binary — the
+///     bundle identity survives in `Info.plist` but `current_exe()`
+///     now points at the dev path, so a pure-path check missed this
+///     case.
 ///
-/// No-op when launched from a shell — there `PATH` already has the
-/// user's customizations and re-running zshrc would just slow startup.
+/// Without the fix, the `tmnl-nightly` flow saw a bare PATH and
+/// `Command::new("mnml")` from `Launcher::spawn` would fail with
+/// `Os(NotFound)` because `~/.cargo/bin` wasn't on PATH — the
+/// auto-promote path then never got a working native tab, just
+/// `(no client)` forever.
+///
+/// Run the user's login shell with `-l -c env` to dump its
+/// environment and re-export each var onto our own process so
+/// subsequent spawns inherit the full shell env.
+///
+/// No-op when launched from a shell — stdin is a tty there, PATH
+/// already has the user's customizations.
 fn load_login_shell_env_if_needed() {
     use std::ffi::OsString;
+    use std::io::IsTerminal;
     use std::process::Command;
 
-    let in_app_bundle = std::env::current_exe()
-        .map(|p| p.to_string_lossy().contains(".app/Contents/MacOS/"))
-        .unwrap_or(false);
-    if !in_app_bundle {
+    if std::io::stdin().is_terminal() {
         return;
     }
     let shell: OsString = std::env::var_os("SHELL").unwrap_or_else(|| "/bin/zsh".into());
