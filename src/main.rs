@@ -57,25 +57,27 @@ const FONT_PX: f32 = 14.0;
 /// Pixel height of the tab-chip row added below the palette in
 /// multi-tab mode. Sized to fit one cell of glyph + comfortable
 /// padding above and below — matches mnml's bufferline rhythm
-/// (image 8 in the 2026-06-07 issue: clear whitespace around
-/// each pill, not flush with row edges).
+/// (image #9 in the 2026-06-07 thread: mnml-as-host reference
+/// versus tmnl native).
 ///
-/// Bumped 28 → 38 (2026-06-07) — earlier sizing left only ~4px
-/// above and below the chip glyph, which read as cramped AND let
-/// the chip bg's bottom edge bleed into the grid below. 38px
-/// gives ~9px on each side at cell_h ≈ 20.
+/// Iterated 28 → 38 → 32 (2026-06-07):
+///   * 28 left ~4px on each side; chip bg bled past strip bottom.
+///   * 38 fixed the bleed but tmnl read taller than mnml's
+///     reference bufferline.
+///   * 32 settles in between: ~6px above + below the glyph at
+///     cell_h ≈ 20, no bleed, matches mnml's tighter rhythm.
 ///
 /// Multi-tab strip height = `MACOS_TAB_STRIP_PX_SINGLE` (palette
 /// zone) + `TAB_GAP_PX` (breathing room between palette and the
 /// first tab row) + `rows * TAB_ROW_H_PX`. See
 /// `Gpu::required_strip_h`.
-const TAB_ROW_H_PX: f32 = 38.0;
+const TAB_ROW_H_PX: f32 = 32.0;
 
 /// Vertical gap between the bottom of the palette zone and the
-/// top of the first tab row. Without this gap the tabs sit
-/// directly under the palette and read as a single tight
-/// chrome block; ~6px reads as deliberate separation.
-const TAB_GAP_PX: f32 = 6.0;
+/// top of the first tab row. Without it the rows touch and the
+/// chrome reads as one block; 3px is enough separation to match
+/// mnml-as-host's reference look. Was 6px (too tall vs reference).
+const TAB_GAP_PX: f32 = 3.0;
 /// Single-tab chrome height — a small breathing-room band above the
 /// grid so the first row of content isn't kissing the macOS traffic
 /// lights, but no visible chrome strip (the strip pipeline paints this
