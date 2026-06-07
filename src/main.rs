@@ -401,9 +401,18 @@ struct EditorTabTemplate {
 }
 
 struct Gpu {
-    surface: wgpu::Surface<'static>,
+    /// `None` in headless mode (no window). Render paths early-
+    /// return when surface is absent; resize paths skip the
+    /// `configure` call. Every other field (device, queue, atlas,
+    /// pipelines, grid + chrome state) is fully present so App
+    /// logic that doesn't render still works identically.
+    surface: Option<wgpu::Surface<'static>>,
     device: wgpu::Device,
     queue: wgpu::Queue,
+    /// Surface-format config — width/height get read by render
+    /// math even in headless mode (chip layout, sidebar geometry),
+    /// so it stays non-Option. Format / present_mode fields are
+    /// dummies in headless.
     config: wgpu::SurfaceConfiguration,
     #[allow(dead_code)]
     scale: f32,
@@ -561,7 +570,7 @@ impl Gpu {
         let strip_pipeline = pipeline::StripPipeline::new(&device, format);
 
         Self {
-            surface,
+            surface: Some(surface),
             device,
             queue,
             config,
@@ -592,6 +601,102 @@ impl Gpu {
             sidebar_w_px: 0.0,
             sidebar_scroll_rows: 0.0,
         }
+    }
+
+    /// Construct a window-less Gpu for headless mode. Uses wgpu's
+    /// fallback adapter (software rasterizer if no real GPU is
+    /// available — usually fine for tests because we don't render).
+    /// `Surface` is `None`; `device` / `queue` / `atlas` / `pipelines`
+    /// are all real so App logic that inspects cell dimensions, chip
+    /// layout, or geometry works identically. Width / height seed
+    /// `config` for the initial grid_dims pass.
+    #[allow(dead_code)] // Wired up in Phase B/2b — App::new_headless.
+    async fn new_headless(width: u32, height: u32, inset_px: f32) -> Result<Self, String> {
+        let instance = wgpu::Instance::default();
+        // No surface ⇒ pass `compatible_surface: None`. The fallback
+        // adapter is requested explicitly so wgpu picks a software
+        // device on machines without a graphics-capable adapter
+        // (CI runners, certain containers).
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::LowPower,
+                compatible_surface: None,
+                force_fallback_adapter: true,
+            })
+            .await
+            .ok_or_else(|| "no compatible wgpu adapter (even with fallback)".to_string())?;
+        let (device, queue) = adapter
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    label: Some("tmnl-headless"),
+                    required_features: wgpu::Features::empty(),
+                    required_limits: wgpu::Limits::downlevel_defaults(),
+                    memory_hints: wgpu::MemoryHints::Performance,
+                },
+                None,
+            )
+            .await
+            .map_err(|e| format!("headless device request failed: {e}"))?;
+
+        // Pick a sensible non-sRGB format for `config`. We don't
+        // create a real surface to query capabilities, so just go
+        // with a widely-supported default that matches what the
+        // real `Gpu::new` would pick on most platforms.
+        let format = wgpu::TextureFormat::Bgra8Unorm;
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format,
+            width: width.max(1),
+            height: height.max(1),
+            present_mode: wgpu::PresentMode::Fifo,
+            alpha_mode: wgpu::CompositeAlphaMode::Opaque,
+            view_formats: vec![],
+            desired_maximum_frame_latency: 2,
+        };
+
+        // Atlas + pipelines still get built so chip layout + hit-rect
+        // math match what real mode does. Glyph rendering goes into
+        // the atlas texture but never reaches a Surface — that's fine.
+        let scale = 1.0_f32;
+        let atlas = Atlas::new(&device, &queue, FONT_PX * scale)
+            .map_err(|e| format!("headless atlas: {e}"))?;
+        let (cols, rows) = grid_dims(
+            width,
+            height,
+            &atlas,
+            inset_px,
+            MACOS_TAB_STRIP_PX_SINGLE,
+            0.0,
+        );
+        let g = Grid::new(cols, rows, palette().clear_bg);
+        let pipeline = CellPipeline::new(&device, format, &atlas, (cols * rows).max(1024) as u64);
+        let strip_pipeline = pipeline::StripPipeline::new(&device, format);
+
+        Ok(Self {
+            surface: None,
+            device,
+            queue,
+            config,
+            scale,
+            atlas,
+            pipeline,
+            grid: g,
+            inset_px,
+            strip_pipeline,
+            strip_chips: Vec::new(),
+            strip_chip_rects: Vec::new(),
+            strip_palette_back_rect: None,
+            strip_palette_fwd_rect: None,
+            strip_palette_chip_rect: None,
+            strip_palette_dropdown_rect: None,
+            strip_chip_close_rects: Vec::new(),
+            strip_new_tab_rect: None,
+            strip_h: MACOS_TAB_STRIP_PX_SINGLE,
+            font_zoom: 1.0,
+            tab_layout: crate::config::TabLayout::default(),
+            sidebar_w_px: 0.0,
+            sidebar_scroll_rows: 0.0,
+        })
     }
 
     /// Rebuild the glyph atlas + cell pipeline at a new font-px multiplier.
@@ -1278,7 +1383,12 @@ impl Gpu {
         }
         self.config.width = w;
         self.config.height = h;
-        self.surface.configure(&self.device, &self.config);
+        // Headless mode skips the wgpu surface configure — there's
+        // no surface to reconfigure. The grid_dims math below still
+        // uses the new width/height, so logical resize still works.
+        if let Some(surface) = &self.surface {
+            surface.configure(&self.device, &self.config);
+        }
         let (cols, rows) = grid_dims(
             w,
             h,
@@ -1425,10 +1535,17 @@ impl Gpu {
     }
 
     fn render(&mut self) {
-        let frame = match self.surface.get_current_texture() {
+        // Headless mode (no surface) ⇒ nothing to render to. The
+        // App's logic + state updates still ran; we just skip the
+        // GPU pass. Callers can inspect post-tick state via the
+        // headless command set without paying for a render.
+        let Some(surface) = self.surface.as_ref() else {
+            return;
+        };
+        let frame = match surface.get_current_texture() {
             Ok(f) => f,
             Err(wgpu::SurfaceError::Lost) | Err(wgpu::SurfaceError::Outdated) => {
-                self.surface.configure(&self.device, &self.config);
+                surface.configure(&self.device, &self.config);
                 return;
             }
             Err(e) => {
