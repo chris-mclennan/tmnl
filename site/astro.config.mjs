@@ -72,7 +72,9 @@ export default defineConfig({
           items: [
             { label: 'Getting started', slug: 'manual/getting-started' },
             { label: 'Tabs, splits, and panes', slug: 'manual/tabs-and-splits' },
+            { label: 'Tab layout — horizontal vs vertical', slug: 'manual/tab-layout' },
             { label: 'Native tabs', slug: 'manual/native-tabs' },
+            { label: 'Running mnml inside tmnl', slug: 'manual/running-mnml' },
             { label: 'Browser pane', slug: 'manual/browser-pane' },
             { label: 'AI completion (offline)', slug: 'manual/ai-completion' },
             { label: 'Updates', slug: 'manual/updates' },
