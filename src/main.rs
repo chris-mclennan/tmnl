@@ -19,6 +19,7 @@ mod server;
 mod settings_ui;
 mod shell;
 mod shell_prompt;
+mod theme;
 mod transfer;
 mod update_check;
 mod welcome;
@@ -81,7 +82,7 @@ const TAB_GAP_PX: f32 = 3.0;
 /// Single-tab chrome height — a small breathing-room band above the
 /// grid so the first row of content isn't kissing the macOS traffic
 /// lights, but no visible chrome strip (the strip pipeline paints this
-/// region in `CLEAR_BG` instead of `STRIP_BG` when there are no chips,
+/// region in `palette().clear_bg` instead of `palette().strip_bg` when there are no chips,
 /// so it blends invisibly with the surrounding clear color).
 ///
 /// Bumped 24 → 34 → 44 → 48 → 52 (2026-05-24) — successive bumps
@@ -96,48 +97,19 @@ const MACOS_TAB_STRIP_PX_SINGLE: f32 = 32.0;
 /// Single-tab strip height for *shell* mode (no TUI hosted, e.g. a bare
 /// `zsh` prompt). Larger than the TUI value so the prompt's first row
 /// doesn't sit right under the macOS traffic lights. The strip pipeline
-/// still paints CLEAR_BG so this band is invisible — pure padding.
+/// still paints palette().clear_bg so this band is invisible — pure padding.
 #[cfg(target_os = "macos")]
 const MACOS_TAB_STRIP_PX_SHELL: f32 = 42.0;
 #[cfg(not(target_os = "macos"))]
 const MACOS_TAB_STRIP_PX_SHELL: f32 = 24.0;
-// Chrome palette — calibrated against the rendered pixels of mnml's
-// default theme (eyedropped from a live screenshot, not the raw hex
-// in `mnml/src/ui/theme.rs` — terminal apps apply a small color
-// transform between the hex code and what reaches the screen, so
-// f32 = source_hex / 255 doesn't visually match). These values
-// produce on-screen bytes that match what the user sees from mnml.
+// Chrome palette lives in `theme.rs` — at startup tmnl tries to
+// adopt mnml's installed theme so the two apps blend visually when
+// launched side-by-side; falls back to defaults eyedropped from
+// mnml's onedark rendered in Apple Terminal otherwise. Access via
+// `theme::palette()`. See `theme.rs` for the role table.
 //
-//   role                 byte rgb        f32                  hex
-//   ───────────────────  ──────────────  ───────────────────  ───────
-//   strip / chrome bg    26  29  34      [0.102, 0.114, 0.133] #1A1D22
-//   arrow button pill    30  34  40      [0.118, 0.133, 0.157] #1E2228
-//   tab pill (active)    36  39  45      [0.141, 0.153, 0.176] #24272D
-//   search-chip body     41  45  53      [0.161, 0.176, 0.208] #292D35
-//   tab text fg          159 167 180     [0.624, 0.655, 0.706] #9FA7B4
-//
-// When mnml is installed and the user has a custom theme, tmnl
-// should adopt those colors at startup (follow-up — currently
-// these defaults are used unconditionally).
-//
-// Frame background — fills (a) the top pad reserved for the macOS
-// traffic-light buttons, (b) the letterbox gutter at the bottom when
-// the window height isn't a clean row multiple, and (c) any sub-cell
-// pixel overflow on the right.
-const CLEAR_BG: [f32; 4] = [0.1020, 0.1137, 0.1333, 1.0];
-// Tab-strip background — same as `CLEAR_BG` so strip + top pad
-// render as one seamless chrome band, matching how mnml's bufferline
-// sits flush with its surrounding chrome.
-const STRIP_BG: [f32; 4] = CLEAR_BG;
-const TEXT_FG: [f32; 4] = [0.86, 0.87, 0.92, 1.0];
-const ACCENT_FG: [f32; 4] = [0.93, 0.73, 0.45, 1.0];
-const DIM_FG: [f32; 4] = [0.48, 0.50, 0.58, 1.0];
-// Tab label foreground — brighter than `DIM_FG` because tabs are a
-// primary navigation surface (need to be readable at a glance, not
-// "dim hint" territory). Eyedropped from mnml at (159, 167, 180).
-// Used by both inactive and active tab chips; the active chip
-// distinguishes via its lifted pill bg, not via fg color.
-const TAB_FG: [f32; 4] = [0.624, 0.655, 0.706, 1.0];
+// Re-exported so `use crate::*` in app.rs / headless.rs picks it up.
+pub use theme::palette;
 /// How far a non-focused split pane's text is faded toward its own
 /// background — the focus cue. Per-pane, so it sidesteps the
 /// shared-divider-cell problem the old divider tint had.
@@ -553,7 +525,7 @@ impl Gpu {
             inset_px,
             MACOS_TAB_STRIP_PX_SINGLE,
         );
-        let g = Grid::new(cols, rows, CLEAR_BG);
+        let g = Grid::new(cols, rows, palette().clear_bg);
 
         let pipeline = CellPipeline::new(&device, format, &atlas, (cols * rows).max(1024) as u64);
         let strip_pipeline = pipeline::StripPipeline::new(&device, format);
@@ -749,8 +721,8 @@ impl Gpu {
     ///
     ///   ` <attn?> <label> · × `
     ///
-    /// Active chip: bg = `ACTIVE_CHIP_BG` (lightened) + BOLD fg.
-    /// Inactive chip: bg = STRIP_BG, fg = DIM_FG.
+    /// Active chip: bg = `palette().active_chip_bg` (lightened) + BOLD fg.
+    /// Inactive chip: bg = palette().strip_bg, fg = palette().dim_fg.
     /// Attention chip (inactive only): a leading `● ` in red.
     /// The `×` close glyph is muted (no red shout) and sits one cell
     /// away from the label so it doesn't crowd the text. Always present
@@ -784,12 +756,11 @@ impl Gpu {
         let chips: Vec<(String, bool, bool)> = self.strip_chips.clone();
         let (slots, plus_slot, _rows) = self.chip_layout(&chips);
 
-        // Active tab pill bg — the visible "lifted" rectangle behind
-        // the focused tab. Eyedropped from mnml at (36, 39, 45). Sits
-        // between the strip and the search-chip body in the 3-tier
-        // chrome gradient — see the chrome-palette table at the top
-        // of this file.
-        const ACTIVE_CHIP_BG: [f32; 4] = [0.1412, 0.1529, 0.1765, 1.0];
+        // Active tab pill bg from the global chrome palette
+        // (`theme.rs`). Kept as a local binding so the inner loops
+        // can reuse the [f32; 4] without re-dereffing the OnceLock
+        // each iteration.
+        let active_chip_bg = palette().active_chip_bg;
         // Attention dot color — red, matches OSC 1337 "needs attention".
         const ATTENTION_FG: [f32; 4] = [0.95, 0.32, 0.32, 1.0];
         // Muted close glyph color — dimmer than dim_fg.
@@ -818,9 +789,9 @@ impl Gpu {
             let mut col_offset = slot_col;
             let chip_x0_px = start_x_px + col_offset * cell_w;
             let (fg, bg, attrs) = if *active {
-                (TEXT_FG, ACTIVE_CHIP_BG, ATTR_BOLD)
+                (palette().text_fg, active_chip_bg, ATTR_BOLD)
             } else {
-                (TAB_FG, STRIP_BG, 0)
+                (palette().tab_fg, palette().strip_bg, 0)
             };
 
             // Helper: emit one cell at (base_x + col_offset, base_y),
@@ -996,17 +967,18 @@ impl Gpu {
         let start_x_px = (window_w_px - total_w_px) / 2.0;
         let start_col = (start_x_px - self.inset_px) / cell_w;
 
-        // Chrome colors. Mnml uses a 3-tier gradient inside the
-        // bufferline cluster: arrow buttons are slightly lifted off
-        // the strip; the search-chip input is lifted more so it
-        // reads as the primary affordance. Eyedropped values from
-        // the chrome-palette table at the top of this file.
-        const BTN_BG: [f32; 4] = [0.1176, 0.1333, 0.1569, 1.0]; // arrows
-        const CHIP_BG: [f32; 4] = [0.1608, 0.1765, 0.2078, 1.0]; // search
+        // Chrome colors from the global palette (`theme.rs`). Mnml
+        // uses a 3-tier gradient inside the bufferline cluster:
+        // arrow buttons sit one tier off the strip; the search-chip
+        // input is lifted further so it reads as the primary
+        // affordance.
+        let btn_bg = palette().btn_bg;
+        let chip_bg = palette().chip_bg;
         // Foreground glyphs: brighter on the arrow buttons (the
         // navigation affordance reads as "actionable"), slightly
         // dimmer on the chip body where the search-text placeholder
-        // lives. Both still well-contrasted against CHIP_BG.
+        // lives. Both still well-contrasted against `chip_bg`.
+        // (Local-only — not part of the user-facing palette.)
         const BTN_FG: [f32; 4] = [0.70, 0.72, 0.78, 1.0];
         const CHIP_FG: [f32; 4] = [0.55, 0.58, 0.65, 1.0];
 
@@ -1040,7 +1012,7 @@ impl Gpu {
                 col,
                 ch,
                 BTN_FG,
-                BTN_BG,
+                btn_bg,
                 &mut self.atlas,
                 &self.queue,
             );
@@ -1053,7 +1025,7 @@ impl Gpu {
                 col,
                 ch,
                 BTN_FG,
-                BTN_BG,
+                btn_bg,
                 &mut self.atlas,
                 &self.queue,
             );
@@ -1061,7 +1033,7 @@ impl Gpu {
         }
         // Gap — render strip-bg spaces so the chip looks visually
         // detached from the arrows. (Currently `gap_text` is empty,
-        // so this loop is a no-op; bg sourced from STRIP_BG anyway
+        // so this loop is a no-op; bg sourced from palette().strip_bg anyway
         // so the dead branch doesn't drift from the chrome palette.)
         for ch in gap_text.chars() {
             push(
@@ -1069,7 +1041,7 @@ impl Gpu {
                 col,
                 ch,
                 BTN_FG,
-                STRIP_BG,
+                palette().strip_bg,
                 &mut self.atlas,
                 &self.queue,
             );
@@ -1082,7 +1054,7 @@ impl Gpu {
                 col,
                 ch,
                 CHIP_FG,
-                CHIP_BG,
+                chip_bg,
                 &mut self.atlas,
                 &self.queue,
             );
@@ -1095,7 +1067,7 @@ impl Gpu {
                 col,
                 ch,
                 CHIP_FG,
-                CHIP_BG,
+                chip_bg,
                 &mut self.atlas,
                 &self.queue,
             );
@@ -1147,7 +1119,7 @@ impl Gpu {
         for (i, g) in [&space_g, &plus_g, &space_g].iter().enumerate() {
             out.push(pipeline::Instance {
                 cell_pos: [plus_x + i as f32, base_y],
-                fg: TEXT_FG,
+                fg: palette().text_fg,
                 bg: PLUS_BG,
                 uv_min: g.uv_min,
                 uv_max: g.uv_max,
@@ -1241,15 +1213,15 @@ impl Gpu {
             [self.atlas.cell_w, self.atlas.cell_h],
             [self.inset_px, self.inset_px + self.strip_h],
         );
-        // Single-tab: paint the strip in CLEAR_BG so it blends with the
+        // Single-tab: paint the strip in palette().clear_bg so it blends with the
         // surrounding clear color (no visible chrome band — but the grid
         // still starts below the strip so content doesn't kiss the macOS
-        // traffic lights). Multi-tab: STRIP_BG separates the chip strip
+        // traffic lights). Multi-tab: palette().strip_bg separates the chip strip
         // from the body.
         let strip_color = if self.strip_chips.len() <= 1 {
-            CLEAR_BG
+            palette().clear_bg
         } else {
-            STRIP_BG
+            palette().strip_bg
         };
         self.strip_pipeline.write_globals(
             &self.queue,
@@ -1280,10 +1252,10 @@ impl Gpu {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: CLEAR_BG[0] as f64,
-                            g: CLEAR_BG[1] as f64,
-                            b: CLEAR_BG[2] as f64,
-                            a: CLEAR_BG[3] as f64,
+                            r: palette().clear_bg[0] as f64,
+                            g: palette().clear_bg[1] as f64,
+                            b: palette().clear_bg[2] as f64,
+                            a: palette().clear_bg[3] as f64,
                         }),
                         store: wgpu::StoreOp::Store,
                     },
@@ -1316,7 +1288,7 @@ fn grid_dims(w: u32, h: u32, atlas: &Atlas, inset_px: f32, strip: f32) -> (u32, 
     // is clipped by the wgpu surface — no clear-bg stripe at the right
     // seam). Floor rows so the LAST cell row gets its full font-row
     // height — any leftover sub-row pixels at the bottom become a
-    // small letterbox gutter painted in `CLEAR_BG` by the wgpu clear
+    // small letterbox gutter painted in `palette().clear_bg` by the wgpu clear
     // (industry standard: Apple Terminal, iTerm2, Alacritty, Kitty all
     // do this). The alternative — ceiling rows + clipping the last
     // partial row — leaves a few-pixel sliver of whatever the app drew
@@ -1366,10 +1338,16 @@ pub(crate) fn paint_browser_chrome(grid: &mut Grid, url: &str, chrome: &BrowserC
         return;
     }
     // Clear the top row first so previous frames don't bleed through.
-    grid.write(0, 0, &" ".repeat(grid.cols as usize), TEXT_FG, CLEAR_BG);
+    grid.write(
+        0,
+        0,
+        &" ".repeat(grid.cols as usize),
+        palette().text_fg,
+        palette().clear_bg,
+    );
     let chips: &[(u32, &str)] = &[(0, "[<]"), (4, "[>]"), (8, "[⟳]")];
     for (col, label) in chips {
-        grid.write(*col, 0, label, TEXT_FG, CLEAR_BG);
+        grid.write(*col, 0, label, palette().text_fg, palette().clear_bg);
     }
     // URL bar starts at column 13 — past the three 3-char chips with
     // single-cell gaps and a one-cell separator.
@@ -1391,19 +1369,25 @@ pub(crate) fn paint_browser_chrome(grid: &mut Grid, url: &str, chrome: &BrowserC
         };
         let end = (start + avail).min(chars.len());
         let visible: String = chars[start..end].iter().collect();
-        grid.write(url_col, 0, &visible, ACCENT_FG, CLEAR_BG);
+        grid.write(
+            url_col,
+            0,
+            &visible,
+            palette().accent_fg,
+            palette().clear_bg,
+        );
         // Cursor block — repaint the single cell with swapped colors.
         let cursor_col = url_col + (cursor - start) as u32;
         if cursor_col < grid.cols {
             // Use a vertical-bar so it stays visible on top of any
             // glyph; the underlying char (often a space at EOL) is fine.
-            grid.write(cursor_col, 0, "│", ACCENT_FG, CLEAR_BG);
+            grid.write(cursor_col, 0, "│", palette().accent_fg, palette().clear_bg);
         }
     } else {
         // Read-only — show the URL truncated to fit. Dim a bit so the
         // chip glyphs stand out as the interactive elements.
         let url_str: String = url.chars().take(avail).collect();
-        grid.write(url_col, 0, &url_str, DIM_FG, CLEAR_BG);
+        grid.write(url_col, 0, &url_str, palette().dim_fg, palette().clear_bg);
     }
 }
 
@@ -1435,16 +1419,28 @@ pub(crate) fn paint_browser_placeholder(grid: &mut Grid, url: &str) {
     let row = grid.rows / 2;
     let title = "browser";
     let title_col = (grid.cols.saturating_sub(title.chars().count() as u32)) / 2;
-    grid.write(title_col, row.saturating_sub(2), title, ACCENT_FG, CLEAR_BG);
+    grid.write(
+        title_col,
+        row.saturating_sub(2),
+        title,
+        palette().accent_fg,
+        palette().clear_bg,
+    );
 
     let url_str = url.chars().take(grid.cols as usize).collect::<String>();
     let url_col = (grid.cols.saturating_sub(url_str.chars().count() as u32)) / 2;
-    grid.write(url_col, row, &url_str, TEXT_FG, CLEAR_BG);
+    grid.write(
+        url_col,
+        row,
+        &url_str,
+        palette().text_fg,
+        palette().clear_bg,
+    );
 
     let hint = "(webview integration pending)";
     if hint.chars().count() < grid.cols as usize {
         let col = (grid.cols.saturating_sub(hint.chars().count() as u32)) / 2;
-        grid.write(col, row + 2, hint, DIM_FG, CLEAR_BG);
+        grid.write(col, row + 2, hint, palette().dim_fg, palette().clear_bg);
     }
 }
 
@@ -1456,20 +1452,26 @@ fn paint_idle(grid: &mut Grid, state: ConnState, socket_path: &std::path::Path) 
     let title = "tmnl";
     let row = grid.rows / 2;
     let title_col = (grid.cols.saturating_sub(title.chars().count() as u32)) / 2;
-    grid.write(title_col, row.saturating_sub(2), title, ACCENT_FG, CLEAR_BG);
+    grid.write(
+        title_col,
+        row.saturating_sub(2),
+        title,
+        palette().accent_fg,
+        palette().clear_bg,
+    );
 
     let (status, color) = match state {
-        ConnState::Waiting => ("waiting for client", DIM_FG),
-        ConnState::Connected => ("client connected — awaiting first frame", TEXT_FG),
+        ConnState::Waiting => ("waiting for client", palette().dim_fg),
+        ConnState::Connected => ("client connected — awaiting first frame", palette().text_fg),
         ConnState::Streaming => return,
     };
     let status_col = (grid.cols.saturating_sub(status.chars().count() as u32)) / 2;
-    grid.write(status_col, row, status, color, CLEAR_BG);
+    grid.write(status_col, row, status, color, palette().clear_bg);
 
     let hint = format!("socket: {}", socket_path.display());
     if hint.chars().count() < grid.cols as usize {
         let col = (grid.cols.saturating_sub(hint.chars().count() as u32)) / 2;
-        grid.write(col, row + 2, &hint, DIM_FG, CLEAR_BG);
+        grid.write(col, row + 2, &hint, palette().dim_fg, palette().clear_bg);
     }
 }
 
@@ -1683,7 +1685,7 @@ fn draw_ghost(grid: &mut grid::Grid, start: usize, text: &str) {
         }
         grid.cells[i] = grid::Cell {
             ch,
-            fg: DIM_FG,
+            fg: palette().dim_fg,
             bg: grid.cells[i].bg,
             attrs: grid.cells[i].attrs,
         };
@@ -1808,7 +1810,7 @@ fn paint_dividers(window: &mut grid::Grid, lines: &[(Rect, SplitDir)]) {
             let i = (y * cols + x) as usize;
             window.cells[i] = grid::Cell {
                 ch: glyph,
-                fg: DIM_FG,
+                fg: palette().dim_fg,
                 bg: window.cells[i].bg,
                 attrs: 0,
             };
@@ -2073,6 +2075,10 @@ fn main() {
     // PATH + user-set tokens otherwise aren't available to the
     // children we spawn. See doc comment on the function.
     load_login_shell_env_if_needed();
+    // Load the chrome palette. Tries mnml's installed theme first
+    // (so tmnl + mnml visually blend when launched side-by-side),
+    // falls back to defaults eyedropped from mnml's onedark. Idempotent.
+    theme::init();
     // Background "is there a newer release?" probe. Logs to stderr
     // when a newer tag than CARGO_PKG_VERSION is found. Fire-and-forget;
     // the returned handle is unused on the main thread here (the
@@ -2228,7 +2234,7 @@ fn main() {
     // the real window dimensions are known.
     let initial_pane = Pane {
         kind: mode,
-        grid: Grid::new(80, 24, CLEAR_BG),
+        grid: Grid::new(80, 24, palette().clear_bg),
         last_cursor: None,
         label: String::new(),
         attention: false,
@@ -2343,7 +2349,7 @@ mod tests {
 
     #[test]
     fn paint_browser_chrome_renders_chips_and_url() {
-        let mut g = Grid::new(40, 4, CLEAR_BG);
+        let mut g = Grid::new(40, 4, palette().clear_bg);
         let chrome = BrowserChrome::default();
         paint_browser_chrome(&mut g, "https://example.com", &chrome);
         let row0 = row_text(&g, 0);
@@ -2353,7 +2359,7 @@ mod tests {
 
     #[test]
     fn paint_browser_chrome_shows_edit_buffer_and_cursor() {
-        let mut g = Grid::new(40, 4, CLEAR_BG);
+        let mut g = Grid::new(40, 4, palette().clear_bg);
         let chrome = BrowserChrome {
             edit: Some("typing".to_string()),
             cursor: 6,
@@ -2384,7 +2390,7 @@ mod tests {
     /// A pane whose grid is filled with `ch` — no real session, a
     /// pure-data fixture for compositor tests.
     fn filled_pane(cols: u32, rows: u32, ch: char) -> Pane {
-        let mut grid = Grid::new(cols, rows, CLEAR_BG);
+        let mut grid = Grid::new(cols, rows, palette().clear_bg);
         for cell in &mut grid.cells {
             cell.ch = ch;
         }
@@ -2422,7 +2428,7 @@ mod tests {
             label: String::new(),
             custom_name: None,
         };
-        let mut window = Grid::new(10, 4, CLEAR_BG);
+        let mut window = Grid::new(10, 4, palette().clear_bg);
         composite(&tab, &mut window);
         assert!(window.cells.iter().all(|c| c.ch == 'A'));
     }
@@ -2430,7 +2436,7 @@ mod tests {
     #[test]
     fn composite_tiles_two_panes_with_a_divider() {
         // 21 wide ⇒ 20 usable, 10/10 either side of a 1-col divider.
-        let mut window = Grid::new(21, 4, CLEAR_BG);
+        let mut window = Grid::new(21, 4, palette().clear_bg);
         composite(&two_pane_tab(0), &mut window);
         let at = |x: u32, y: u32| window.cells[(y * 21 + x) as usize].ch;
         assert_eq!(at(0, 0), 'A');
@@ -2443,7 +2449,7 @@ mod tests {
     #[test]
     fn composite_dims_unfocused_panes() {
         // Focus the left pane; the right (unfocused) pane's text fades.
-        let mut window = Grid::new(21, 4, CLEAR_BG);
+        let mut window = Grid::new(21, 4, palette().clear_bg);
         composite(&two_pane_tab(0), &mut window);
         // Focused pane 0 keeps full-bright text.
         assert_eq!(window.cells[0].fg, [1.0; 4]);
@@ -2478,14 +2484,14 @@ mod tests {
             label: String::new(),
             custom_name: None,
         };
-        let mut window = Grid::new(21, 9, CLEAR_BG);
+        let mut window = Grid::new(21, 9, palette().clear_bg);
         composite(&tab, &mut window);
         // V divider at column 10, H divider at row 4 — junction (10, 4).
         let junction = &window.cells[4 * 21 + 10];
         assert_eq!(junction.ch, '├', "junction draws a T-glyph");
         // Every divider cell is the same quiet chrome colour.
-        assert_eq!(junction.fg, DIM_FG);
-        assert_eq!(window.cells[10].fg, DIM_FG);
+        assert_eq!(junction.fg, palette().dim_fg);
+        assert_eq!(window.cells[10].fg, palette().dim_fg);
     }
 
     #[test]
@@ -2522,7 +2528,7 @@ mod tests {
         // A cursor overlay bit on cell 0 of each pane.
         tab.panes[0].grid.cells[0].attrs |= ATTR_CURSOR_BLOCK;
         tab.panes[1].grid.cells[0].attrs |= ATTR_CURSOR_BLOCK;
-        let mut window = Grid::new(21, 4, CLEAR_BG);
+        let mut window = Grid::new(21, 4, palette().clear_bg);
         composite(&tab, &mut window);
         // Focused pane 0 keeps its cursor; pane 1's (at window col 11)
         // is stripped.
@@ -2647,19 +2653,19 @@ mod tests {
 
     #[test]
     fn draw_ghost_writes_dim_cells_and_clips_at_the_end() {
-        let mut g = Grid::new(6, 1, CLEAR_BG);
+        let mut g = Grid::new(6, 1, palette().clear_bg);
         draw_ghost(&mut g, 2, "hello");
         // "hell" fits at indices 2..=5; the final "o" is past the grid.
         assert_eq!(g.cells[2].ch, 'h');
         assert_eq!(g.cells[5].ch, 'l');
-        assert_eq!(g.cells[2].fg, DIM_FG);
+        assert_eq!(g.cells[2].fg, palette().dim_fg);
         assert!(!g.cells.iter().any(|c| c.ch == 'o'));
     }
 
     #[test]
     fn apply_frame_to_grid_writes_runs_and_the_cursor() {
         use super::protocol::{DiffRun, Frame, WireCell};
-        let mut g = Grid::new(4, 2, CLEAR_BG);
+        let mut g = Grid::new(4, 2, palette().clear_bg);
         let mut last_cursor = None;
         // A run of two cells from index 1: 'A', 'B'.
         let frame = Frame {
@@ -2699,7 +2705,7 @@ mod tests {
     #[test]
     fn apply_frame_to_grid_clears_the_previous_cursor() {
         use super::protocol::Frame;
-        let mut g = Grid::new(4, 2, CLEAR_BG);
+        let mut g = Grid::new(4, 2, palette().clear_bg);
         let mut last_cursor = Some(3);
         g.cells[3].attrs |= ATTR_CURSOR_BLOCK;
         // A frame whose cursor is hidden — the old overlay bit clears.

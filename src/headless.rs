@@ -48,15 +48,19 @@ pub fn run() {
     let cols: u32 = env_dim("TMNL_COLS", 80);
     let rows: u32 = env_dim("TMNL_ROWS", 24);
 
-    let mut session =
-        match ShellSession::spawn(rows as u16, cols as u16, crate::TEXT_FG, crate::CLEAR_BG) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("tmnl --headless: failed to start shell: {e}");
-                std::process::exit(1);
-            }
-        };
-    let mut grid = Grid::new(cols, rows, crate::CLEAR_BG);
+    let mut session = match ShellSession::spawn(
+        rows as u16,
+        cols as u16,
+        crate::palette().text_fg,
+        crate::palette().clear_bg,
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("tmnl --headless: failed to start shell: {e}");
+            std::process::exit(1);
+        }
+    };
+    let mut grid = Grid::new(cols, rows, crate::palette().clear_bg);
     // Spawned lazily on the first `fim` command.
     let mut fim: Option<crate::fim::FimWorker> = None;
 

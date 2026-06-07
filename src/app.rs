@@ -57,7 +57,12 @@ impl ApplicationHandler for App {
         let Pane { kind, grid, .. } = &mut self.tabs[self.active].panes[focused];
         match kind {
             PaneKind::Shell { session } => {
-                match ShellSession::spawn(rows as u16, cols as u16, TEXT_FG, CLEAR_BG) {
+                match ShellSession::spawn(
+                    rows as u16,
+                    cols as u16,
+                    palette().text_fg,
+                    palette().clear_bg,
+                ) {
                     Ok(s) => *session = Some(s),
                     Err(e) => {
                         eprintln!("tmnl: failed to start shell: {e}");
@@ -160,7 +165,7 @@ impl App {
                 None
             }
         };
-        let mut grid = grid::Grid::new(cols, rows, CLEAR_BG);
+        let mut grid = grid::Grid::new(cols, rows, palette().clear_bg);
         paint_idle(&mut grid, ConnState::Waiting, &socket_path);
         let pane = Pane {
             kind: PaneKind::Native {
@@ -238,11 +243,18 @@ impl App {
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string())
             .unwrap_or_else(|| "adopted".to_string());
-        match ShellSession::adopt_fd(fd, rows as u16, cols as u16, TEXT_FG, CLEAR_BG, &label) {
+        match ShellSession::adopt_fd(
+            fd,
+            rows as u16,
+            cols as u16,
+            palette().text_fg,
+            palette().clear_bg,
+            &label,
+        ) {
             Ok(s) => {
                 let pane = Pane {
                     kind: PaneKind::Shell { session: Some(s) },
-                    grid: grid::Grid::new(cols, rows, CLEAR_BG),
+                    grid: grid::Grid::new(cols, rows, palette().clear_bg),
                     last_cursor: None,
                     label: label.clone(),
                     attention: false,
@@ -275,12 +287,17 @@ impl App {
             Some(gpu) => (gpu.grid.cols, gpu.grid.rows),
             None => return,
         };
-        match ShellSession::spawn(rows as u16, cols as u16, TEXT_FG, CLEAR_BG) {
+        match ShellSession::spawn(
+            rows as u16,
+            cols as u16,
+            palette().text_fg,
+            palette().clear_bg,
+        ) {
             Ok(s) => {
                 let label = s.shell_name().to_string();
                 let pane = Pane {
                     kind: PaneKind::Shell { session: Some(s) },
-                    grid: grid::Grid::new(cols, rows, CLEAR_BG),
+                    grid: grid::Grid::new(cols, rows, palette().clear_bg),
                     last_cursor: None,
                     label: label.clone(),
                     attention: false,
@@ -520,7 +537,12 @@ impl App {
             None => return,
         };
         // New panes are shells (cheap; a Native split is a follow-up).
-        let session = match ShellSession::spawn(rows as u16, cols as u16, TEXT_FG, CLEAR_BG) {
+        let session = match ShellSession::spawn(
+            rows as u16,
+            cols as u16,
+            palette().text_fg,
+            palette().clear_bg,
+        ) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("tmnl: split failed: {e}");
@@ -535,7 +557,7 @@ impl App {
                 session: Some(session),
             },
             // relayout_all_panes resizes this to its real leaf rect.
-            grid: grid::Grid::new(cols, rows, CLEAR_BG),
+            grid: grid::Grid::new(cols, rows, palette().clear_bg),
             last_cursor: None,
             label,
             attention: false,
@@ -572,7 +594,7 @@ impl App {
             Some(gpu) => (gpu.grid.cols, gpu.grid.rows),
             None => return,
         };
-        let mut grid = grid::Grid::new(cols, rows, CLEAR_BG);
+        let mut grid = grid::Grid::new(cols, rows, palette().clear_bg);
         paint_browser_placeholder(&mut grid, &url);
         let host = url
             .split("://")
@@ -695,7 +717,7 @@ impl App {
                 None
             }
         };
-        let mut grid = grid::Grid::new(cols, rows, CLEAR_BG);
+        let mut grid = grid::Grid::new(cols, rows, palette().clear_bg);
         paint_idle(&mut grid, ConnState::Waiting, &socket_path);
         let pane = Pane {
             kind: PaneKind::Native {
@@ -1617,7 +1639,7 @@ impl App {
                 None
             }
         };
-        let mut grid = grid::Grid::new(cols, rows, CLEAR_BG);
+        let mut grid = grid::Grid::new(cols, rows, palette().clear_bg);
         paint_idle(&mut grid, ConnState::Waiting, &socket_path);
         let pane = Pane {
             kind: PaneKind::Native {
@@ -1931,7 +1953,7 @@ impl App {
         // Always paint a frame after a resize — the surface was
         // reconfigured (even if cols×rows stayed the same), so
         // the framebuffer is fresh and would briefly show through
-        // as CLEAR_BG until the next event-driven render. Without
+        // as palette().clear_bg until the next event-driven render. Without
         // this the window flickers during interactive resizes.
         if let Some(w) = &self.window {
             w.request_redraw();
