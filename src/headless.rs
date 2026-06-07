@@ -23,6 +23,19 @@
 //!               shell command, preview it on the row below
 //! scroll <n>    scroll the scrollback view by <n> rows (+ into
 //!               history, - toward the bottom), then dump
+//! click <c> <r> [button] [mods]
+//!               synthesize a Down+Up mouse-press at cell (c, r).
+//!               button: left|middle|right (default left); mods:
+//!               comma-separated ctrl,alt,shift,super. Only fires
+//!               if the pty child enabled mouse tracking (DECSET
+//!               1000/1002/1006) — otherwise silently drops.
+//! hover <c> <r> synthesize a Moved event (no button). Only fires
+//!               under `?1003h` mouse tracking; dropped otherwise.
+//! wheel <dy> <c> <r>
+//!               synthesize |dy| ticks of wheel scroll. dy > 0 ⇒
+//!               wheel up; dy < 0 ⇒ wheel down. Forwarded as xterm
+//!               wheel events (button 64/65) when the child has
+//!               tracking on.
 //! quit          stop (input EOF also stops)
 //! ```
 //!
@@ -104,6 +117,61 @@ pub fn run() {
                 session.scroll(arg.parse().unwrap_or(0));
                 print_dump(&mut session, &mut grid);
             }
+            // `click <col> <row> [button] [mods]` — fires a Down+Up
+            // mouse-press at the given cell coords through
+            // `ShellSession::write_mouse`. Honors the pty child's
+            // current vt100 mouse-protocol mode: drops the event
+            // silently when the child hasn't enabled tracking, so a
+            // bare shell prompt doesn't get garbage on stdin.
+            //
+            // `button` defaults to `left`; accepts `middle`/`right`
+            // or `m`/`r`. `mods` is a comma-separated list of
+            // `ctrl`/`alt`/`shift`/`super`. Examples:
+            //   click 3 5
+            //   click 10 12 right
+            //   click 0 0 left ctrl,shift
+            "click" => match parse_mouse_arg(arg) {
+                Some((col, row, button, mods)) => {
+                    session.write_mouse(col, row, button, true, mods);
+                    session.write_mouse(col, row, button, false, mods);
+                }
+                None => eprintln!(
+                    "tmnl --headless: usage: click <col> <row> [left|middle|right] [mods]"
+                ),
+            },
+            // `hover <col> <row>` — Moved event (no button held).
+            // Forwarded via `write_mouse_motion`; honors
+            // `MouseProtocolMode::AnyMotion` (DECSET ?1003h). Drops
+            // when the child hasn't requested motion tracking.
+            "hover" => match parse_hover_arg(arg) {
+                Some((col, row)) => {
+                    session.write_mouse_motion(col, row, None, 0);
+                }
+                None => eprintln!("tmnl --headless: usage: hover <col> <row>"),
+            },
+            // `wheel <dy> <col> <row>` — `|dy|` ticks of wheel scroll
+            // at the given cell. Positive `dy` ⇒ wheel up, negative
+            // ⇒ wheel down. Forwarded as xterm wheel events (button
+            // 64/65) via `write_mouse`; the body terminal's pty
+            // child sees them only if it requested mouse tracking.
+            // Note: in interactive mode this also routes through the
+            // alt-screen check in `handle_mouse_wheel`; headless
+            // doesn't have that distinction so we always forward.
+            "wheel" => match parse_wheel_arg(arg) {
+                Some((dy, col, row)) => {
+                    const BUTTON_WHEEL_UP: u8 = 4;
+                    const BUTTON_WHEEL_DOWN: u8 = 5;
+                    let button = if dy > 0 {
+                        BUTTON_WHEEL_UP
+                    } else {
+                        BUTTON_WHEEL_DOWN
+                    };
+                    for _ in 0..dy.unsigned_abs() {
+                        session.write_mouse(col, row, button, true, 0);
+                    }
+                }
+                None => eprintln!("tmnl --headless: usage: wheel <dy> <col> <row>"),
+            },
             "quit" => break,
             other => eprintln!("tmnl --headless: unknown command '{other}'"),
         }
@@ -116,6 +184,67 @@ pub fn run() {
         eprintln!("tmnl --headless: {failures} expectation(s) FAILED");
         std::process::exit(1);
     }
+}
+
+/// Parse `<col> <row> [button] [mods]` into the tuple `write_mouse`
+/// expects. tmnl-protocol button values: LEFT=0, RIGHT=1, MIDDLE=2.
+/// mod bits: shift=1, ctrl=2, alt=4, super=8.
+fn parse_mouse_arg(arg: &str) -> Option<(u16, u16, u8, u8)> {
+    let parts: Vec<&str> = arg.split_whitespace().collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let col: u16 = parts[0].parse().ok()?;
+    let row: u16 = parts[1].parse().ok()?;
+    let button: u8 = parts
+        .get(2)
+        .map(|s| s.to_ascii_lowercase())
+        .map(|s| match s.as_str() {
+            "middle" | "m" => 2,
+            "right" | "r" => 1,
+            _ => 0,
+        })
+        .unwrap_or(0);
+    let mods: u8 = parts.get(3).map(|s| parse_mods(s)).unwrap_or(0);
+    Some((col, row, button, mods))
+}
+
+fn parse_hover_arg(arg: &str) -> Option<(u16, u16)> {
+    let parts: Vec<&str> = arg.split_whitespace().collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let col: u16 = parts[0].parse().ok()?;
+    let row: u16 = parts[1].parse().ok()?;
+    Some((col, row))
+}
+
+fn parse_wheel_arg(arg: &str) -> Option<(i32, u16, u16)> {
+    let parts: Vec<&str> = arg.split_whitespace().collect();
+    if parts.len() < 3 {
+        return None;
+    }
+    let dy: i32 = parts[0].parse().ok()?;
+    let col: u16 = parts[1].parse().ok()?;
+    let row: u16 = parts[2].parse().ok()?;
+    Some((dy, col, row))
+}
+
+/// Parse a comma-separated `ctrl,alt,shift,super` string into the
+/// tmnl-protocol mod bitmask (shift=1, ctrl=2, alt=4, super=8).
+/// Unknown tokens are silently ignored.
+fn parse_mods(s: &str) -> u8 {
+    let mut out = 0u8;
+    for token in s.split(',') {
+        match token.trim().to_ascii_lowercase().as_str() {
+            "shift" => out |= 1,
+            "ctrl" | "control" => out |= 2,
+            "alt" | "option" => out |= 4,
+            "super" | "cmd" | "meta" => out |= 8,
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Run an `expect contains|lacks <text>` check against the grid. Prints
@@ -314,4 +443,58 @@ fn key_bytes(name: &str) -> Option<Vec<u8>> {
         "end" => b"\x1b[F".to_vec(),
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn click_arg_defaults_to_left_with_no_mods() {
+        assert_eq!(parse_mouse_arg("3 5"), Some((3, 5, 0, 0)));
+    }
+
+    #[test]
+    fn click_arg_accepts_middle_right_and_short_aliases() {
+        assert_eq!(parse_mouse_arg("0 0 middle"), Some((0, 0, 2, 0)));
+        assert_eq!(parse_mouse_arg("0 0 m"), Some((0, 0, 2, 0)));
+        assert_eq!(parse_mouse_arg("0 0 right"), Some((0, 0, 1, 0)));
+        assert_eq!(parse_mouse_arg("0 0 r"), Some((0, 0, 1, 0)));
+    }
+
+    #[test]
+    fn click_arg_parses_mods() {
+        assert_eq!(parse_mouse_arg("1 2 left ctrl"), Some((1, 2, 0, 2)));
+        assert_eq!(
+            parse_mouse_arg("1 2 left ctrl,shift,alt"),
+            Some((1, 2, 0, 7))
+        );
+        // Unknown bits silently dropped.
+        assert_eq!(parse_mouse_arg("1 2 left ctrl,hyper"), Some((1, 2, 0, 2)));
+        // Aliases.
+        assert_eq!(parse_mouse_arg("1 2 left cmd"), Some((1, 2, 0, 8)));
+        assert_eq!(parse_mouse_arg("1 2 left option"), Some((1, 2, 0, 4)));
+    }
+
+    #[test]
+    fn click_arg_rejects_missing_coords() {
+        assert_eq!(parse_mouse_arg(""), None);
+        assert_eq!(parse_mouse_arg("3"), None);
+        assert_eq!(parse_mouse_arg("a b"), None);
+    }
+
+    #[test]
+    fn hover_arg_requires_two_ints() {
+        assert_eq!(parse_hover_arg("4 6"), Some((4, 6)));
+        assert_eq!(parse_hover_arg("4"), None);
+        assert_eq!(parse_hover_arg(""), None);
+    }
+
+    #[test]
+    fn wheel_arg_requires_dy_col_row() {
+        assert_eq!(parse_wheel_arg("2 5 10"), Some((2, 5, 10)));
+        assert_eq!(parse_wheel_arg("-3 0 0"), Some((-3, 0, 0)));
+        assert_eq!(parse_wheel_arg("1 2"), None);
+        assert_eq!(parse_wheel_arg("a b c"), None);
+    }
 }
