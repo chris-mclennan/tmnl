@@ -457,6 +457,21 @@ struct Gpu {
     /// ⌘+ / ⌘- step it; ⌘0 resets. Clamped to [`FONT_ZOOM_MIN`,
     /// `FONT_ZOOM_MAX`]. Rebuilds the atlas + cell pipeline on change.
     font_zoom: f32,
+    /// Chip layout mode — `Horizontal` (chips wrap across rows below
+    /// the palette strip) or `Vertical` (chips stack down a left-edge
+    /// sidebar). Mirrors the user's `[tab_layout]` config; App
+    /// refreshes from config on each tick so a settings change takes
+    /// effect within a frame. Drives [`Self::chip_layout`] +
+    /// [`Self::required_strip_h`] + [`Self::sidebar_w_px`].
+    tab_layout: crate::config::TabLayout,
+    /// Pixel width of the left-edge tab sidebar when
+    /// `tab_layout = Vertical` and there's >1 chip — otherwise 0.
+    /// `App.tick` updates it from the current chip list via
+    /// [`Self::compute_sidebar_w_px`]; render paths (`grid_dims`,
+    /// `pixel_to_cell`, the grid render offset) add this to
+    /// `inset_px` for the x-axis so the body shifts right to make
+    /// room.
+    sidebar_w_px: f32,
 }
 
 const FONT_ZOOM_MIN: f32 = 0.6;
@@ -524,6 +539,7 @@ impl Gpu {
             &atlas,
             inset_px,
             MACOS_TAB_STRIP_PX_SINGLE,
+            0.0, // no sidebar at startup — single tab, App refreshes later
         );
         let g = Grid::new(cols, rows, palette().clear_bg);
 
@@ -554,6 +570,12 @@ impl Gpu {
             // is added.
             strip_h: MACOS_TAB_STRIP_PX_SINGLE,
             font_zoom: 1.0,
+            // App refreshes this from `cfg.tab_layout` on each tick;
+            // default to Horizontal so single-tab startup matches the
+            // legacy look before App has a chance to write its
+            // configured value.
+            tab_layout: crate::config::TabLayout::default(),
+            sidebar_w_px: 0.0,
         }
     }
 
@@ -576,7 +598,14 @@ impl Gpu {
             }
         };
         let (w, h) = (self.config.width, self.config.height);
-        let (cols, rows) = grid_dims(w, h, &new_atlas, self.inset_px, self.strip_h);
+        let (cols, rows) = grid_dims(
+            w,
+            h,
+            &new_atlas,
+            self.inset_px,
+            self.strip_h,
+            self.sidebar_w_px,
+        );
         let new_pipeline = CellPipeline::new(
             &self.device,
             self.config.format,
@@ -606,6 +635,27 @@ impl Gpu {
         pad + attn + label_cells + gap_before_close + close
     }
 
+    /// Pixel width the left-edge tab sidebar needs to fit every chip
+    /// in the given list under `tab_layout = Vertical`. Width is
+    /// `<widest chip in cells>` + a 1-cell trailing pad so the
+    /// sidebar reads as distinct from the body grid. Returns 0
+    /// when chips ≤ 1 (single-tab mode hides the strip anyway).
+    pub fn compute_sidebar_w_px(&self, chips: &[(String, bool, bool)]) -> f32 {
+        if chips.len() <= 1 {
+            return 0.0;
+        }
+        // Width = widest chip + trailing-pad (1 cell) so the sidebar
+        // has a small visual gap between chip text and grid content.
+        let widest = chips
+            .iter()
+            .map(|(label, active, attention)| Self::chip_cells(label, *active, *attention))
+            .fold(0.0_f32, f32::max);
+        // Plus button is 3 cells — make sure the sidebar accommodates
+        // it on the last row so the `+` doesn't overflow.
+        let with_plus = widest.max(3.0);
+        (with_plus + 1.0) * self.atlas.cell_w + Self::CHIP_START_X_PX
+    }
+
     /// Compute the wrap layout for a given chip list: how many rows
     /// they need and where each chip sits (row + col-offset within
     /// the row). The `+` new-tab button slot is included so it
@@ -615,10 +665,24 @@ impl Gpu {
     /// `(row_idx, col_offset_cells)` for chip `i`, `plus_slot` is
     /// the slot the `+` button occupies, and `row_count` is the
     /// total number of rows needed (≥ 1 when chips are present).
+    ///
+    /// Branches on `self.tab_layout`:
+    ///   * `Horizontal` — chips flow L→R, wrap on overflow.
+    ///   * `Vertical` — each chip is its own row at col 0; `+`
+    ///     button trails on the row after the last chip.
     fn chip_layout(
         &self,
         chips: &[(String, bool, bool)],
     ) -> (Vec<(usize, f32)>, (usize, f32), usize) {
+        if matches!(self.tab_layout, crate::config::TabLayout::Vertical) {
+            // Vertical sidebar: each chip on its own row at col 0;
+            // the `+` button trails immediately after. No
+            // overflow-wrap (a v2 follow-up wires scrolling).
+            let slots: Vec<(usize, f32)> = (0..chips.len()).map(|i| (i, 0.0)).collect();
+            let plus_slot = (chips.len(), 0.0);
+            let row_count = chips.len() + 1;
+            return (slots, plus_slot, row_count);
+        }
         let cell_w = self.atlas.cell_w;
         let window_w = self.config.width as f32;
         let start_x = Self::CHIP_START_X_PX;
@@ -659,20 +723,31 @@ impl Gpu {
         (slots, plus_slot, row_count)
     }
 
-    /// Required strip height for the current chip list under
-    /// `tab_layout = horizontal` (default). Single-tab → palette zone
-    /// only. Multi-tab → palette zone + (rows × `TAB_ROW_H_PX`).
-    /// Vertical mode is a v0.x follow-up; for now it falls through
-    /// to horizontal so the app doesn't break.
-    pub fn required_strip_h(chips: &[(String, bool, bool)], rows: usize, tui_active: bool) -> f32 {
-        if chips.len() <= 1 {
-            if tui_active {
-                MACOS_TAB_STRIP_PX_SINGLE
-            } else {
-                MACOS_TAB_STRIP_PX_SHELL
-            }
+    /// Required strip height for the current chip list. Branches on
+    /// `tab_layout`:
+    ///   * `Horizontal` — palette zone + (rows × `TAB_ROW_H_PX`)
+    ///     when chips wrap; single-tab → palette zone only.
+    ///   * `Vertical` — palette zone only (tab chips live in the
+    ///     left-edge sidebar, not the top strip).
+    pub fn required_strip_h(
+        layout: crate::config::TabLayout,
+        chips: &[(String, bool, bool)],
+        rows: usize,
+        tui_active: bool,
+    ) -> f32 {
+        let single_h = if tui_active {
+            MACOS_TAB_STRIP_PX_SINGLE
         } else {
-            MACOS_TAB_STRIP_PX_SINGLE + TAB_GAP_PX + rows.max(1) as f32 * TAB_ROW_H_PX
+            MACOS_TAB_STRIP_PX_SHELL
+        };
+        if chips.len() <= 1 {
+            return single_h;
+        }
+        match layout {
+            crate::config::TabLayout::Vertical => single_h,
+            crate::config::TabLayout::Horizontal => {
+                MACOS_TAB_STRIP_PX_SINGLE + TAB_GAP_PX + rows.max(1) as f32 * TAB_ROW_H_PX
+            }
         }
     }
 
@@ -712,6 +787,10 @@ impl Gpu {
     const CHIP_PAD_CELLS: f32 = 1.0;
     /// Spacing between adjacent chips.
     const CHIP_GAP_CELLS: f32 = 1.0;
+    /// Pixel pad on the left edge of the vertical sidebar (when
+    /// `tab_layout = Vertical`). Small breathing room between the
+    /// window edge / inset and the first column of chip glyphs.
+    const SIDEBAR_PAD_LEFT_PX: f32 = 8.0;
 
     /// Build glyph instances for the current chip list, positioned to
     /// land inside the tab strip. Uses fractional / negative `cell_pos`
@@ -768,14 +847,34 @@ impl Gpu {
         const CLOSE_FG_ACTIVE: [f32; 4] = [0.70, 0.72, 0.78, 1.0];
         const ATTR_BOLD: u32 = 1;
 
-        let start_x_px = Self::CHIP_START_X_PX;
+        let vertical = matches!(self.tab_layout, crate::config::TabLayout::Vertical);
+        // In horizontal mode chips start `CHIP_START_X_PX` from the
+        // window left (clear of the traffic-light buttons). In
+        // vertical mode chips render in the LEFT SIDEBAR — start
+        // `inset_px + small-pad` from the window left so they sit
+        // flush with where the body grid would otherwise start.
+        let start_x_px = if vertical {
+            self.inset_px + Self::SIDEBAR_PAD_LEFT_PX
+        } else {
+            Self::CHIP_START_X_PX
+        };
         let base_x = (start_x_px - self.inset_px) / cell_w;
         let inset_y_total = self.inset_px + self.strip_h;
+        // In horizontal mode rows stack BELOW the palette strip; in
+        // vertical mode they stack BELOW the strip too but each row
+        // is one chip and the first row starts right under the strip
+        // (no `TAB_GAP_PX` because there's no horizontal "tab row" to
+        // separate from the palette).
+        let first_row_top_px = if vertical {
+            self.strip_h
+        } else {
+            tab_zone_top_px
+        };
         // Per-row Y coordinates — pre-compute so the chip render loop
         // doesn't need to recalculate per glyph.
         let row_geom = |row: usize| -> (f32, f32, f32) {
             // (y0_px, y1_px, base_y_in_cell_coords)
-            let y0 = tab_zone_top_px + row as f32 * TAB_ROW_H_PX;
+            let y0 = first_row_top_px + row as f32 * TAB_ROW_H_PX;
             let y1 = y0 + TAB_ROW_H_PX;
             let label_y = (y0 + (TAB_ROW_H_PX - cell_h) * 0.5).max(0.0);
             (y0, y1, (label_y - inset_y_total) / cell_h)
@@ -1139,7 +1238,14 @@ impl Gpu {
         self.config.width = w;
         self.config.height = h;
         self.surface.configure(&self.device, &self.config);
-        let (cols, rows) = grid_dims(w, h, &self.atlas, self.inset_px, self.strip_h);
+        let (cols, rows) = grid_dims(
+            w,
+            h,
+            &self.atlas,
+            self.inset_px,
+            self.strip_h,
+            self.sidebar_w_px,
+        );
         if cols != self.grid.cols || rows != self.grid.rows {
             self.grid.resize(cols, rows);
             return Some((cols as u16, rows as u16));
@@ -1156,7 +1262,14 @@ impl Gpu {
         }
         self.inset_px = inset_px;
         let (w, h) = (self.config.width, self.config.height);
-        let (cols, rows) = grid_dims(w, h, &self.atlas, self.inset_px, self.strip_h);
+        let (cols, rows) = grid_dims(
+            w,
+            h,
+            &self.atlas,
+            self.inset_px,
+            self.strip_h,
+            self.sidebar_w_px,
+        );
         if cols != self.grid.cols || rows != self.grid.rows {
             self.grid.resize(cols, rows);
             return Some((cols as u16, rows as u16));
@@ -1175,12 +1288,58 @@ impl Gpu {
         }
         self.strip_h = strip_h;
         let (w, h) = (self.config.width, self.config.height);
-        let (cols, rows) = grid_dims(w, h, &self.atlas, self.inset_px, self.strip_h);
+        let (cols, rows) = grid_dims(
+            w,
+            h,
+            &self.atlas,
+            self.inset_px,
+            self.strip_h,
+            self.sidebar_w_px,
+        );
         if cols != self.grid.cols || rows != self.grid.rows {
             self.grid.resize(cols, rows);
             return Some((cols as u16, rows as u16));
         }
         None
+    }
+
+    /// Update the vertical-tab sidebar's pixel width live. Returns
+    /// the new grid dims if they shifted (caller forwards the resize
+    /// to the native client). Set to 0 in horizontal mode. Computed
+    /// from the current chip list by [`Self::compute_sidebar_w_px`]
+    /// each tick.
+    fn set_sidebar_w_px(&mut self, sidebar_w_px: f32) -> Option<(u16, u16)> {
+        if (self.sidebar_w_px - sidebar_w_px).abs() < f32::EPSILON {
+            return None;
+        }
+        self.sidebar_w_px = sidebar_w_px;
+        let (w, h) = (self.config.width, self.config.height);
+        let (cols, rows) = grid_dims(
+            w,
+            h,
+            &self.atlas,
+            self.inset_px,
+            self.strip_h,
+            self.sidebar_w_px,
+        );
+        if cols != self.grid.cols || rows != self.grid.rows {
+            self.grid.resize(cols, rows);
+            return Some((cols as u16, rows as u16));
+        }
+        None
+    }
+
+    /// Update the tab-layout mode (Horizontal or Vertical). The App
+    /// tick calls this whenever the user's `[tab_layout]` config
+    /// changes. Returns `true` iff the value actually changed so the
+    /// caller can refresh derived state (strip height, sidebar
+    /// width, redraw request).
+    fn set_tab_layout(&mut self, layout: crate::config::TabLayout) -> bool {
+        if self.tab_layout == layout {
+            return false;
+        }
+        self.tab_layout = layout;
+        true
     }
 
     fn render(&mut self) {
@@ -1207,11 +1366,18 @@ impl Gpu {
         // on top with `inset_y >= strip_h`, so no overlap.
         // inset == 0 still gets the ceil'd grid_dims so the rightmost
         // cells reach the edge — true edge-to-edge for TUIs.
+        // Per-axis inset: x = base inset + sidebar width (so the body
+        // grid shifts right when the vertical tab sidebar is active);
+        // y = base inset + strip height. Sidebar width is 0 in
+        // horizontal mode, so behavior there is unchanged.
         self.pipeline.write_globals(
             &self.queue,
             [self.config.width as f32, self.config.height as f32],
             [self.atlas.cell_w, self.atlas.cell_h],
-            [self.inset_px, self.inset_px + self.strip_h],
+            [
+                self.inset_px + self.sidebar_w_px,
+                self.inset_px + self.strip_h,
+            ],
         );
         // Single-tab: paint the strip in palette().clear_bg so it blends with the
         // surrounding clear color (no visible chrome band — but the grid
@@ -1279,7 +1445,14 @@ impl Gpu {
     }
 }
 
-fn grid_dims(w: u32, h: u32, atlas: &Atlas, inset_px: f32, strip: f32) -> (u32, u32) {
+fn grid_dims(
+    w: u32,
+    h: u32,
+    atlas: &Atlas,
+    inset_px: f32,
+    strip: f32,
+    sidebar_w: f32,
+) -> (u32, u32) {
     // `inset_px == 0` → edge-to-edge horizontally; vertically we
     // reserve `strip` pixels for the tab-strip chrome (caller passes
     // the dynamic strip height: shrinks to the single-tab value when
@@ -1296,13 +1469,17 @@ fn grid_dims(w: u32, h: u32, atlas: &Atlas, inset_px: f32, strip: f32) -> (u32, 
     // noise.
     // `inset_px > 0` → reserve `inset_px` pixels on every side
     // (and tab-strip on top); floor cols/rows so the cells fit inside.
+    // `sidebar_w` is non-zero only when `tab_layout = Vertical` — the
+    // body grid shifts right by that amount to leave room for the
+    // sidebar's tab chips.
     if inset_px <= 0.0 {
-        let cols = (w as f32 / atlas.cell_w).ceil().max(1.0) as u32;
+        let usable_w = (w as f32 - sidebar_w).max(atlas.cell_w);
+        let cols = (usable_w / atlas.cell_w).ceil().max(1.0) as u32;
         let usable_h = (h as f32 - strip).max(atlas.cell_h);
         let rows = (usable_h / atlas.cell_h).floor().max(1.0) as u32;
         return (cols, rows);
     }
-    let usable_w = (w as f32 - 2.0 * inset_px).max(atlas.cell_w);
+    let usable_w = (w as f32 - 2.0 * inset_px - sidebar_w).max(atlas.cell_w);
     let usable_h = (h as f32 - 2.0 * inset_px - strip).max(atlas.cell_h);
     let cols = (usable_w / atlas.cell_w).floor().max(1.0) as u32;
     let rows = (usable_h / atlas.cell_h).floor().max(1.0) as u32;
@@ -1524,7 +1701,11 @@ impl Gpu {
     /// the same literal-inset math the shader applies in `write_globals`.
     /// Clicks inside the inset margin saturate to (0, 0).
     fn pixel_to_cell(&self, px: f64, py: f64) -> (u16, u16) {
-        let inset_x = self.inset_px as f64;
+        // X-axis inset includes the vertical-tab sidebar so clicks in
+        // the sidebar region don't translate to cell coords (the
+        // grid starts to the RIGHT of the sidebar). Y-axis inset
+        // unchanged — strip is still top-only.
+        let inset_x = self.inset_px as f64 + self.sidebar_w_px as f64;
         let inset_y = self.inset_px as f64 + self.strip_h as f64;
         let col = ((px - inset_x).max(0.0) / self.atlas.cell_w as f64).floor() as u16;
         let row = ((py - inset_y).max(0.0) / self.atlas.cell_h as f64).floor() as u16;

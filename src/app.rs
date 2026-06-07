@@ -1193,18 +1193,29 @@ impl App {
         // grows by one TAB_ROW_H_PX per row of chips (palette stays
         // at its single-tab position above). Single-tab path skips
         // the layout call.
-        let strip_resize = {
+        let strip_or_sidebar_resize = {
             let gpu = self.gpu.as_mut().unwrap();
+            // Make sure the GPU knows what the user picked in
+            // `[tab_layout]` — settings UI may have flipped it.
+            gpu.set_tab_layout(self.cfg.tab_layout);
             gpu.set_strip_chips(&chips);
             let rows = if multi_tab {
                 gpu.chip_row_count(&chips)
             } else {
                 1
             };
-            let target_strip = Gpu::required_strip_h(&chips, rows, tui_active);
-            gpu.set_strip_h(target_strip)
+            let target_strip = Gpu::required_strip_h(self.cfg.tab_layout, &chips, rows, tui_active);
+            let target_sidebar =
+                if matches!(self.cfg.tab_layout, crate::config::TabLayout::Vertical) && multi_tab {
+                    gpu.compute_sidebar_w_px(&chips)
+                } else {
+                    0.0
+                };
+            let r1 = gpu.set_strip_h(target_strip);
+            let r2 = gpu.set_sidebar_w_px(target_sidebar);
+            r1.or(r2)
         };
-        if strip_resize.is_some() {
+        if strip_or_sidebar_resize.is_some() {
             self.relayout_all_panes();
         }
 
@@ -2282,11 +2293,12 @@ impl App {
         // Snapshot what we need off the GPU up front so the
         // borrow is released before `relayout_all_panes` (which
         // needs `&mut self`).
-        let Some((cell, (gcols, grows), chrome_h)) = self.gpu.as_ref().map(|g| {
+        let Some((cell, (gcols, grows), chrome_h, sidebar_w)) = self.gpu.as_ref().map(|g| {
             (
                 g.pixel_to_cell(position.x, position.y),
                 (g.grid.cols, g.grid.rows),
                 (g.inset_px + g.strip_h) as f64,
+                (g.inset_px + g.sidebar_w_px) as f64,
             )
         }) else {
             return;
@@ -2295,7 +2307,12 @@ impl App {
         self.cursor_cell = cell;
         self.cursor_px = (position.x, position.y);
         let (col, row) = cell;
-        let in_chrome = position.y < chrome_h;
+        // Treat the left-edge sidebar (when active) as chrome too so
+        // hover drags + chip-reorder respect it. `sidebar_w` is the
+        // base inset alone in horizontal mode, so the check collapses
+        // to `position.x < 0` (always false) and is a no-op there.
+        let in_chrome = position.y < chrome_h
+            || (sidebar_w > self.gpu.as_ref().unwrap().inset_px as f64 && position.x < sidebar_w);
 
         // A divider drag owns the event while it's armed — move
         // the split's ratio so the divider tracks the cursor.
@@ -2429,7 +2446,15 @@ impl App {
         // strip clicks to the terminal (return early).
         if let Some(gpu) = &self.gpu {
             let (px, py) = self.cursor_px;
-            let in_chrome = py < (gpu.inset_px + gpu.strip_h) as f64;
+            // Chrome region = top strip OR (in vertical-tab mode)
+            // the left-edge sidebar. Either way clicks here go to
+            // tab chips / palette chips and never to the pty/native
+            // pane below — the chip hit-rects below handle the
+            // routing via their (x0,x1,y0,y1) tuples.
+            let in_top_strip = py < (gpu.inset_px + gpu.strip_h) as f64;
+            let in_left_sidebar =
+                gpu.sidebar_w_px > 0.0 && px < (gpu.inset_px + gpu.sidebar_w_px) as f64;
+            let in_chrome = in_top_strip || in_left_sidebar;
             if in_chrome {
                 if pressed {
                     // Palette cluster (centered in strip) — four hit
@@ -2671,12 +2696,16 @@ impl App {
 
     fn handle_mouse_wheel(&mut self, delta: MouseScrollDelta) {
         // Don't scroll the terminal when the wheel event lands in
-        // the chrome strip — chip-scrolling can come later but
-        // forwarding now would scroll the underlying terminal,
-        // which is surprising when the cursor is on a chip.
+        // the chrome strip OR the vertical-tab sidebar — chip-
+        // scrolling can come later but forwarding now would scroll
+        // the underlying terminal, which is surprising when the
+        // cursor is on a chip.
         if let Some(gpu) = &self.gpu {
-            let (_, py) = self.cursor_px;
-            if py < (gpu.inset_px + gpu.strip_h) as f64 {
+            let (px, py) = self.cursor_px;
+            let in_top_strip = py < (gpu.inset_px + gpu.strip_h) as f64;
+            let in_left_sidebar =
+                gpu.sidebar_w_px > 0.0 && px < (gpu.inset_px + gpu.sidebar_w_px) as f64;
+            if in_top_strip || in_left_sidebar {
                 return;
             }
         }
