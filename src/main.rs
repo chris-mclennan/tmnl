@@ -610,21 +610,33 @@ impl Gpu {
     /// are all real so App logic that inspects cell dimensions, chip
     /// layout, or geometry works identically. Width / height seed
     /// `config` for the initial grid_dims pass.
-    #[allow(dead_code)] // Wired up in Phase B/2b — App::new_headless.
     async fn new_headless(width: u32, height: u32, inset_px: f32) -> Result<Self, String> {
         let instance = wgpu::Instance::default();
-        // No surface ⇒ pass `compatible_surface: None`. The fallback
-        // adapter is requested explicitly so wgpu picks a software
-        // device on machines without a graphics-capable adapter
-        // (CI runners, certain containers).
-        let adapter = instance
+        // No surface needed — pass `compatible_surface: None` so wgpu
+        // doesn't filter adapters for swapchain compatibility. Try
+        // the default adapter first (Metal on macOS, whatever Vulkan
+        // exposes on Linux). Fall back to the software adapter only
+        // if no real adapter accepts the no-surface request — many
+        // systems' "fallback" adapter actually requires a surface
+        // (catch-22), so we try real first.
+        let adapter = match instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::LowPower,
                 compatible_surface: None,
-                force_fallback_adapter: true,
+                force_fallback_adapter: false,
             })
             .await
-            .ok_or_else(|| "no compatible wgpu adapter (even with fallback)".to_string())?;
+        {
+            Some(a) => a,
+            None => instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::LowPower,
+                    compatible_surface: None,
+                    force_fallback_adapter: true,
+                })
+                .await
+                .ok_or_else(|| "no compatible wgpu adapter (real or fallback)".to_string())?,
+        };
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
@@ -2491,8 +2503,16 @@ fn main() {
     // Headless mode — no window, scripted stdin, text grid dumps (see
     // `src/headless.rs`). Branches out before any winit / wgpu / AppKit
     // setup so it runs fine with no display.
+    //
+    // Two flavors:
+    //   `--headless`         — single ShellSession harness (original)
+    //   `--headless --app`   — full App with multi-tab driving (Phase B/2b)
     if argv.iter().any(|a| a == "--headless") {
-        headless::run();
+        if argv.iter().any(|a| a == "--app") {
+            headless::run_app();
+        } else {
+            headless::run();
+        }
         return;
     }
 

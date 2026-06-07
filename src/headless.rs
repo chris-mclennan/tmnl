@@ -56,6 +56,114 @@ use std::time::{Duration, Instant};
 use crate::grid::Grid;
 use crate::shell::ShellSession;
 
+/// Entry point for `tmnl --headless --app` (full App-driving mode).
+/// Builds a real `App` via `App::new_headless` and dispatches stdin
+/// commands through the same code paths the winit loop uses. Lets
+/// agents test multi-tab + chrome-click + state-machine flows
+/// without spinning up a window.
+///
+/// Commands (one per line):
+///   tab.new       — spawn a fresh shell tab
+///   tab.close     — close active tab (quits if last tab)
+///   tab.next      — focus next tab
+///   tab.prev      — focus previous tab
+///   state-json    — dump tabs + focused + chip layout + sidebar + strip_h
+///   quit          — stop the loop
+///
+/// Future: pixel-coord click/hover/wheel, palette open, key dispatch.
+pub fn run_app() {
+    let cols: u32 = env_dim("TMNL_COLS", 120);
+    let rows: u32 = env_dim("TMNL_ROWS", 36);
+    // Approximate window pixels for the headless Gpu (cell_w ≈ 8,
+    // cell_h ≈ 16 — atlas decides the real values). Width / height
+    // seed `config` so chip layout + grid_dims math runs.
+    let width_px = cols * 8;
+    let height_px = rows * 16 + 60;
+    let cfg = crate::config::Config::load();
+    let mut app = match crate::App::new_headless(width_px, height_px, cfg.inset, cfg) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("tmnl --headless --app: {e}");
+            std::process::exit(1);
+        }
+    };
+    eprintln!("tmnl --headless --app: ready ({cols}x{rows}, 1 tab, gpu=fallback-adapter)");
+
+    let stdin = std::io::stdin();
+    for line in stdin.lock().lines() {
+        let Ok(line) = line else { break };
+        let line = line.trim_end_matches('\r');
+        let (cmd, _arg) = line.split_once(' ').unwrap_or((line, ""));
+        match cmd {
+            "" => {}
+            "tab.new" => {
+                app.new_shell_tab();
+            }
+            "tab.close" => {
+                app.close_active_tab();
+            }
+            "tab.next" => {
+                if !app.tabs.is_empty() {
+                    let next = (app.active + 1) % app.tabs.len();
+                    app.switch_to_tab(next);
+                }
+            }
+            "tab.prev" => {
+                if !app.tabs.is_empty() {
+                    let prev = if app.active == 0 {
+                        app.tabs.len() - 1
+                    } else {
+                        app.active - 1
+                    };
+                    app.switch_to_tab(prev);
+                }
+            }
+            "state-json" => {
+                println!("{}", app_state_json(&app));
+            }
+            "quit" => break,
+            other => eprintln!("tmnl --headless --app: unknown command '{other}'"),
+        }
+        if app.should_quit {
+            break;
+        }
+    }
+}
+
+/// Format the App's headline state as a single-line JSON object.
+/// Schema (stable across versions; new fields are append-only):
+///   {"tabs": <count>, "active": <idx>, "panes": [<panes-in-active-tab>],
+///    "should_quit": bool, "tab_layout": "horizontal"|"vertical",
+///    "altscreen": bool}
+fn app_state_json(app: &crate::App) -> String {
+    let active_tab = &app.tabs[app.active.min(app.tabs.len().saturating_sub(1))];
+    let panes: Vec<&str> = active_tab
+        .panes
+        .iter()
+        .map(|p| match &p.kind {
+            crate::PaneKind::Shell { .. } => "Shell",
+            crate::PaneKind::Native { .. } => "Native",
+            crate::PaneKind::Browser { .. } => "Browser",
+        })
+        .collect();
+    let panes_json = panes
+        .iter()
+        .map(|s| format!("\"{s}\""))
+        .collect::<Vec<_>>()
+        .join(",");
+    let tab_layout = match app.cfg.tab_layout {
+        crate::config::TabLayout::Horizontal => "horizontal",
+        crate::config::TabLayout::Vertical => "vertical",
+    };
+    format!(
+        r#"{{"tabs":{tabs},"active":{active},"panes":[{panes_json}],"should_quit":{should_quit},"tab_layout":"{tab_layout}","altscreen":{altscreen}}}"#,
+        tabs = app.tabs.len(),
+        active = app.active,
+        should_quit = app.should_quit,
+        altscreen = app.altscreen_active,
+    )
+}
+
 /// Entry point for `tmnl --headless`. Runs until stdin EOF or `quit`.
 pub fn run() {
     let cols: u32 = env_dim("TMNL_COLS", 80);

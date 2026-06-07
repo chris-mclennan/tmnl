@@ -129,6 +129,75 @@ impl ApplicationHandler for App {
 }
 
 impl App {
+    /// Construct an App suitable for headless mode — no window, no
+    /// winit. Builds a real wgpu fallback-adapter Gpu via
+    /// [`Gpu::new_headless`], wires a single empty shell-mode tab,
+    /// and leaves every Optional / state field at its default. The
+    /// returned App is immediately driveable through the
+    /// `dispatch_*` methods (Phase B/1 cleanup ensured those don't
+    /// require `&ActiveEventLoop` anymore).
+    ///
+    /// Bug-hunt agents + tests can use this to exercise multi-tab
+    /// flows, chip layouts, chrome hit-testing without spinning up
+    /// a window. Rendering paths short-circuit (no Surface), but
+    /// every other code path runs identically to real mode — so
+    /// "headless test passed but real mode renders differently" is
+    /// avoided structurally.
+    pub fn new_headless(
+        width: u32,
+        height: u32,
+        inset_px: f32,
+        cfg: crate::config::Config,
+    ) -> Result<Self, String> {
+        let gpu = pollster::block_on(Gpu::new_headless(width, height, inset_px))?;
+        let initial_pane = Pane {
+            kind: PaneKind::Shell { session: None },
+            grid: grid::Grid::new(80, 24, palette().clear_bg),
+            last_cursor: None,
+            label: String::new(),
+            attention: false,
+            last_status: None,
+        };
+        let initial_tab = Tab {
+            layout: Layout::Leaf(0),
+            panes: vec![initial_pane],
+            focused: 0,
+            label: String::new(),
+            custom_name: None,
+        };
+        Ok(App {
+            window: None,
+            gpu: Some(gpu),
+            mods: winit::keyboard::ModifiersState::empty(),
+            should_quit: false,
+            keymap: crate::keymap::Keymap::build(),
+            help: None,
+            palette: None,
+            cursor_cell: (0, 0),
+            cursor_px: (0.0, 0.0),
+            buttons_down: 0,
+            tabs: vec![initial_tab],
+            active: 0,
+            inset_px,
+            cfg,
+            altscreen_active: false,
+            app_menu: None,
+            settings: None,
+            welcome: None,
+            editor_template: None,
+            native_tab_nonce: 1,
+            dragging_tab: None,
+            renaming_tab: None,
+            dragging_divider: None,
+            fim: None,
+            fim_pending: None,
+            fim_next_id: 0,
+            ghost: None,
+            fim_redraw: false,
+            transfer_listener: None,
+        })
+    }
+
     /// Spawn a new Native (editor) tab — fresh socket, fresh Server,
     /// fresh Launcher pointing at the same `editor_template.command`
     /// the original tab used. No-op when shell mode is active
