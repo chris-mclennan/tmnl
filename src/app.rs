@@ -226,7 +226,7 @@ impl App {
     /// requests arriving over the transfer socket — e.g. mnml at
     /// startup detecting tmnl's env var and asking to be relaunched
     /// natively.
-    fn spawn_native_in_new_tab(&mut self, command: String, args: Vec<String>) {
+    fn spawn_native_in_new_tab(&mut self, command: String, mut args: Vec<String>) {
         let (cols, rows) = match self.gpu.as_ref() {
             Some(gpu) => (gpu.grid.cols, gpu.grid.rows),
             None => return,
@@ -240,7 +240,18 @@ impl App {
                 return;
             }
         };
-        let workspace = std::env::current_dir().unwrap_or_else(|_| ".".into());
+        // Launcher::spawn unconditionally prepends `cfg.workspace` as
+        // the child's first positional, then appends `extra_args`. For
+        // PromoteToNative, mnml's `build_promote_args` already put the
+        // workspace first in `args` — peel it off here so the child
+        // doesn't get two positional workspaces (which would make
+        // mnml's arg parser error out with "unexpected extra argument").
+        // No args at all ⇒ fall back to cwd as a sensible default.
+        let workspace = if args.is_empty() {
+            std::env::current_dir().unwrap_or_else(|_| ".".into())
+        } else {
+            std::path::PathBuf::from(args.remove(0))
+        };
         let label = std::path::Path::new(&command)
             .file_name()
             .and_then(|s| s.to_str())
