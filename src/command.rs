@@ -463,8 +463,8 @@ fn builtin_commands() -> Vec<Command> {
             title: "Close focused split pane",
             group: "Splits",
             keys: &["cmd+shift+w"],
-            run: |app, event_loop, _ke| {
-                app.close_focused_pane(event_loop);
+            run: |app, _event_loop, _ke| {
+                app.close_focused_pane();
                 if let Some(w) = &app.window {
                     w.request_redraw();
                 }
@@ -699,7 +699,7 @@ fn builtin_commands() -> Vec<Command> {
             title: "Close tab / forward ⌃W to Native",
             group: "Tabs",
             keys: &["cmd+w"],
-            run: |app, event_loop, ke| {
+            run: |app, _event_loop, ke| {
                 use crate::PaneKind;
                 use crate::protocol::{InputEvent, KeyInput};
                 if let Some(ke) = ke
@@ -720,7 +720,7 @@ fn builtin_commands() -> Vec<Command> {
                         }));
                     }
                 } else {
-                    app.close_active_tab(event_loop);
+                    app.close_active_tab();
                     if let Some(w) = &app.window {
                         w.request_redraw();
                     }

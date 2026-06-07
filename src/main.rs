@@ -292,6 +292,14 @@ struct App {
     window: Option<Arc<Window>>,
     gpu: Option<Gpu>,
     mods: ModifiersState,
+    /// Set by any handler that wants to quit the app (last-tab-
+    /// closed, ⌘Q, blit-channel exit, etc.). The winit
+    /// `ApplicationHandler` reads this at the end of `window_event`
+    /// and calls `event_loop.exit()` if set. Lets headless mode
+    /// run those same handlers without needing a real
+    /// `ActiveEventLoop`. (Headless event loops just check the
+    /// flag + break out of their stdin loop.)
+    should_quit: bool,
     /// Resolved key bindings — chord → command id. Built from the
     /// [`crate::command`] registry at startup. See
     /// `docs/COMMAND_MIGRATION.md`.
@@ -2524,6 +2532,7 @@ fn main() {
         window: None,
         gpu: None,
         mods: ModifiersState::empty(),
+        should_quit: false,
         keymap: crate::keymap::Keymap::build(),
         help: None,
         palette: None,

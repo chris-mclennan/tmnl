@@ -66,7 +66,7 @@ impl ApplicationHandler for App {
                     Ok(s) => *session = Some(s),
                     Err(e) => {
                         eprintln!("tmnl: failed to start shell: {e}");
-                        event_loop.exit();
+                        self.should_quit = true;
                         return;
                     }
                 }
@@ -87,7 +87,7 @@ impl ApplicationHandler for App {
         match event {
             WindowEvent::CloseRequested => {
                 self.shutdown_gracefully();
-                event_loop.exit();
+                self.should_quit = true;
             }
             WindowEvent::Resized(size) => {
                 self.handle_resized(size);
@@ -107,7 +107,7 @@ impl ApplicationHandler for App {
                 self.handle_cursor_moved(position);
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                self.handle_mouse_input(event_loop, state, button);
+                self.handle_mouse_input(state, button);
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 self.handle_mouse_wheel(delta);
@@ -116,6 +116,14 @@ impl ApplicationHandler for App {
                 self.handle_redraw_requested(event_loop);
             }
             _ => {}
+        }
+        // Any handler above may have set `should_quit` (last tab
+        // closed, ⌘Q, blit channel reported its child exited, …).
+        // The flag is the single source of truth for "ready to
+        // exit" so headless mode and winit mode share the same
+        // signal — headless reads it after each stdin command.
+        if self.should_quit {
+            event_loop.exit();
         }
     }
 }
@@ -405,14 +413,14 @@ impl App {
     /// Active index clamps to a valid position; Mode resources drop
     /// when their Tab is removed (Launcher::Drop kills the spawned
     /// client; ShellSession's reader thread joins via its own Drop).
-    pub(crate) fn close_active_tab(&mut self, event_loop: &ActiveEventLoop) {
-        self.close_tab_at(self.active, event_loop);
+    pub(crate) fn close_active_tab(&mut self) {
+        self.close_tab_at(self.active);
     }
 
     /// Close a specific tab by index. Used by middle-click on a chip;
     /// when `idx` is the active tab, behaves identically to
     /// `close_active_tab`. Closing the last tab exits the process.
-    fn close_tab_at(&mut self, idx: usize, event_loop: &ActiveEventLoop) {
+    fn close_tab_at(&mut self, idx: usize) {
         if idx >= self.tabs.len() {
             return;
         }
@@ -420,7 +428,7 @@ impl App {
         // invalidate (indices shift) — drop it.
         self.renaming_tab = None;
         if self.tabs.len() <= 1 {
-            event_loop.exit();
+            self.should_quit = true;
             return;
         }
         let was_active = idx == self.active;
@@ -828,9 +836,9 @@ impl App {
     /// Close the focused pane — its split collapses so the sibling
     /// takes the freed space. Closing a tab's last pane closes the
     /// whole tab.
-    pub(crate) fn close_focused_pane(&mut self, event_loop: &ActiveEventLoop) {
+    pub(crate) fn close_focused_pane(&mut self) {
         if self.tabs[self.active].panes.len() <= 1 {
-            self.close_active_tab(event_loop);
+            self.close_active_tab();
             return;
         }
         let tab = &mut self.tabs[self.active];
@@ -1058,7 +1066,7 @@ impl App {
         // (and accelerator-fired items like ⌘, / ⌘+ / ⌘-) through this
         // global channel. Acting on them before the per-frame work means
         // the next render reflects whatever the menu changed.
-        self.drain_menu_events(event_loop);
+        self.drain_menu_events();
         self.poll_fim();
         // Drain pending pty-fd handoffs (task #50). Each handoff
         // produces a new adopted-shell tab in the focused window.
@@ -1260,7 +1268,7 @@ impl App {
                         return;
                     };
                     if s.exited() {
-                        event_loop.exit();
+                        self.should_quit = true;
                         return;
                     }
                     if s.dirty() || want_ghost_refresh {
@@ -1333,14 +1341,14 @@ impl App {
                                 log::info!("launcher: restart requested (exit 75); respawning");
                                 if let Err(e) = l.spawn() {
                                     eprintln!("tmnl: failed to respawn child: {e}");
-                                    event_loop.exit();
+                                    self.should_quit = true;
                                 }
                             }
                             LauncherPoll::Exited(code) => {
                                 log::info!(
                                     "launcher: child exited with code {code}; closing window"
                                 );
-                                event_loop.exit();
+                                self.should_quit = true;
                             }
                         }
                     }
@@ -1427,7 +1435,7 @@ impl App {
     /// accelerators both land here). Drain into a Vec first so we can
     /// dispatch with `&mut self` afterwards (the menu borrow + a mutable
     /// self borrow would otherwise conflict).
-    fn drain_menu_events(&mut self, event_loop: &ActiveEventLoop) {
+    fn drain_menu_events(&mut self) {
         if self.app_menu.is_none() {
             return;
         }
@@ -1478,7 +1486,7 @@ impl App {
                 }
                 continue;
             } else if id == "close_pane" {
-                self.close_focused_pane(event_loop);
+                self.close_focused_pane();
                 if let Some(w) = &self.window {
                     w.request_redraw();
                 }
@@ -2424,12 +2432,7 @@ impl App {
         }
     }
 
-    fn handle_mouse_input(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        state: ElementState,
-        button: MouseButton,
-    ) {
+    fn handle_mouse_input(&mut self, state: ElementState, button: MouseButton) {
         let b = match button {
             MouseButton::Left => BUTTON_LEFT,
             MouseButton::Right => BUTTON_RIGHT,
@@ -2554,7 +2557,7 @@ impl App {
                     if let Some(idx) = close_hit
                         && button == MouseButton::Left
                     {
-                        self.close_tab_at(idx, event_loop);
+                        self.close_tab_at(idx);
                         return;
                     }
                     let hit = gpu
@@ -2576,7 +2579,7 @@ impl App {
                                 // a different chip will swap.
                                 self.dragging_tab = Some(self.active);
                             }
-                            MouseButton::Middle => self.close_tab_at(idx, event_loop),
+                            MouseButton::Middle => self.close_tab_at(idx),
                             // Right-click → rename the tab inline.
                             MouseButton::Right => self.start_rename(idx),
                             _ => {}
