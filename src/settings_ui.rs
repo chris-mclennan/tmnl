@@ -187,12 +187,25 @@ pub fn draw(grid: &mut Grid, st: &SettingsState) {
         }
     }
 
-    // Help line for the focused row — sits under the row block with
-    // a 1-row gap.
+    // Help line(s) for the focused row — sits under the row block with
+    // a 1-row gap. Word-wraps to the panel's inner width so long
+    // descriptions don't punch through the right border (the
+    // `Where tab chips render — horizontal row below the strip, or
+    // vertical sidebar.` line was 80 chars in a 60-cell panel).
     let help = row_help(st.focused_row());
-    let help_x = x0 + (w.saturating_sub(help.chars().count() as u32)) / 2;
+    let help_inner_w = (w as usize).saturating_sub(4); // 2 cells of pad each side
     let help_y = first_row_y + ROWS.len() as u32 + 1;
-    grid.write(help_x, help_y, help, FG_DIM, BG);
+    // Cap at how many rows we have available between help_y and the
+    // hint footer (at y0 + h - 3) — leave 1 row of gap above the hint.
+    let help_max_lines = (y0 + h - 3).saturating_sub(help_y + 1).max(1);
+    for (i, line) in wrap_text(help, help_inner_w)
+        .into_iter()
+        .take(help_max_lines as usize)
+        .enumerate()
+    {
+        let lx = x0 + (w.saturating_sub(line.chars().count() as u32)) / 2;
+        grid.write(lx, help_y + i as u32, &line, FG_DIM, BG);
+    }
 
     // Hint footer — one empty row above the bottom border so it
     // doesn't visually merge with the `─` line.
@@ -220,6 +233,40 @@ fn render_enum_choices(current: TabLayout) -> String {
         } else {
             out.push_str(label);
         }
+    }
+    out
+}
+
+/// Greedy word-wrap of `text` to lines of at most `width` chars.
+/// Hard-splits any single word longer than `width`. Returns at least
+/// one line (an empty input yields `[""]`). Width counted in chars,
+/// not display cells — fine for ASCII / Latin descriptions; CJK +
+/// emoji would over-estimate fit (not a concern for the current
+/// fixed help strings).
+fn wrap_text(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![text.to_string()];
+    }
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for word in text.split_whitespace() {
+        if cur.is_empty() {
+            cur = word.to_string();
+        } else if cur.chars().count() + 1 + word.chars().count() <= width {
+            cur.push(' ');
+            cur.push_str(word);
+        } else {
+            out.push(std::mem::take(&mut cur));
+            cur = word.to_string();
+        }
+        while cur.chars().count() > width {
+            let head: String = cur.chars().take(width).collect();
+            cur = cur.chars().skip(width).collect();
+            out.push(head);
+        }
+    }
+    if !cur.is_empty() || out.is_empty() {
+        out.push(cur);
     }
     out
 }
