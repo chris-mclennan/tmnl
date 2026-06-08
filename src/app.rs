@@ -310,6 +310,12 @@ impl App {
             custom_name: None,
         });
         self.active = self.tabs.len() - 1;
+        // Without this, browser panes on the previous tab stay
+        // composited on top of the new tab + attention badges on the
+        // outgoing tab don't reset until next user input. SEV-2
+        // chrome-hunt finding (2026-06-07) — every other tab swap
+        // already runs on_tab_focused.
+        self.on_tab_focused();
     }
 
     /// Drain pending pty-fd handoffs from the transfer listener (task
@@ -517,6 +523,11 @@ impl App {
                     custom_name: None,
                 });
                 self.active = self.tabs.len() - 1;
+                // See `new_native_tab`'s rationale — every tab-swap
+                // must run on_tab_focused so attention badges reset
+                // and browser panes reposition. SEV-2 chrome-hunt
+                // finding (2026-06-07).
+                self.on_tab_focused();
             }
             Err(e) => eprintln!("tmnl: new tab failed: {e}"),
         }
@@ -646,6 +657,87 @@ impl App {
             pane.attention = false;
         }
         self.relayout_all_panes();
+    }
+
+    /// Compute the (label, active, attention) triple per tab — the
+    /// raw input the chrome's chip strip renders. Pure read; safe to
+    /// call from any context. Headless drivers use this together with
+    /// [`crate::App::refresh_strip_layout`] to populate `strip_chips`
+    /// before `Gpu::populate_hit_rects`, since chip click-targets
+    /// don't exist until the chip list does. SEV-2 chrome-hunt fix
+    /// 2026-06-08 ("headless --app can't exercise chip clicks").
+    pub(crate) fn compute_strip_chips(&self) -> Vec<(String, bool, bool)> {
+        use std::collections::HashMap;
+        let mut counts: HashMap<&str, usize> = HashMap::new();
+        for t in &self.tabs {
+            *counts.entry(t.label.as_str()).or_insert(0) += 1;
+        }
+        let mut seen: HashMap<&str, usize> = HashMap::new();
+        let rename = self
+            .renaming_tab
+            .as_ref()
+            .map(|r| (r.tab_idx, r.buf.clone()));
+        self.tabs
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                if let Some((idx, buf)) = &rename
+                    && *idx == i
+                {
+                    return (format!("{buf}▏"), true, false);
+                }
+                let label = if counts.get(t.label.as_str()).copied().unwrap_or(0) > 1 {
+                    let n = seen.entry(t.label.as_str()).or_insert(0);
+                    *n += 1;
+                    format!("{} ({})", t.label, n)
+                } else {
+                    t.label.clone()
+                };
+                let attention = t.panes.iter().any(|p| p.attention) && i != self.active;
+                (label, i == self.active, attention)
+            })
+            .collect()
+    }
+
+    /// Push the latest strip chip list to the GPU, resize the strip
+    /// to match, and relayout panes. Same work the live `tick()`
+    /// does for chip layout, factored out so headless drivers can
+    /// call it without an `&ActiveEventLoop` (which they don't
+    /// have). No-op when the GPU isn't created yet (very-early-boot).
+    pub(crate) fn refresh_strip_layout(&mut self) {
+        let chips = self.compute_strip_chips();
+        let multi_tab = self.tabs.len() > 1;
+        let active_is_native = self
+            .tabs
+            .get(self.active)
+            .map(|t| matches!(&t.focused_pane().kind, PaneKind::Native { .. }))
+            .unwrap_or(false);
+        let tui_active = active_is_native || self.altscreen_active;
+        let resize = {
+            let Some(gpu) = self.gpu.as_mut() else {
+                return;
+            };
+            gpu.set_tab_layout(self.cfg.tab_layout);
+            gpu.set_strip_chips(&chips);
+            let rows = if multi_tab {
+                gpu.chip_row_count(&chips)
+            } else {
+                1
+            };
+            let target_strip = Gpu::required_strip_h(self.cfg.tab_layout, &chips, rows, tui_active);
+            let target_sidebar =
+                if matches!(self.cfg.tab_layout, crate::config::TabLayout::Vertical) && multi_tab {
+                    gpu.compute_sidebar_w_px(&chips)
+                } else {
+                    0.0
+                };
+            let r1 = gpu.set_strip_h(target_strip);
+            let r2 = gpu.set_sidebar_w_px(target_sidebar);
+            r1.or(r2)
+        };
+        if resize.is_some() {
+            self.relayout_all_panes();
+        }
     }
 
     /// Resize every pane in every tab to its leaf rect under the

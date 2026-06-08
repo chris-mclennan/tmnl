@@ -133,6 +133,13 @@ pub fn run_app() {
                     // never get populated as a side effect. Rebuild
                     // them here so chip-area clicks land on real
                     // targets (tabs, palette cluster).
+                    // Populate strip chips first — `populate_hit_rects`
+                    // bails when `strip_chips.len() <= 1`, which is the
+                    // empty initial state (set_strip_chips only fires
+                    // from the live tick, which headless never reaches).
+                    // Without this, chip-click tests never land on a real
+                    // target. SEV-2 chrome-hunt fix 2026-06-08.
+                    app.refresh_strip_layout();
                     if let Some(gpu) = app.gpu.as_mut() {
                         gpu.populate_hit_rects();
                     }
@@ -144,6 +151,13 @@ pub fn run_app() {
             },
             "hover" => match parse_pixel_pair(arg) {
                 Some((px, py)) => {
+                    // Populate strip chips first — `populate_hit_rects`
+                    // bails when `strip_chips.len() <= 1`, which is the
+                    // empty initial state (set_strip_chips only fires
+                    // from the live tick, which headless never reaches).
+                    // Without this, chip-click tests never land on a real
+                    // target. SEV-2 chrome-hunt fix 2026-06-08.
+                    app.refresh_strip_layout();
                     if let Some(gpu) = app.gpu.as_mut() {
                         gpu.populate_hit_rects();
                     }
@@ -153,6 +167,13 @@ pub fn run_app() {
             },
             "wheel" => match parse_pixel_wheel_arg(arg) {
                 Some((dy, px, py)) => {
+                    // Populate strip chips first — `populate_hit_rects`
+                    // bails when `strip_chips.len() <= 1`, which is the
+                    // empty initial state (set_strip_chips only fires
+                    // from the live tick, which headless never reaches).
+                    // Without this, chip-click tests never land on a real
+                    // target. SEV-2 chrome-hunt fix 2026-06-08.
+                    app.refresh_strip_layout();
                     if let Some(gpu) = app.gpu.as_mut() {
                         gpu.populate_hit_rects();
                     }
@@ -252,32 +273,70 @@ fn app_state_json(app: &crate::App) -> String {
     // an empty tabs vec — panicking. Currently unreachable (close-
     // last-tab sets should_quit + loop exits), but one stray code
     // change away from a crash. Emit empty panes on None.
-    let panes: Vec<&str> = app
+    //
+    // 2026-06-08 SEV-3 bug-hunt expansion: schema beefed up so
+    // `--headless --app` driver scripts can actually verify
+    // tab-level state (labels, focused pane, attention, kinds per
+    // tab) instead of just counts. The old shape stays valid for
+    // existing consumers — the new fields are additive.
+    let pane_kind_str = |p: &crate::Pane| -> &str {
+        match &p.kind {
+            crate::PaneKind::Shell { .. } => "Shell",
+            crate::PaneKind::Native { .. } => "Native",
+            crate::PaneKind::Browser { .. } => "Browser",
+        }
+    };
+    // Backwards-compat: legacy "panes" array = active-tab pane kinds.
+    let active_panes: Vec<&str> = app
         .tabs
         .get(app.active)
         .or_else(|| app.tabs.first())
-        .map(|t| {
-            t.panes
-                .iter()
-                .map(|p| match &p.kind {
-                    crate::PaneKind::Shell { .. } => "Shell",
-                    crate::PaneKind::Native { .. } => "Native",
-                    crate::PaneKind::Browser { .. } => "Browser",
-                })
-                .collect()
-        })
+        .map(|t| t.panes.iter().map(pane_kind_str).collect())
         .unwrap_or_default();
-    let panes_json = panes
+    let panes_json = active_panes
         .iter()
         .map(|s| format!("\"{s}\""))
+        .collect::<Vec<_>>()
+        .join(",");
+    // New: per-tab detail array. Each entry is
+    // {label, focused, panes:[{kind, label, attention}, …]}.
+    let escape = |s: &str| s.replace('\\', r"\\").replace('"', r#"\""#);
+    let tabs_detail = app
+        .tabs
+        .iter()
+        .map(|t| {
+            let panes_arr = t
+                .panes
+                .iter()
+                .map(|p| {
+                    format!(
+                        r#"{{"kind":"{kind}","label":"{label}","attention":{att}}}"#,
+                        kind = pane_kind_str(p),
+                        label = escape(&p.label),
+                        att = p.attention,
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(
+                r#"{{"label":"{label}","focused":{focused},"panes":[{panes_arr}]}}"#,
+                label = escape(&t.label),
+                focused = t.focused,
+            )
+        })
         .collect::<Vec<_>>()
         .join(",");
     let tab_layout = match app.cfg.tab_layout {
         crate::config::TabLayout::Horizontal => "horizontal",
         crate::config::TabLayout::Vertical => "vertical",
     };
+    let (cols, rows) = app
+        .gpu
+        .as_ref()
+        .map(|g| (g.grid.cols, g.grid.rows))
+        .unwrap_or((0, 0));
     format!(
-        r#"{{"tabs":{tabs},"active":{active},"panes":[{panes_json}],"should_quit":{should_quit},"tab_layout":"{tab_layout}","altscreen":{altscreen}}}"#,
+        r#"{{"tabs":{tabs},"active":{active},"panes":[{panes_json}],"should_quit":{should_quit},"tab_layout":"{tab_layout}","altscreen":{altscreen},"cols":{cols},"rows":{rows},"tabs_detail":[{tabs_detail}]}}"#,
         tabs = app.tabs.len(),
         active = app.active,
         should_quit = app.should_quit,

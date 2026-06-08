@@ -107,7 +107,23 @@ impl Config {
 }
 
 pub fn config_path() -> Option<PathBuf> {
-    Some(dirs::config_dir()?.join("tmnl").join("config.toml"))
+    // Use the XDG location explicitly — `dirs::config_dir()` returns
+    // `~/Library/Application Support/` on macOS, which would split
+    // config.toml off from recents.toml (which always uses
+    // `~/.config/tmnl/`). Every doc + the welcome page references
+    // `~/.config/tmnl/config.toml`, so we standardize on XDG across
+    // platforms. SEV-2 chrome-hunt finding from 2026-06-07.
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME")
+        && !xdg.is_empty()
+    {
+        return Some(PathBuf::from(xdg).join("tmnl").join("config.toml"));
+    }
+    std::env::var_os("HOME").map(|h| {
+        PathBuf::from(h)
+            .join(".config")
+            .join("tmnl")
+            .join("config.toml")
+    })
 }
 
 #[cfg(test)]
