@@ -1047,19 +1047,21 @@ impl Gpu {
         let max_chip_y_px = viewport_h - TAB_ROW_H_PX;
         // Per-row Y coordinates — pre-compute so the chip render loop
         // doesn't need to recalculate per glyph.
-        // Each row past row 0 also gets `INTER_ROW_GAP_PX` of extra
-        // space above it so the visible label-to-label distance
-        // between rows matches the palette→row-0 distance. Gaps are
-        // visual / not scrollable, so they multiply against `row`,
-        // not `(row - scroll_rows)`.
-        // Row 0 gets no extra offset here — its position is already
-        // `first_row_top_px`, which embeds the palette↔row-0
-        // `TAB_GAP_PX` separator.
+        // HORIZONTAL mode: each row past row 0 gets `INTER_ROW_GAP_PX`
+        // of extra space above it so the visible label-to-label
+        // distance between wrapped chip rows matches the palette→
+        // row-0 distance.
+        // VERTICAL mode: tabs stack tight as a side-list (sidebar
+        // chrome — same y-rhythm as the editor cells beside it); no
+        // inter-row spacing applied. The user's first vertical-mode
+        // screenshot showed 16px gaps between every sidebar chip —
+        // stretched + read as broken.
+        let inter_row_gap_for_mode = if vertical { 0.0 } else { INTER_ROW_GAP_PX };
         let row_geom = |row: usize| -> (f32, f32, f32) {
             // (y0_px, y1_px, base_y_in_cell_coords)
             let y0 = first_row_top_px
                 + (row as f32 - scroll_rows) * TAB_ROW_H_PX
-                + row as f32 * INTER_ROW_GAP_PX;
+                + row as f32 * inter_row_gap_for_mode;
             let y1 = y0 + TAB_ROW_H_PX;
             let label_y = (y0 + (TAB_ROW_H_PX - cell_h) * 0.5).max(0.0);
             (y0, y1, (label_y - inset_y_total) / cell_h)
