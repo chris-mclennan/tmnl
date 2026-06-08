@@ -1041,11 +1041,15 @@ impl Gpu {
         let inset_y_total = self.inset_px + self.strip_h;
         // In horizontal mode rows stack BELOW the palette strip; in
         // vertical mode they stack BELOW the strip too but each row
-        // is one chip and the first row starts right under the strip
-        // (no `TAB_GAP_PX` because there's no horizontal "tab row" to
-        // separate from the palette).
+        // is one chip. The vertical-mode formula aligns the chip's
+        // TEXT baseline with the body's first text row (which sits
+        // at `inset_px + strip_h`): subtract the chip-row's internal
+        // top padding `(TAB_ROW_H_PX - cell_h) / 2` so the chip's
+        // centered glyph lands at the body's row-0 y. Before
+        // 2026-06-08 first_row_top_px = strip_h, which placed chips
+        // ~12px above the prompt.
         let first_row_top_px = if vertical {
-            self.strip_h
+            (self.inset_px + self.strip_h - (TAB_ROW_H_PX - cell_h) * 0.5).max(self.strip_h)
         } else {
             tab_zone_top_px
         };
@@ -1673,10 +1677,11 @@ impl Gpu {
             self.strip_h,
             self.sidebar_w_px,
             strip_color,
-            // Border between sidebar column and body — `active_chip_bg`
-            // is one notch lighter than `strip_bg`, so the border
-            // reads as a subtle separator without screaming.
-            palette().active_chip_bg,
+            // Border between sidebar column and body — slightly more
+            // pronounced than `active_chip_bg` so it actually reads
+            // as a separator. Roughly `strip_bg + [0.10, 0.10, 0.10]`.
+            // Subtle but visible, no screaming.
+            [0.22, 0.23, 0.26, 1.0],
         );
         let mut instances = CellPipeline::build_instances(&self.grid, &mut self.atlas, &self.queue);
         // Append tab-strip label glyphs (rendered through the same cell
