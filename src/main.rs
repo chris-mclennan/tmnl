@@ -380,6 +380,17 @@ struct App {
     /// currently being dragged to resize a split. Set on a left-press
     /// on a divider, cleared on left-release.
     dragging_divider: Option<usize>,
+    /// When `Some(px)`, the user has dragged the vertical-tab
+    /// sidebar's right edge to set a custom column width — that
+    /// value is used in place of `Gpu::compute_sidebar_w_px` (which
+    /// auto-fits to chip text). Cleared back to `None` by toggling
+    /// to horizontal layout or via a hypothetical "reset sidebar"
+    /// command. Ephemeral (no config persistence yet).
+    sidebar_w_override: Option<f32>,
+    /// `true` while a left-button drag on the sidebar's right-edge
+    /// border is in flight. Updates `sidebar_w_override` to track
+    /// the cursor each move event; cleared on left-release.
+    dragging_sidebar: bool,
     /// Local AI command-completion worker (`fim-engine`). Spawned
     /// lazily on the first ⌘I trigger so the model only loads if the
     /// feature is used.
@@ -808,6 +819,17 @@ impl Gpu {
         // up against the right border. (2026-06-08: was `+ 1.0`,
         // user said the column felt cramped.)
         Self::SIDEBAR_PAD_LEFT_PX + (with_plus + 3.0) * self.atlas.cell_w
+    }
+
+    /// Clamp a user-drag-supplied sidebar width to `[min, max]` so a
+    /// drag can't make the column disappear (min = enough for the
+    /// `+` button + a tiny chip) or take over the window (max =
+    /// half the window width). Called by the App's tick when a
+    /// `sidebar_w_override` is active.
+    pub fn clamp_sidebar_w_px(&self, w: f32) -> f32 {
+        let min_w = Self::SIDEBAR_PAD_LEFT_PX + 4.0 * self.atlas.cell_w;
+        let max_w = (self.config.width as f32) * 0.5;
+        w.clamp(min_w, max_w)
     }
 
     /// Compute the wrap layout for a given chip list: how many rows
@@ -2794,6 +2816,8 @@ fn main() {
         dragging_tab: None,
         renaming_tab: None,
         dragging_divider: None,
+        sidebar_w_override: None,
+        dragging_sidebar: false,
         fim: None,
         fim_pending: None,
         fim_next_id: 0,

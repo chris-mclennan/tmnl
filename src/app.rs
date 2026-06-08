@@ -189,6 +189,8 @@ impl App {
             dragging_tab: None,
             renaming_tab: None,
             dragging_divider: None,
+            sidebar_w_override: None,
+            dragging_sidebar: false,
             fim: None,
             fim_pending: None,
             fim_next_id: 0,
@@ -727,7 +729,13 @@ impl App {
             let target_strip = Gpu::required_strip_h(self.cfg.tab_layout, &chips, rows, tui_active);
             let target_sidebar =
                 if matches!(self.cfg.tab_layout, crate::config::TabLayout::Vertical) && multi_tab {
-                    gpu.compute_sidebar_w_px(&chips)
+                    // User-drag override wins over auto-fit. Clamped
+                    // each tick so a window-resize that shrinks the
+                    // viewport doesn't leave the column past the
+                    // body's reasonable bounds.
+                    self.sidebar_w_override
+                        .map(|w| gpu.clamp_sidebar_w_px(w))
+                        .unwrap_or_else(|| gpu.compute_sidebar_w_px(&chips))
                 } else {
                     0.0
                 };
@@ -2572,6 +2580,20 @@ impl App {
             return;
         }
 
+        // A sidebar drag owns the event while armed — set the
+        // override to the current cursor x (clamped by the next
+        // tick's `Gpu::clamp_sidebar_w_px`). Returns early so the
+        // chip-reorder + body-forward paths below don't also fire.
+        if self.dragging_sidebar && self.buttons_down & (1u8 << BUTTON_LEFT) != 0 {
+            self.sidebar_w_override = Some(position.x as f32);
+            // Request a redraw so the next render picks up the new
+            // override; the actual width-apply happens in tick.
+            if let Some(w) = &self.window {
+                w.request_redraw();
+            }
+            return;
+        }
+
         // Drags that originated in the strip stay in chrome —
         // don't forward them as terminal drag events.
         if in_chrome {
@@ -2822,10 +2844,33 @@ impl App {
             }
         }
         // Releasing the left button ends any in-flight drag —
-        // chip-reorder or divider-resize.
+        // chip-reorder, divider-resize, or sidebar-resize.
         if !pressed && button == MouseButton::Left {
             self.dragging_tab = None;
             self.dragging_divider = None;
+            self.dragging_sidebar = false;
+        }
+        // A left-press on the sidebar's right-edge border arms a
+        // drag-resize of the sidebar column. Grab zone is ±4px
+        // around the 1-px border so the user doesn't need pixel-
+        // precision. Only active in vertical layout with a real
+        // sidebar (sidebar_w_px > inset_px). Owns the gesture so
+        // chip-click / body-click handlers below don't also fire.
+        if pressed
+            && button == MouseButton::Left
+            && let Some(gpu) = &self.gpu
+            && gpu.sidebar_w_px > gpu.inset_px
+        {
+            let border_x = gpu.sidebar_w_px as f64;
+            let grab = 4.0_f64;
+            let strip_y = gpu.strip_h as f64;
+            if self.cursor_px.0 >= border_x - grab
+                && self.cursor_px.0 <= border_x + grab
+                && self.cursor_px.1 >= strip_y
+            {
+                self.dragging_sidebar = true;
+                return;
+            }
         }
         // A left-press on a divider starts a drag-resize of that
         // split — it owns the gesture, no pane dispatch.
