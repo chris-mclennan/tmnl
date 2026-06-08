@@ -247,16 +247,26 @@ fn parse_winit_mods(s: &str) -> winit::keyboard::ModifiersState {
 ///    "should_quit": bool, "tab_layout": "horizontal"|"vertical",
 ///    "altscreen": bool}
 fn app_state_json(app: &crate::App) -> String {
-    let active_tab = &app.tabs[app.active.min(app.tabs.len().saturating_sub(1))];
-    let panes: Vec<&str> = active_tab
-        .panes
-        .iter()
-        .map(|p| match &p.kind {
-            crate::PaneKind::Shell { .. } => "Shell",
-            crate::PaneKind::Native { .. } => "Native",
-            crate::PaneKind::Browser { .. } => "Browser",
+    // 2026-06-07 SEV-2 bug-hunt fix: previously indexed `app.tabs[N]`
+    // with N computed via saturating_sub, which gives `tabs[0]` on
+    // an empty tabs vec — panicking. Currently unreachable (close-
+    // last-tab sets should_quit + loop exits), but one stray code
+    // change away from a crash. Emit empty panes on None.
+    let panes: Vec<&str> = app
+        .tabs
+        .get(app.active)
+        .or_else(|| app.tabs.first())
+        .map(|t| {
+            t.panes
+                .iter()
+                .map(|p| match &p.kind {
+                    crate::PaneKind::Shell { .. } => "Shell",
+                    crate::PaneKind::Native { .. } => "Native",
+                    crate::PaneKind::Browser { .. } => "Browser",
+                })
+                .collect()
         })
-        .collect();
+        .unwrap_or_default();
     let panes_json = panes
         .iter()
         .map(|s| format!("\"{s}\""))

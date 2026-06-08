@@ -212,9 +212,13 @@ impl App {
     ) {
         // Real flow: CursorMoved arrives first, updating cursor_px;
         // then MouseInput reads cursor_px to decide what was clicked.
+        // Set mods FIRST so handle_cursor_moved's MouseInput pack uses
+        // the requested modifiers (handle_cursor_moved reads self.mods
+        // when packing a Drag/Moved event for hosted Native panes).
+        // 2026-06-07 SEV-3 bug-hunt fix.
         let position = winit::dpi::PhysicalPosition::new(px, py);
-        self.handle_cursor_moved(position);
         self.mods = mods;
+        self.handle_cursor_moved(position);
         self.handle_mouse_input(winit::event::ElementState::Pressed, button);
         self.handle_mouse_input(winit::event::ElementState::Released, button);
     }
@@ -535,14 +539,31 @@ impl App {
             return;
         }
         // A rename in flight pins a tab index that removing a tab would
-        // invalidate (indices shift) — drop it.
+        // invalidate (indices shift) — drop it. Same for an in-flight
+        // drag-reorder + divider drag (2026-06-07 SEV-1 bug-hunt fix:
+        // a drag of tab N while tab N got closed → `tabs.swap(N, dst)`
+        // panicked with index-out-of-bounds when the cursor next moved).
         self.renaming_tab = None;
+        let was_dragging_this_tab = self.dragging_tab == Some(idx);
+        self.dragging_divider = None;
         if self.tabs.len() <= 1 {
             self.should_quit = true;
             return;
         }
         let was_active = idx == self.active;
         self.tabs.remove(idx);
+        // dragging_tab fixup — clear if it WAS this tab; shift down if
+        // the dragged tab was to the right of the closed one (its
+        // index decremented when tabs.remove(idx) shifted everything
+        // left). Without this, a drag continued silently against the
+        // wrong tab.
+        if was_dragging_this_tab {
+            self.dragging_tab = None;
+        } else if let Some(d) = self.dragging_tab
+            && d > idx
+        {
+            self.dragging_tab = Some(d - 1);
+        }
         if was_active {
             // Active tab closed — clamp the index to a valid slot.
             if self.active >= self.tabs.len() {
@@ -2623,10 +2644,16 @@ impl App {
                     } else {
                         None
                     };
-                    if let Some(key) = palette_key
-                        && button == MouseButton::Left
-                    {
-                        if let Some(active) = self.tabs.get(self.active)
+                    if palette_key.is_some() {
+                        // 2026-06-07 SEV-3 bug-hunt fix: previously
+                        // only LEFT-clicks here returned, so a middle-
+                        // click on the palette ALSO ran the chip-close
+                        // hit-test below — closing the chip behind the
+                        // palette cluster. Now any button click inside
+                        // the palette area is consumed.
+                        if let Some(key) = palette_key
+                            && button == MouseButton::Left
+                            && let Some(active) = self.tabs.get(self.active)
                             && let PaneKind::Native { server, .. } =
                                 &active.panes[active.focused].kind
                         {
