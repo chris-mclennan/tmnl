@@ -75,13 +75,21 @@ const FONT_PX: f32 = 14.0;
 /// See `Gpu::required_strip_h`.
 const TAB_ROW_H_PX: f32 = 32.0;
 
-/// Vertical gap above every chip row — between the palette zone
-/// and row 0, AND between row N-1 and row N. Without per-row gaps
-/// stacked rows touched and the chrome read as one block; before
-/// 2026-06-08 only the palette→row-0 gap was applied. 3px is
-/// enough separation to match mnml-as-host's reference look. Was
-/// 6px (too tall vs reference).
+/// Vertical strip-bg gap between the palette zone (52px tall, palette
+/// text centered inside it) and the top of row 0. Just 3px because
+/// the palette zone already has ~16px of empty space below the
+/// centered palette text — adding more here would push row 0 too
+/// far from the palette label. Was 6px before 2026-05-24.
 const TAB_GAP_PX: f32 = 3.0;
+
+/// Vertical strip-bg gap between consecutive chip rows (row 0↔row 1,
+/// row 1↔row 2, …). Larger than `TAB_GAP_PX` because the rows have
+/// no "centered-inside-zone" empty space the way the palette does;
+/// without this, row 1 sits visibly closer to row 0 than row 0 sits
+/// to the palette text. 16px ≈ the empty space below the centered
+/// palette text inside its 52px zone, so the visible label-to-
+/// label distance between rows matches palette→row-0.
+const INTER_ROW_GAP_PX: f32 = 16.0;
 /// Single-tab chrome height — a small breathing-room band above the
 /// grid so the first row of content isn't kissing the macOS traffic
 /// lights, but no visible chrome strip (the strip pipeline paints this
@@ -881,13 +889,15 @@ impl Gpu {
         match layout {
             crate::config::TabLayout::Vertical => single_h,
             crate::config::TabLayout::Horizontal => {
-                // Each row contributes its own `TAB_GAP_PX + TAB_ROW_H_PX`
-                // — the gap above row 0 fills the breathing room between
-                // palette and first tab row, and the gap above row 1+
-                // gives the inter-row spacing. 2026-06-08: previously
-                // only the palette→row-0 gap was counted, so row-1+
-                // rendered touching row-0.
-                MACOS_TAB_STRIP_PX_SINGLE + rows.max(1) as f32 * (TAB_GAP_PX + TAB_ROW_H_PX)
+                // Palette zone + TAB_GAP_PX above row 0 + every row's
+                // height + INTER_ROW_GAP_PX above each row past row 0.
+                // The two gap constants are different sizes because
+                // the palette zone has built-in centering empty space
+                // below its text while the chip rows don't — see the
+                // const docstrings.
+                let rows = rows.max(1) as f32;
+                let inter_row_gaps = (rows - 1.0).max(0.0) * INTER_ROW_GAP_PX;
+                MACOS_TAB_STRIP_PX_SINGLE + TAB_GAP_PX + rows * TAB_ROW_H_PX + inter_row_gaps
             }
         }
     }
@@ -1037,15 +1047,19 @@ impl Gpu {
         let max_chip_y_px = viewport_h - TAB_ROW_H_PX;
         // Per-row Y coordinates — pre-compute so the chip render loop
         // doesn't need to recalculate per glyph.
-        // Each row past row 0 also gets `TAB_GAP_PX` of extra space
-        // above it so the inter-row spacing matches the palette→
-        // row-0 gap. Gaps are visual / not scrollable, so they
-        // multiply against `row`, not `(row - scroll_rows)`.
+        // Each row past row 0 also gets `INTER_ROW_GAP_PX` of extra
+        // space above it so the visible label-to-label distance
+        // between rows matches the palette→row-0 distance. Gaps are
+        // visual / not scrollable, so they multiply against `row`,
+        // not `(row - scroll_rows)`.
+        // Row 0 gets no extra offset here — its position is already
+        // `first_row_top_px`, which embeds the palette↔row-0
+        // `TAB_GAP_PX` separator.
         let row_geom = |row: usize| -> (f32, f32, f32) {
             // (y0_px, y1_px, base_y_in_cell_coords)
             let y0 = first_row_top_px
                 + (row as f32 - scroll_rows) * TAB_ROW_H_PX
-                + row as f32 * TAB_GAP_PX;
+                + row as f32 * INTER_ROW_GAP_PX;
             let y1 = y0 + TAB_ROW_H_PX;
             let label_y = (y0 + (TAB_ROW_H_PX - cell_h) * 0.5).max(0.0);
             (y0, y1, (label_y - inset_y_total) / cell_h)
