@@ -128,17 +128,36 @@ pub fn run_app() {
                 }
             }
             "click" => match parse_pixel_click_arg(arg) {
-                Some((px, py, button, mods)) => app.synthetic_click(px, py, button, mods),
+                Some((px, py, button, mods)) => {
+                    // Render is skipped in headless ⇒ chip hit-rects
+                    // never get populated as a side effect. Rebuild
+                    // them here so chip-area clicks land on real
+                    // targets (tabs, palette cluster).
+                    if let Some(gpu) = app.gpu.as_mut() {
+                        gpu.populate_hit_rects();
+                    }
+                    app.synthetic_click(px, py, button, mods);
+                }
                 None => eprintln!(
                     "tmnl --headless --app: usage: click <px> <py> [left|middle|right] [mods]"
                 ),
             },
             "hover" => match parse_pixel_pair(arg) {
-                Some((px, py)) => app.synthetic_hover(px, py),
+                Some((px, py)) => {
+                    if let Some(gpu) = app.gpu.as_mut() {
+                        gpu.populate_hit_rects();
+                    }
+                    app.synthetic_hover(px, py);
+                }
                 None => eprintln!("tmnl --headless --app: usage: hover <px> <py>"),
             },
             "wheel" => match parse_pixel_wheel_arg(arg) {
-                Some((dy, px, py)) => app.synthetic_wheel(px, py, dy),
+                Some((dy, px, py)) => {
+                    if let Some(gpu) = app.gpu.as_mut() {
+                        gpu.populate_hit_rects();
+                    }
+                    app.synthetic_wheel(px, py, dy);
+                }
                 None => eprintln!("tmnl --headless --app: usage: wheel <dy> <px> <py>"),
             },
             "state-json" => {

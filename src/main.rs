@@ -940,6 +940,18 @@ impl Gpu {
     /// — click is a no-op on single-tab (close_tab_at refuses), but the
     /// visual stays consistent across active / inactive and single /
     /// multi-tab. After the last chip: a `+` new-tab button.
+    /// Headless-only: rebuild chrome hit-rects (strip chips + palette
+    /// cluster) without emitting glyphs / drawing to a Surface. Render
+    /// short-circuits in headless mode so the rects normally populated
+    /// as a side effect of `strip_chip_instances` + `strip_palette_chip_instances`
+    /// stay empty — and chip-area clicks find nothing. Call this from
+    /// the headless tick before dispatching a click and the rects are
+    /// populated identically to real mode.
+    pub fn populate_hit_rects(&mut self) {
+        let _ = self.strip_chip_instances();
+        let _ = self.strip_palette_chip_instances();
+    }
+
     fn strip_chip_instances(&mut self) -> Vec<pipeline::Instance> {
         use crate::atlas::style_from_attrs;
         self.strip_chip_rects.clear();
