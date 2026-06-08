@@ -2370,19 +2370,37 @@ fn compute_pane_label(pane: &mut Pane) -> String {
                 .as_mut()
                 .and_then(|s| s.fg_proc_name().map(|n| n.to_string()));
             // The name is the stable identity: OSC title → foreground
-            // process → shell name. Claude's spinner is layered on as
-            // *just its glyph* (`name ✽`) — the name stays put so a
-            // thinking tab is still tellable apart from its siblings;
-            // the status word ("Wandering…") would crowd it out.
+            // process → shell name. Claude Code's OSC title format is
+            // `* <title>` — a leading asterisk + space — so we layer
+            // the spinner animation on by REPLACING the leading `*`
+            // with the live cycling glyph (`✽ ✺ ◍ …`) instead of
+            // appending anything on the right.
+            //
+            // Old behavior appended ` <glyph>` to the right of the
+            // name; the user's complaint was that this read as a
+            // second asterisk decoration alongside the existing
+            // leading one — and worse, it stayed put even after the
+            // session stopped thinking (cached `sticky` window).
+            // 2026-06-08 fix: never append on the right.
             let name = osc.or(fg).unwrap_or_else(|| {
                 session
                     .as_ref()
                     .map(|s| s.shell_name().to_string())
                     .unwrap_or_else(|| "shell".to_string())
             });
-            match sticky.as_deref().and_then(|s| s.chars().next()) {
-                Some(glyph) => format!("{name} {glyph}"),
-                None => name,
+            let glyph = sticky.as_deref().and_then(|s| s.chars().next());
+            match (glyph, name.strip_prefix("* ")) {
+                // Thinking + Claude-style title: animate the leading
+                // `*` by swapping it for the live spinner glyph each
+                // frame (the spinner naturally cycles its frames as
+                // `detect_status_line` keeps reading them).
+                (Some(g), Some(rest)) => format!("{g} {rest}"),
+                // Thinking but title doesn't have the `* ` prefix
+                // (foreground process / shell-name fallback) — leave
+                // the name alone; no right-side append.
+                (Some(_), None) => name,
+                // Not thinking — pristine name.
+                (None, _) => name,
             }
         }
         PaneKind::Native {
