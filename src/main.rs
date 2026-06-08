@@ -2336,9 +2336,26 @@ fn committed_tab_name(buf: &str) -> Option<String> {
     (!name.is_empty()).then(|| name.to_string())
 }
 
+/// Layer a "thinking" indicator onto a pane's tab label without ever
+/// producing two decorations side-by-side. Three cases:
+///   * `* <title>` + thinking → swap leading `*` for the live
+///     spinner glyph (Claude Code's OSC title format).
+///   * `bare title` + thinking → prepend the glyph + space.
+///   * not thinking → return the name pristine.
+///
+/// NEVER appends anything on the right of the title — the user's
+/// ask was that the indicator stay on the LEFT only.
+fn apply_thinking_glyph(name: &str, glyph: Option<char>) -> String {
+    match (glyph, name.strip_prefix("* ")) {
+        (Some(g), Some(rest)) => format!("{g} {rest}"),
+        (Some(g), None) => format!("{g} {name}"),
+        (None, _) => name.to_string(),
+    }
+}
+
 /// Resolve a pane's strip label — the stable name (OSC title /
 /// foreground process / shell), with Claude Code's spinner glyph
-/// appended when a session is thinking.
+/// layered on by `apply_thinking_glyph` when a session is thinking.
 fn compute_pane_label(pane: &mut Pane) -> String {
     match &mut pane.kind {
         PaneKind::Shell { session } => {
@@ -2389,22 +2406,7 @@ fn compute_pane_label(pane: &mut Pane) -> String {
                     .unwrap_or_else(|| "shell".to_string())
             });
             let glyph = sticky.as_deref().and_then(|s| s.chars().next());
-            match (glyph, name.strip_prefix("* ")) {
-                // Thinking + Claude-style title (`* <title>`): swap
-                // the leading `*` for the live spinner glyph. The
-                // glyph cycles each tick as `detect_status_line`
-                // reads fresh frames.
-                (Some(g), Some(rest)) => format!("{g} {rest}"),
-                // Thinking, but no `* ` prefix — Claude Code's OSC
-                // title sometimes drops the leading `*` while
-                // thinking, OR we fell through to the foreground-
-                // process / shell-name path. Either way: PREPEND the
-                // spinner glyph so the user always sees a thinking
-                // indicator on the title. Never append on the right.
-                (Some(g), None) => format!("{g} {name}"),
-                // Not thinking — pristine name.
-                (None, _) => name,
-            }
+            apply_thinking_glyph(&name, glyph)
         }
         PaneKind::Native {
             conn, client_title, ..
@@ -2830,6 +2832,40 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Lock the "never two leading decorations side-by-side" invariant
+    /// for tab labels. User-reported concern after the spinner-glyph
+    /// rework — make sure no future refactor accidentally produces
+    /// `* ✽ <title>` or `✽ * <title>`.
+    #[test]
+    fn apply_thinking_glyph_never_doubles_leading_decoration() {
+        // Claude-style title + thinking: swap the `*` for the glyph.
+        assert_eq!(
+            apply_thinking_glyph("* Foo bar", Some('✽')),
+            "✽ Foo bar".to_string()
+        );
+        // Bare title + thinking: prepend.
+        assert_eq!(
+            apply_thinking_glyph("Foo bar", Some('✽')),
+            "✽ Foo bar".to_string()
+        );
+        // Not thinking: pristine (with `*` prefix).
+        assert_eq!(
+            apply_thinking_glyph("* Foo bar", None),
+            "* Foo bar".to_string()
+        );
+        // Not thinking: pristine (bare).
+        assert_eq!(apply_thinking_glyph("Foo bar", None), "Foo bar".to_string());
+        // Edge case: spinner glyph happens to be `*`. Title has `* `
+        // prefix → swap. Result is still ONE `*`, not two side-by-side.
+        assert_eq!(
+            apply_thinking_glyph("* Foo", Some('*')),
+            "* Foo".to_string()
+        );
+        // Edge case: spinner glyph `*`, bare title → prepend. Single
+        // `*`, no doubling.
+        assert_eq!(apply_thinking_glyph("Foo", Some('*')), "* Foo".to_string());
+    }
 
     #[test]
     fn browser_chip_at_maps_cells_to_chips() {
