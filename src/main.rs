@@ -2390,15 +2390,18 @@ fn compute_pane_label(pane: &mut Pane) -> String {
             });
             let glyph = sticky.as_deref().and_then(|s| s.chars().next());
             match (glyph, name.strip_prefix("* ")) {
-                // Thinking + Claude-style title: animate the leading
-                // `*` by swapping it for the live spinner glyph each
-                // frame (the spinner naturally cycles its frames as
-                // `detect_status_line` keeps reading them).
+                // Thinking + Claude-style title (`* <title>`): swap
+                // the leading `*` for the live spinner glyph. The
+                // glyph cycles each tick as `detect_status_line`
+                // reads fresh frames.
                 (Some(g), Some(rest)) => format!("{g} {rest}"),
-                // Thinking but title doesn't have the `* ` prefix
-                // (foreground process / shell-name fallback) — leave
-                // the name alone; no right-side append.
-                (Some(_), None) => name,
+                // Thinking, but no `* ` prefix — Claude Code's OSC
+                // title sometimes drops the leading `*` while
+                // thinking, OR we fell through to the foreground-
+                // process / shell-name path. Either way: PREPEND the
+                // spinner glyph so the user always sees a thinking
+                // indicator on the title. Never append on the right.
+                (Some(g), None) => format!("{g} {name}"),
                 // Not thinking — pristine name.
                 (None, _) => name,
             }
