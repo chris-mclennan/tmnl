@@ -1029,7 +1029,15 @@ impl Gpu {
         } else {
             Self::CHIP_START_X_PX
         };
-        let base_x = (start_x_px - self.inset_px) / cell_w;
+        // The cell pipeline applies `inset_px + sidebar_w_px` as its
+        // x-inset (so the body grid sits right of the sidebar
+        // column). Strip chips go through that same pipeline but
+        // need to render AT `start_x_px` — not `start_x_px +
+        // sidebar_w_px`. Subtract sidebar_w_px from base_x in cell
+        // units so the cell-pipeline inset cancels out for chip
+        // glyphs. 2026-06-08 fix — chips were rendering INSIDE the
+        // body's column the whole time, painting over the prompt.
+        let base_x = (start_x_px - self.inset_px - self.sidebar_w_px) / cell_w;
         let inset_y_total = self.inset_px + self.strip_h;
         // In horizontal mode rows stack BELOW the palette strip; in
         // vertical mode they stack BELOW the strip too but each row
@@ -1272,8 +1280,16 @@ impl Gpu {
         if window_w_px < Self::CHIP_START_X_PX + total_w_px + 40.0 {
             return Vec::new();
         }
-        let start_x_px = (window_w_px - total_w_px) / 2.0;
-        let start_col = (start_x_px - self.inset_px) / cell_w;
+        // Center within the area to the RIGHT of the sidebar column.
+        // In horizontal mode `sidebar_w_px` is 0, so centering is
+        // window-wide. In vertical mode the palette sits centered
+        // over the body (terminal area), not over the full window.
+        let palette_area_left_px = self.sidebar_w_px;
+        let palette_area_w_px = window_w_px - palette_area_left_px;
+        let start_x_px = palette_area_left_px + (palette_area_w_px - total_w_px) / 2.0;
+        // Same cancel-out-the-cell-pipeline-x-inset trick the chip
+        // path uses — see strip_chip_instances.
+        let start_col = (start_x_px - self.inset_px - self.sidebar_w_px) / cell_w;
 
         // Chrome colors from the global palette (`theme.rs`). Mnml
         // uses a 3-tier gradient inside the bufferline cluster:
