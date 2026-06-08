@@ -803,8 +803,11 @@ impl Gpu {
         // Plus button is 3 cells — make sure the sidebar accommodates
         // it on the last row so the `+` doesn't overflow.
         let with_plus = widest.max(3.0);
-        // `+ 1.0` cell for the trailing pad / border space.
-        Self::SIDEBAR_PAD_LEFT_PX + (with_plus + 1.0) * self.atlas.cell_w
+        // `+ 3.0` cells trailing pad — gives the column visible
+        // breathing room past the chip text instead of running it
+        // up against the right border. (2026-06-08: was `+ 1.0`,
+        // user said the column felt cramped.)
+        Self::SIDEBAR_PAD_LEFT_PX + (with_plus + 3.0) * self.atlas.cell_w
     }
 
     /// Compute the wrap layout for a given chip list: how many rows
