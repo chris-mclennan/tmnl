@@ -779,16 +779,23 @@ impl Gpu {
     }
 
     /// Pixel width the left-edge tab sidebar needs to fit every chip
-    /// in the given list under `tab_layout = Vertical`. Width is
-    /// `<widest chip in cells>` + a 1-cell trailing pad so the
-    /// sidebar reads as distinct from the body grid. Returns 0
-    /// when chips ≤ 1 (single-tab mode hides the strip anyway).
+    /// in the given list under `tab_layout = Vertical`. Layout:
+    /// `[SIDEBAR_PAD_LEFT_PX (left pad)] [widest chip] [1 cell pad +
+    /// strip_bg → clear_bg color transition (the visible border)]`.
+    /// Returns 0 when chips ≤ 1 (single-tab mode hides the strip
+    /// anyway).
+    ///
+    /// 2026-06-08: removed an erroneous `CHIP_START_X_PX` addition
+    /// here (a horizontal-mode constant that was bleeding into the
+    /// vertical sidebar width math). It made the column ~170px
+    /// wider than needed, so the body ended up far to the right of
+    /// the chips with a big empty gap. With this fix the chips sit
+    /// flush against a tight border, and the body starts right
+    /// after the column.
     pub fn compute_sidebar_w_px(&self, chips: &[(String, bool, bool)]) -> f32 {
         if chips.len() <= 1 {
             return 0.0;
         }
-        // Width = widest chip + trailing-pad (1 cell) so the sidebar
-        // has a small visual gap between chip text and grid content.
         let widest = chips
             .iter()
             .map(|(label, active, attention)| Self::chip_cells(label, *active, *attention))
@@ -796,7 +803,8 @@ impl Gpu {
         // Plus button is 3 cells — make sure the sidebar accommodates
         // it on the last row so the `+` doesn't overflow.
         let with_plus = widest.max(3.0);
-        (with_plus + 1.0) * self.atlas.cell_w + Self::CHIP_START_X_PX
+        // `+ 1.0` cell for the trailing pad / border space.
+        Self::SIDEBAR_PAD_LEFT_PX + (with_plus + 1.0) * self.atlas.cell_w
     }
 
     /// Compute the wrap layout for a given chip list: how many rows
@@ -1649,6 +1657,10 @@ impl Gpu {
             self.strip_h,
             self.sidebar_w_px,
             strip_color,
+            // Border between sidebar column and body — `active_chip_bg`
+            // is one notch lighter than `strip_bg`, so the border
+            // reads as a subtle separator without screaming.
+            palette().active_chip_bg,
         );
         let mut instances = CellPipeline::build_instances(&self.grid, &mut self.atlas, &self.queue);
         // Append tab-strip label glyphs (rendered through the same cell
@@ -1693,7 +1705,10 @@ impl Gpu {
             // simpler than branching the draw call.
             pass.set_pipeline(&self.strip_pipeline.pipeline);
             pass.set_bind_group(0, &self.strip_pipeline.bind_group, &[]);
-            pass.draw(0..4, 0..2);
+            // 3 instances: top strip, sidebar column, sidebar right-
+            // edge border. Quads 2+3 collapse to zero area when
+            // `sidebar_w == 0` (horizontal mode) — cheap no-op.
+            pass.draw(0..4, 0..3);
             // Cell grid (body content).
             pass.set_pipeline(&self.pipeline.pipeline);
             pass.set_bind_group(0, &self.pipeline.bind_group, &[]);

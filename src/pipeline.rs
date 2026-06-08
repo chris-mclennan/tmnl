@@ -294,6 +294,11 @@ pub struct StripGlobals {
     /// the top strip.
     pub sidebar_w: f32,
     pub strip_color: [f32; 4],
+    /// Color of the 1-px vertical border at the right edge of the
+    /// sidebar. Slightly lighter than `strip_color` so the column
+    /// reads as a distinct region. Ignored when `sidebar_w == 0.0`
+    /// (third quad collapses to zero area).
+    pub border_color: [f32; 4],
 }
 
 pub struct StripPipeline {
@@ -388,12 +393,14 @@ impl StripPipeline {
         strip_h: f32,
         sidebar_w: f32,
         strip_color: [f32; 4],
+        border_color: [f32; 4],
     ) {
         let g = StripGlobals {
             viewport,
             strip_h,
             sidebar_w,
             strip_color,
+            border_color,
         };
         queue.write_buffer(&self.globals_buf, 0, bytemuck::bytes_of(&g));
     }
