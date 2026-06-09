@@ -3325,13 +3325,24 @@ impl App {
         // GPU so the cell pipeline can override the bg for selected
         // cells. Cleared when no selection.
         let sel = self.selection_bounds();
-        // Bottom-prompt mode is suppressed while an alt-screen TUI
-        // is active (vim, htop, etc.) — those apps take over the
-        // grid and rely on natural cursor placement.
+        // Bottom-prompt mode is suppressed while:
+        //   * an alt-screen TUI is active (vim / htop / etc.) — they
+        //     take over the grid and rely on natural cursor placement.
+        //   * any overlay is open (settings / palette / welcome /
+        //     discovery / startup-picker) — those overlays paint
+        //     into the same grid that gets shifted, so leaving the
+        //     shift active would push them off-screen and the user
+        //     would have no way to dismiss them. 2026-06-09 user
+        //     report: "select bottom and I can no longer do anything".
+        let any_overlay_open = self.settings.is_some()
+            || self.palette.is_some()
+            || self.welcome.is_some()
+            || self.help.is_some();
         let bottom_prompt = matches!(
             self.cfg.prompt_position,
             crate::config::PromptPosition::Bottom
-        ) && !self.altscreen_active;
+        ) && !self.altscreen_active
+            && !any_overlay_open;
         if let Some(gpu) = &mut self.gpu {
             gpu.selection_bounds = sel;
             gpu.bottom_prompt = bottom_prompt;
