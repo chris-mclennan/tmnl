@@ -931,7 +931,11 @@ impl Gpu {
     /// this if not defended.
     pub fn clamp_sidebar_w_px(&self, w: f32) -> f32 {
         let min_w = Self::SIDEBAR_PAD_LEFT_PX + 4.0 * self.atlas.cell_w;
-        let max_w = (self.config.width as f32) * 0.5;
+        // Cap at the smaller of (viewport * 20%) or 360px physical.
+        // Half-viewport was way too wide on a 13"+ display — sidebar
+        // ate body space the user wanted for shell output.
+        // 2026-06-09 user feedback.
+        let max_w = (self.config.width as f32 * 0.20).min(360.0);
         if max_w < min_w {
             return min_w;
         }
@@ -1680,10 +1684,13 @@ impl Gpu {
         }
         let cell_w = self.atlas.cell_w;
         let cell_h = self.atlas.cell_h;
-        // Pixel-x where the button starts. Slightly past the
-        // rightmost traffic-light button (~80px wide on a
-        // standard-decoration macOS window).
-        const TOGGLE_X_PX: f32 = 100.0;
+        // Pixel-x where the button starts. Must clear the macOS
+        // traffic-light buttons including their hit area — on
+        // Retina (2x) the three buttons span ~150px physical, plus
+        // some right-edge padding. 180 leaves a comfortable gap
+        // before our button so the OS doesn't swallow clicks meant
+        // for it.
+        const TOGGLE_X_PX: f32 = 180.0;
         // 5 cells wide: pad / pad / glyph / pad / pad.
         let cells = ["  ", "\u{EBF4}", "  "].concat();
         let total_cells = cells.chars().count();
