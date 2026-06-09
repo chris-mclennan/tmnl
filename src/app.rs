@@ -202,6 +202,7 @@ impl App {
             text_selection: None,
             dragging_selection: false,
             tab_search: None,
+            find: None,
             fim: None,
             fim_pending: None,
             fim_next_id: 0,
@@ -2391,6 +2392,147 @@ impl App {
     /// Tab-search keystrokes — Esc dismisses, Enter jumps to the
     /// first matching tab, Backspace deletes, printable chars
     /// extend the query. Returns true when the key was consumed.
+    /// Open the in-pane find bar for the currently focused pane.
+    /// Idempotent — re-pressing ⌘F while find is already open
+    /// re-scans + keeps the bar visible (so the user can see the
+    /// current state). Cleared by Esc / tab switch / pane close.
+    pub(crate) fn open_find(&mut self) {
+        let tab_idx = self.active;
+        let pane_idx = self.tabs[self.active].focused;
+        self.find = Some(FindState {
+            query: self
+                .find
+                .as_ref()
+                .map(|f| f.query.clone())
+                .unwrap_or_default(),
+            matches: Vec::new(),
+            current: 0,
+            tab_idx,
+            pane_idx,
+        });
+        self.rescan_find();
+        if let Some(w) = &self.window {
+            w.request_redraw();
+        }
+    }
+
+    /// Recompute find matches against the focused pane's visible
+    /// grid. Called whenever the query changes or the pane's grid
+    /// updates. Matches are case-insensitive substring hits on a
+    /// per-row basis (a hit can't span rows). The `current` index
+    /// is clamped so it stays valid as the match set shrinks.
+    pub(crate) fn rescan_find(&mut self) {
+        let Some(f) = self.find.as_mut() else { return };
+        f.matches.clear();
+        if f.query.is_empty() {
+            f.current = 0;
+            return;
+        }
+        let needle = f.query.to_lowercase();
+        let nlen = needle.chars().count();
+        if nlen == 0 {
+            return;
+        }
+        let Some(gpu) = self.gpu.as_ref() else { return };
+        let cols = gpu.grid.cols;
+        let rows = gpu.grid.rows;
+        for row in 0..rows {
+            // Build the row's lowercase text — column index = char
+            // index since vt100 grids are one cell per visible char.
+            let mut row_text = String::with_capacity(cols as usize);
+            for col in 0..cols {
+                let cell = gpu.grid.cells[(row * cols + col) as usize];
+                row_text.push(cell.ch.to_lowercase().next().unwrap_or(cell.ch));
+            }
+            let mut start = 0;
+            while start + nlen <= row_text.chars().count() {
+                let rest: String = row_text.chars().skip(start).collect();
+                if let Some(pos) = rest.find(&needle) {
+                    // `pos` is a BYTE index into `rest`; convert to
+                    // char index by counting chars before it.
+                    let char_pos = rest[..pos].chars().count();
+                    let abs_start = start + char_pos;
+                    let abs_end = abs_start + nlen - 1;
+                    f.matches.push((
+                        row as u16,
+                        abs_start.min(cols as usize - 1) as u16,
+                        abs_end.min(cols as usize - 1) as u16,
+                    ));
+                    start = abs_start + nlen;
+                } else {
+                    break;
+                }
+            }
+        }
+        if f.matches.is_empty() {
+            f.current = 0;
+        } else if f.current >= f.matches.len() {
+            f.current = f.matches.len() - 1;
+        }
+    }
+
+    /// Keystrokes while ⌘F find is open. Esc dismisses; Enter
+    /// (and Cmd+G) jump to the next match; Shift+Enter to the
+    /// previous; Backspace deletes a query char; printable chars
+    /// extend the query. Returns `true` if the key was consumed.
+    fn find_handle_key(&mut self, ke: &winit::event::KeyEvent) -> bool {
+        use winit::keyboard::Key;
+        match &ke.logical_key {
+            Key::Named(NamedKey::Escape) => {
+                self.find = None;
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+                true
+            }
+            Key::Named(NamedKey::Enter) => {
+                if let Some(f) = self.find.as_mut()
+                    && !f.matches.is_empty()
+                {
+                    let shift = self.mods.shift_key();
+                    if shift {
+                        if f.current == 0 {
+                            f.current = f.matches.len() - 1;
+                        } else {
+                            f.current -= 1;
+                        }
+                    } else {
+                        f.current = (f.current + 1) % f.matches.len();
+                    }
+                }
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+                true
+            }
+            Key::Named(NamedKey::Backspace) => {
+                if let Some(f) = self.find.as_mut() {
+                    f.query.pop();
+                }
+                self.rescan_find();
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+                true
+            }
+            Key::Character(s) => {
+                if let Some(f) = self.find.as_mut() {
+                    for c in s.chars() {
+                        if !c.is_control() {
+                            f.query.push(c);
+                        }
+                    }
+                }
+                self.rescan_find();
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn tab_search_handle_key(&mut self, ke: &winit::event::KeyEvent) -> bool {
         use winit::keyboard::Key;
         match &ke.logical_key {
@@ -2480,6 +2622,11 @@ impl App {
         // typing extends the query, Backspace deletes, Enter jumps
         // to the first matching tab, Esc dismisses.
         if self.tab_search.is_some() && self.tab_search_handle_key(&ke) {
+            return;
+        }
+        // In-pane find — same shape as tab_search: Esc dismisses,
+        // Enter advances, typed chars extend the query.
+        if self.find.is_some() && self.find_handle_key(&ke) {
             return;
         }
         // Command-registry dispatch — chords migrated to
@@ -3556,10 +3703,35 @@ impl App {
         // Tab-search query — App owns the source of truth; Gpu
         // reads its own copy each frame to drive chrome rendering.
         let tab_search = self.tab_search.clone();
+        // In-pane find — auto-dismiss if the user switched tabs /
+        // closed the pane this find session was bound to. Otherwise
+        // re-scan so highlights track the live grid as the shell
+        // produces output (a `tail -f` would otherwise have stale
+        // matches). Push the bar summary + match list to Gpu.
+        if let Some(f) = self.find.as_ref()
+            && (f.tab_idx != self.active || f.pane_idx >= self.tabs[self.active].panes.len())
+        {
+            self.find = None;
+        }
+        if self.find.is_some() {
+            self.rescan_find();
+        }
+        let (find_bounds, find_bar, find_current) = match &self.find {
+            Some(f) => {
+                let current = f.matches.get(f.current).copied();
+                (
+                    f.matches.clone(),
+                    Some((f.query.clone(), f.current, f.matches.len())),
+                    current,
+                )
+            }
+            None => (Vec::new(), None, None),
+        };
         if let Some(gpu) = &mut self.gpu {
             gpu.selection_bounds = sel;
             gpu.bottom_prompt = bottom_prompt;
             gpu.tab_search = tab_search;
+            gpu.set_find(find_bounds, find_bar, find_current);
             gpu.render();
         }
         if let Some(w) = &self.window {

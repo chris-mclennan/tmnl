@@ -300,6 +300,27 @@ struct RenameState {
     buf: String,
 }
 
+/// In-pane find — `⌘F` opens it, `Esc` dismisses, `Enter` /
+/// `Shift+Enter` step through matches. Lives on `App.find` while
+/// the user is searching; `None` otherwise.
+pub struct FindState {
+    /// Query — case-insensitive substring match against the focused
+    /// pane's visible grid. Empty query renders the bar with no
+    /// highlights / no match count.
+    pub query: String,
+    /// Inclusive `(row, col_start, col_end)` spans of every match in
+    /// the focused pane's visible grid, recomputed each tick.
+    pub matches: Vec<(u16, u16, u16)>,
+    /// Index into `matches` of the "current" hit (`Enter` advances
+    /// it). Clamped to `matches.len() - 1` on every recompute; 0
+    /// when no matches.
+    pub current: usize,
+    /// Tab + pane this find session belongs to. Find auto-dismisses
+    /// if the user switches tabs or closes the pane.
+    pub tab_idx: usize,
+    pub pane_idx: usize,
+}
+
 /// An AI suggestion shown as dim ghost text. Created from a worker
 /// reply; cleared on accept or dismiss.
 struct Ghost {
@@ -436,6 +457,11 @@ struct App {
     /// `Gpu.tab_search` each frame so the chrome renderer can show
     /// the query.
     tab_search: Option<String>,
+    /// In-pane find — opened with ⌘F, dismissed with Esc. Shows an
+    /// inline find bar at the top of the body and highlights every
+    /// substring match in the focused pane's visible grid. `Enter`
+    /// scrolls to the next match; `Shift+Enter` to the previous.
+    find: Option<FindState>,
     /// `true` between a body-cell mouse-press and its release —
     /// drives `cursor_moved` selection extension. Cleared on release
     /// (the selection itself stays visible for copy / clear).
@@ -533,6 +559,20 @@ struct Gpu {
     /// header row in the vertical sidebar. Click → new tab.
     /// `None` when not vertical / no sidebar.
     sidebar_plus_rect: Option<(f32, f32, f32, f32)>,
+    /// In-pane find highlight spans — `(row, col_start, col_end)`,
+    /// inclusive col_end. Cells inside any span get a yellow bg
+    /// override during render. App pushes the focused pane's match
+    /// list here each tick; cleared when find closes.
+    find_highlight_bounds: Vec<(u16, u16, u16)>,
+    /// In-pane find bar — `(query, current_match, total_matches)`.
+    /// `Some` while ⌘F is open. Renders as an inline chip at the
+    /// top of the body (row 0), painted via the cell pipeline.
+    /// App pushes its `FindState` summary here each tick.
+    find_bar: Option<(String, usize, usize)>,
+    /// "Current" match span — painted with a brighter highlight
+    /// than the rest so the user can see which one Enter will
+    /// jump to. `None` when no matches.
+    find_current_bounds: Option<(u16, u16, u16)>,
     /// Tab-search mode — when `Some`, the search chip in the
     /// palette cluster shows the user's query instead of the
     /// active-tab label, and any tab chip whose label doesn't
@@ -717,6 +757,9 @@ impl Gpu {
             strip_sidebar_toggle_rect: None,
             sidebar_search_rect: None,
             sidebar_plus_rect: None,
+            find_highlight_bounds: Vec::new(),
+            find_bar: None,
+            find_current_bounds: None,
             tab_search: None,
             strip_palette_dropdown_rect: None,
             strip_chip_close_rects: Vec::new(),
@@ -842,6 +885,9 @@ impl Gpu {
             strip_sidebar_toggle_rect: None,
             sidebar_search_rect: None,
             sidebar_plus_rect: None,
+            find_highlight_bounds: Vec::new(),
+            find_bar: None,
+            find_current_bounds: None,
             tab_search: None,
             strip_palette_dropdown_rect: None,
             strip_chip_close_rects: Vec::new(),
@@ -1095,6 +1141,21 @@ impl Gpu {
         {
             self.strip_chips = chips.to_vec();
         }
+    }
+
+    /// Push the focused pane's find state (highlight spans + bar
+    /// summary + the "current" hit) for the next render. App calls
+    /// this each tick. When `bar` is `None` no bar / highlights
+    /// render.
+    pub fn set_find(
+        &mut self,
+        bounds: Vec<(u16, u16, u16)>,
+        bar: Option<(String, usize, usize)>,
+        current: Option<(u16, u16, u16)>,
+    ) {
+        self.find_highlight_bounds = bounds;
+        self.find_bar = bar;
+        self.find_current_bounds = current;
     }
 
     /// Pixel-x where multi-chip rendering starts (clear of the macOS
@@ -2012,6 +2073,63 @@ impl Gpu {
         self.strip_new_tab_rect = Some((plus_x_px, plus_x_px + 3.0 * cell_w, y0_px, y1_px));
     }
 
+    /// In-pane find bar — a one-row chip at the top-left of the
+    /// body grid. Renders the magnify glyph + query + match
+    /// counter + "esc". Only paints when `find_bar` is `Some`.
+    /// Lives on body row 0; cell instances overlay whatever vt100
+    /// would have painted there. Cleared automatically when
+    /// `find_bar` goes back to `None`.
+    fn find_bar_instances(&mut self) -> Vec<pipeline::Instance> {
+        use crate::atlas::style_from_attrs;
+        let Some((query, current, total)) = self.find_bar.clone() else {
+            return Vec::new();
+        };
+        let cell_w = self.atlas.cell_w;
+        let cell_h = self.atlas.cell_h;
+        // Bar text: " 🔍 <query> (n of m) esc "
+        let counter = if total == 0 {
+            String::from("(no match)")
+        } else {
+            format!("({} of {})", current + 1, total)
+        };
+        let max_q = 32;
+        let q_show: String = if query.chars().count() > max_q {
+            let mut s: String = query.chars().take(max_q - 1).collect();
+            s.push('…');
+            s
+        } else if query.is_empty() {
+            "Find…".to_string()
+        } else {
+            query.clone()
+        };
+        let body = format!(" \u{F0349}  {q_show}  {counter}  esc ");
+        let total_cells = body.chars().count() as f32;
+
+        // Position: body row 0 column 0. Cell-pipeline applies
+        // (inset_px + launcher_w_px + sidebar_w_px) as x inset +
+        // (inset_px + strip_h) as y inset, so cell_pos = (0, 0)
+        // lands at the top-left cell of the body grid.
+        let chip_bg = palette().chip_bg;
+        const FG: [f32; 4] = [0.95, 0.90, 0.45, 1.0]; // soft yellow
+        let mut out: Vec<pipeline::Instance> = Vec::with_capacity(body.chars().count());
+        for (i, ch) in body.chars().enumerate() {
+            let g = self.atlas.glyph(ch, style_from_attrs(0), &self.queue);
+            out.push(pipeline::Instance {
+                cell_pos: [i as f32, 0.0],
+                fg: FG,
+                bg: chip_bg,
+                uv_min: g.uv_min,
+                uv_max: g.uv_max,
+                glyph_offset: g.offset,
+                glyph_size: g.size,
+                attrs: 0,
+                _pad: 0,
+            });
+        }
+        let _ = (cell_w, cell_h, total_cells);
+        out
+    }
+
     fn resize(&mut self, w: u32, h: u32) -> Option<(u16, u16)> {
         if w == 0 || h == 0 {
             return None;
@@ -2349,6 +2467,46 @@ impl Gpu {
                 }
             }
         }
+        // In-pane find — yellow bg override for every match span,
+        // brighter yellow for the "current" match. Applied BEFORE
+        // appending chrome instances so chrome stays unaffected.
+        if !self.find_highlight_bounds.is_empty() {
+            const MATCH_BG: [f32; 4] = [0.55, 0.45, 0.10, 1.0];
+            const MATCH_FG: [f32; 4] = [0.99, 0.97, 0.85, 1.0];
+            let cols = self.grid.cols as u16;
+            let rows = self.grid.rows as u16;
+            for (row, col_start, col_end) in self.find_highlight_bounds.iter().copied() {
+                if row >= rows {
+                    continue;
+                }
+                let cs = col_start.min(cols.saturating_sub(1));
+                let ce = col_end.min(cols.saturating_sub(1));
+                for col in cs..=ce {
+                    let idx = (row as u32 * cols as u32 + col as u32) as usize;
+                    if let Some(inst) = instances.get_mut(idx) {
+                        inst.bg = MATCH_BG;
+                        inst.fg = MATCH_FG;
+                    }
+                }
+            }
+        }
+        if let Some((row, col_start, col_end)) = self.find_current_bounds {
+            const CURRENT_BG: [f32; 4] = [0.95, 0.78, 0.20, 1.0];
+            const CURRENT_FG: [f32; 4] = [0.08, 0.08, 0.10, 1.0];
+            let cols = self.grid.cols as u16;
+            let rows = self.grid.rows as u16;
+            if row < rows {
+                let cs = col_start.min(cols.saturating_sub(1));
+                let ce = col_end.min(cols.saturating_sub(1));
+                for col in cs..=ce {
+                    let idx = (row as u32 * cols as u32 + col as u32) as usize;
+                    if let Some(inst) = instances.get_mut(idx) {
+                        inst.bg = CURRENT_BG;
+                        inst.fg = CURRENT_FG;
+                    }
+                }
+            }
+        }
         // Append tab-strip label glyphs (rendered through the same cell
         // pipeline via fractional `cell_pos` values — they land in the
         // strip area above the grid).
@@ -2357,6 +2515,8 @@ impl Gpu {
         instances.extend(self.strip_sidebar_toggle_instances());
         instances.extend(self.sidebar_header_instances());
         instances.extend(self.launcher_chip_instances());
+        // Find bar last so it paints over body row 0.
+        instances.extend(self.find_bar_instances());
         self.pipeline
             .ensure_capacity(&self.device, instances.len() as u64);
         self.pipeline.upload(&self.queue, &instances);
@@ -3520,6 +3680,7 @@ fn main() {
         text_selection: None,
         dragging_selection: false,
         tab_search: None,
+        find: None,
         fim: None,
         fim_pending: None,
         fim_next_id: 0,

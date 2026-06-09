@@ -1102,11 +1102,13 @@ fn builtin_commands() -> Vec<Command> {
             when: Some(no_modal_open),
         },
         Command {
-            id: "fwd.cmd_f",
-            title: "Find (⌘F → ⌃F)",
-            group: "Forwarded chords",
+            id: "find.open",
+            title: "Find in pane (⌘F)",
+            group: "View",
             keys: &["cmd+f"],
-            run: |a, _, k| forward_as_ctrl(a, k),
+            run: |a, _, _| {
+                a.open_find();
+            },
             when: Some(no_modal_open),
         },
         Command {
