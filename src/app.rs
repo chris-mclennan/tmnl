@@ -3030,7 +3030,10 @@ impl App {
                     // key set since this is a tmnl-side action, not a
                     // forwarded chord to mnml. Toggles cfg.tab_layout
                     // between Horizontal + Vertical + persists.
-                    if button == MouseButton::Left && hits(gpu.strip_sidebar_toggle_rect) {
+                    // Gated on `pressed` so one click (press + release)
+                    // fires the toggle exactly once instead of twice.
+                    if pressed && button == MouseButton::Left && hits(gpu.strip_sidebar_toggle_rect)
+                    {
                         self.cfg.tab_layout = match self.cfg.tab_layout {
                             crate::config::TabLayout::Horizontal => {
                                 crate::config::TabLayout::Vertical
