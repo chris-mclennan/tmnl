@@ -53,6 +53,56 @@ pub struct Config {
     /// (and `.bashrc` if present) and appends the standard source
     /// line if it's missing. See `shell_prompt::ensure_rc_sourced`.
     pub themed_prompt: bool,
+    /// Icons in the left-edge launcher rail. Each entry renders as
+    /// one glyph in a narrow vertical column at the window's left
+    /// edge; left-click spawns `command` (with `args`) in a new tab.
+    /// Empty (the default) ⇒ no rail, no left-edge column.
+    ///
+    /// TOML shape:
+    /// ```toml
+    /// [[launcher_icon]]
+    /// id      = "slack"
+    /// glyph   = ""
+    /// command = "mnml-msg-slack"
+    /// tooltip = "Slack"
+    ///
+    /// [[launcher_icon]]
+    /// id      = "mixr"
+    /// glyph   = "♪"
+    /// command = "mixr-rs"
+    /// args    = ["--dashboard"]
+    /// color   = "#7aa2f7"
+    /// ```
+    #[serde(default, rename = "launcher_icon")]
+    pub launcher_icons: Vec<LauncherIcon>,
+}
+
+/// One entry in the left-edge launcher rail. `id` is the stable
+/// handle used by future palette commands (`launcher.open.<id>`);
+/// every other field is presentation or invocation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LauncherIcon {
+    /// Stable identifier — must be unique across launcher_icons in
+    /// a config. Used for palette command names + log lines. Not
+    /// shown in the UI.
+    pub id: String,
+    /// Single nerd-font (or unicode) glyph painted in the rail.
+    /// Multi-char strings render their first cell only.
+    pub glyph: String,
+    /// Binary to spawn on click. Resolved against `$PATH` at spawn
+    /// time — same lookup rules as a normal shell command.
+    pub command: String,
+    /// Extra args appended after the binary. Default: none.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Text shown when the user hovers the icon. Default: `command`.
+    /// (Tooltip rendering itself is a follow-up — wired in v0.2.)
+    #[serde(default)]
+    pub tooltip: String,
+    /// `#rrggbb` accent for the glyph foreground. Defaults to the
+    /// active palette's `accent_fg`. Invalid hex falls back the same way.
+    #[serde(default)]
+    pub color: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -70,6 +120,7 @@ impl Default for Config {
             inset_native: 0.0,
             tab_layout: TabLayout::Horizontal,
             themed_prompt: false,
+            launcher_icons: Vec::new(),
         }
     }
 }
@@ -158,6 +209,7 @@ mod tests {
             inset_native,
             tab_layout: TabLayout::Horizontal,
             themed_prompt: false,
+            launcher_icons: Vec::new(),
         }
     }
 
@@ -224,5 +276,68 @@ mod tests {
     fn toml_parses_tab_layout_vertical() {
         let c: Config = toml::from_str("tab_layout = \"vertical\"").expect("toml parses");
         assert_eq!(c.tab_layout, TabLayout::Vertical);
+    }
+
+    #[test]
+    fn launcher_icons_default_empty() {
+        assert!(Config::default().launcher_icons.is_empty());
+    }
+
+    #[test]
+    fn launcher_icons_parse_minimal() {
+        let toml_src = r#"
+            [[launcher_icon]]
+            id = "slack"
+            glyph = ""
+            command = "mnml-msg-slack"
+        "#;
+        let c: Config = toml::from_str(toml_src).expect("toml parses");
+        assert_eq!(c.launcher_icons.len(), 1);
+        let s = &c.launcher_icons[0];
+        assert_eq!(s.id, "slack");
+        assert_eq!(s.glyph, "");
+        assert_eq!(s.command, "mnml-msg-slack");
+        assert!(s.args.is_empty(), "args default to empty");
+        assert_eq!(s.tooltip, "", "tooltip defaults to empty");
+        assert!(s.color.is_none(), "color defaults to none");
+    }
+
+    #[test]
+    fn launcher_icons_parse_with_args_color_tooltip() {
+        let toml_src = r##"
+            [[launcher_icon]]
+            id = "mixr"
+            glyph = "♪"
+            command = "mixr-rs"
+            args = ["--dashboard"]
+            tooltip = "Mixr (mixing dashboard)"
+            color = "#7aa2f7"
+        "##;
+        let c: Config = toml::from_str(toml_src).expect("toml parses");
+        assert_eq!(c.launcher_icons.len(), 1);
+        let m = &c.launcher_icons[0];
+        assert_eq!(m.args, vec!["--dashboard"]);
+        assert_eq!(m.tooltip, "Mixr (mixing dashboard)");
+        assert_eq!(m.color.as_deref(), Some("#7aa2f7"));
+    }
+
+    #[test]
+    fn launcher_icons_parse_multiple_in_order() {
+        let toml_src = r#"
+            [[launcher_icon]]
+            id = "slack"
+            glyph = ""
+            command = "mnml-msg-slack"
+
+            [[launcher_icon]]
+            id = "teams"
+            glyph = ""
+            command = "mnml-msg-teams"
+        "#;
+        let c: Config = toml::from_str(toml_src).expect("toml parses");
+        assert_eq!(c.launcher_icons.len(), 2);
+        // Render order = TOML order — the rail paints top-to-bottom.
+        assert_eq!(c.launcher_icons[0].id, "slack");
+        assert_eq!(c.launcher_icons[1].id, "teams");
     }
 }
