@@ -194,6 +194,7 @@ impl App {
             dragging_sidebar: false,
             text_selection: None,
             dragging_selection: false,
+            tab_search: None,
             fim: None,
             fim_pending: None,
             fim_next_id: 0,
@@ -2382,6 +2383,62 @@ impl App {
         }
     }
 
+    /// Tab-search keystrokes — Esc dismisses, Enter jumps to the
+    /// first matching tab, Backspace deletes, printable chars
+    /// extend the query. Returns true when the key was consumed.
+    fn tab_search_handle_key(&mut self, ke: &winit::event::KeyEvent) -> bool {
+        use winit::keyboard::Key;
+        match &ke.logical_key {
+            Key::Named(NamedKey::Escape) => {
+                self.tab_search = None;
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+                true
+            }
+            Key::Named(NamedKey::Enter) => {
+                if let Some(query) = self.tab_search.take() {
+                    let q = query.to_lowercase();
+                    if !q.is_empty()
+                        && let Some(idx) = self
+                            .tabs
+                            .iter()
+                            .position(|t| t.label.to_lowercase().contains(&q))
+                    {
+                        self.switch_to_tab(idx);
+                    }
+                }
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+                true
+            }
+            Key::Named(NamedKey::Backspace) => {
+                if let Some(q) = self.tab_search.as_mut() {
+                    q.pop();
+                }
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+                true
+            }
+            Key::Character(s) => {
+                if let Some(q) = self.tab_search.as_mut() {
+                    for c in s.chars() {
+                        if !c.is_control() {
+                            q.push(c);
+                        }
+                    }
+                }
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn handle_keyboard_input(&mut self, event_loop: &ActiveEventLoop, ke: winit::event::KeyEvent) {
         if ke.state != ElementState::Pressed {
             return;
@@ -2412,6 +2469,12 @@ impl App {
         // Command palette: typed text refines filter, Enter
         // dispatches. Greedy while open.
         if self.palette.is_some() && self.palette_handle_key(event_loop, &ke) {
+            return;
+        }
+        // Tab-search mode greedily consumes keys while active —
+        // typing extends the query, Backspace deletes, Enter jumps
+        // to the first matching tab, Esc dismisses.
+        if self.tab_search.is_some() && self.tab_search_handle_key(&ke) {
             return;
         }
         // Command-registry dispatch — chords migrated to
@@ -2943,6 +3006,11 @@ impl App {
                         })
                     } else if hits(gpu.strip_palette_chip_rect) {
                         // Search chip → Ctrl+Shift+P (palette).
+                        // For Shell panes, the post-block tab-search
+                        // toggle path consumes the click instead;
+                        // this `palette_key` only gets fired on
+                        // Native panes after a `let palette_key`
+                        // build below.
                         Some(KeyInput {
                             code: KeyCode::Char('P'),
                             mods: MOD_CTRL | MOD_SHIFT,
@@ -2958,6 +3026,48 @@ impl App {
                     } else {
                         None
                     };
+                    // Sidebar-toggle button — separate from the palette
+                    // key set since this is a tmnl-side action, not a
+                    // forwarded chord to mnml. Toggles cfg.tab_layout
+                    // between Horizontal + Vertical + persists.
+                    if button == MouseButton::Left && hits(gpu.strip_sidebar_toggle_rect) {
+                        self.cfg.tab_layout = match self.cfg.tab_layout {
+                            crate::config::TabLayout::Horizontal => {
+                                crate::config::TabLayout::Vertical
+                            }
+                            crate::config::TabLayout::Vertical => {
+                                crate::config::TabLayout::Horizontal
+                            }
+                        };
+                        if let Err(e) = self.cfg.save() {
+                            log::warn!("config save failed: {e}");
+                        }
+                        if let Some(w) = &self.window {
+                            w.request_redraw();
+                        }
+                        return;
+                    }
+                    // Shell-pane search-chip click → toggle tab-
+                    // search mode. `self.tab_search` lives outside
+                    // the `gpu` immutable borrow, so it's safe to
+                    // mutate here without dropping the borrow.
+                    if button == MouseButton::Left
+                        && hits(gpu.strip_palette_chip_rect)
+                        && matches!(
+                            self.tabs[self.active].focused_pane().kind,
+                            PaneKind::Shell { .. }
+                        )
+                    {
+                        self.tab_search = if self.tab_search.is_some() {
+                            None
+                        } else {
+                            Some(String::new())
+                        };
+                        if let Some(w) = &self.window {
+                            w.request_redraw();
+                        }
+                        return;
+                    }
                     if palette_key.is_some() {
                         // 2026-06-07 SEV-3 bug-hunt fix: previously
                         // only LEFT-clicks here returned, so a middle-
@@ -3362,9 +3472,13 @@ impl App {
             crate::config::PromptPosition::Bottom
         ) && !self.altscreen_active
             && !any_overlay_open;
+        // Tab-search query — App owns the source of truth; Gpu
+        // reads its own copy each frame to drive chrome rendering.
+        let tab_search = self.tab_search.clone();
         if let Some(gpu) = &mut self.gpu {
             gpu.selection_bounds = sel;
             gpu.bottom_prompt = bottom_prompt;
+            gpu.tab_search = tab_search;
             gpu.render();
         }
         if let Some(w) = &self.window {

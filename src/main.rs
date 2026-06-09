@@ -413,6 +413,14 @@ struct App {
     /// focus_col, focus_row)`. anchor is the press-time cell; focus
     /// tracks the cursor.
     text_selection: Option<(usize, usize, u16, u16, u16, u16)>,
+    /// Tab-search mode — when `Some`, the search chip displays
+    /// `App.tab_search` instead of the active-tab label, keystrokes
+    /// route into the query, and tab chips whose labels don't
+    /// substring-match get dimmed. Toggled by clicking the search
+    /// chip on a Shell pane; Esc / Enter dismisses. Pushed to
+    /// `Gpu.tab_search` each frame so the chrome renderer can show
+    /// the query.
+    tab_search: Option<String>,
     /// `true` between a body-cell mouse-press and its release —
     /// drives `cursor_moved` selection extension. Cleared on release
     /// (the selection itself stays visible for copy / clear).
@@ -494,6 +502,18 @@ struct Gpu {
     strip_palette_fwd_rect: Option<(f32, f32, f32, f32)>,
     strip_palette_chip_rect: Option<(f32, f32, f32, f32)>,
     strip_palette_dropdown_rect: Option<(f32, f32, f32, f32)>,
+    /// Sidebar-toggle button in the top strip — clicking it cycles
+    /// `tab_layout` Horizontal ↔ Vertical. Sits at the right end
+    /// of the palette cluster. `None` when the button isn't
+    /// currently painted (e.g. headless probe ran but no actual
+    /// render happened).
+    strip_sidebar_toggle_rect: Option<(f32, f32, f32, f32)>,
+    /// Tab-search mode — when `Some`, the search chip in the
+    /// palette cluster shows the user's query instead of the
+    /// active-tab label, and any tab chip whose label doesn't
+    /// match the query gets dimmed. App owns the canonical state
+    /// (`App.tab_search`) and pushes a clone here each frame.
+    tab_search: Option<String>,
     /// Pixel-x extents `(x0, x1, tab_idx)` of the trailing `⊗` close
     /// badge on each non-active chip. Click → `close_tab_at`. Active
     /// chip has no close badge (the user closes the active tab via
@@ -669,6 +689,8 @@ impl Gpu {
             strip_palette_back_rect: None,
             strip_palette_fwd_rect: None,
             strip_palette_chip_rect: None,
+            strip_sidebar_toggle_rect: None,
+            tab_search: None,
             strip_palette_dropdown_rect: None,
             strip_chip_close_rects: Vec::new(),
             strip_new_tab_rect: None,
@@ -790,6 +812,8 @@ impl Gpu {
             strip_palette_back_rect: None,
             strip_palette_fwd_rect: None,
             strip_palette_chip_rect: None,
+            strip_sidebar_toggle_rect: None,
+            tab_search: None,
             strip_palette_dropdown_rect: None,
             strip_chip_close_rects: Vec::new(),
             strip_new_tab_rect: None,
@@ -1297,8 +1321,19 @@ impl Gpu {
             }
             let mut col_offset = slot_col;
             let chip_x0_px = start_x_px + col_offset * cell_w;
+            // Tab-search filter: chips whose label doesn't substring-
+            // match the query render dim. The active tab keeps its
+            // bold/accent treatment so the user can see where they
+            // are.
+            let q_match = self
+                .tab_search
+                .as_deref()
+                .map(|q| q.is_empty() || label.to_lowercase().contains(&q.to_lowercase()))
+                .unwrap_or(true);
             let (fg, bg, attrs) = if *active {
                 (palette().text_fg, active_chip_bg, ATTR_BOLD)
+            } else if !q_match {
+                (palette().dim_fg, palette().strip_bg, 0)
             } else {
                 (palette().tab_fg, palette().strip_bg, 0)
             };
@@ -1444,13 +1479,24 @@ impl Gpu {
         // 24-cell width so the chip stays the same size regardless of
         // label length; long titles truncate with `…`.
         const CHIP_LABEL_W: usize = 24;
-        let active_label = self
-            .strip_chips
-            .iter()
-            .find(|(_, active, _)| *active)
-            .map(|(label, _, _)| label.clone())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "search files, run commands…".to_string());
+        // Tab-search mode wins over the active-tab label — show
+        // the user's query (with a trailing cursor caret) so
+        // they can see what they're typing. Empty query renders
+        // a placeholder.
+        let active_label = if let Some(q) = self.tab_search.as_deref() {
+            if q.is_empty() {
+                "Search tabs…".to_string()
+            } else {
+                format!("{q}▏")
+            }
+        } else {
+            self.strip_chips
+                .iter()
+                .find(|(_, active, _)| *active)
+                .map(|(label, _, _)| label.clone())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "search files, run commands…".to_string())
+        };
         let label = if active_label.chars().count() > CHIP_LABEL_W {
             let mut s: String = active_label.chars().take(CHIP_LABEL_W - 1).collect();
             s.push('…');
@@ -1465,12 +1511,20 @@ impl Gpu {
         let chip_body = chip_body.as_str();
         let dropdown_text = " \u{EAB4} ";
 
+        // Sidebar-toggle button glyph (VS Code-style sidebar pill).
+        // Lives at the right end of the cluster, padded with a space
+        // each side so the icon doesn't kiss the dropdown chevron or
+        // the strip edge.
+        let toggle_text = "  \u{EBF4} ";
+
         let back_cells = back_text.chars().count();
         let fwd_cells = fwd_text.chars().count();
         let gap_cells = gap_text.chars().count();
         let chip_body_cells = chip_body.chars().count();
         let dropdown_cells = dropdown_text.chars().count();
-        let total_cells = back_cells + fwd_cells + gap_cells + chip_body_cells + dropdown_cells;
+        let toggle_cells = toggle_text.chars().count();
+        let total_cells =
+            back_cells + fwd_cells + gap_cells + chip_body_cells + dropdown_cells + toggle_cells;
         let total_w_px = total_cells as f32 * cell_w;
         let window_w_px = self.config.width as f32;
         if window_w_px < Self::CHIP_START_X_PX + total_w_px + 40.0 {
@@ -1593,6 +1647,21 @@ impl Gpu {
             );
             col += 1.0;
         }
+        // Sidebar-toggle button — slightly lifted bg (btn_bg) so it
+        // reads as a separate affordance from the search chip body.
+        let toggle_start_col = col;
+        for ch in toggle_text.chars() {
+            push(
+                &mut out,
+                col,
+                ch,
+                BTN_FG,
+                btn_bg,
+                &mut self.atlas,
+                &self.queue,
+            );
+            col += 1.0;
+        }
 
         // Map cells back to pixel rects.
         let cells_x = |c0: usize, c_count: usize| -> (f32, f32) {
@@ -1612,6 +1681,10 @@ impl Gpu {
         self.strip_palette_fwd_rect = Some((fx0, fx1, y0, y1));
         self.strip_palette_chip_rect = Some((cx0, cx1, y0, y1));
         self.strip_palette_dropdown_rect = Some((dx0, dx1, y0, y1));
+        // Toggle button rect — pixel-x bounds from its start col.
+        let toggle_x0 = start_x_px + (toggle_start_col - start_col) * cell_w;
+        let toggle_x1 = toggle_x0 + toggle_cells as f32 * cell_w;
+        self.strip_sidebar_toggle_rect = Some((toggle_x0, toggle_x1, y0, y1));
         out
     }
 
@@ -3109,6 +3182,7 @@ fn main() {
         dragging_sidebar: false,
         text_selection: None,
         dragging_selection: false,
+        tab_search: None,
         fim: None,
         fim_pending: None,
         fim_next_id: 0,
