@@ -497,6 +497,52 @@ impl App {
     /// Append a fresh shell tab and switch to it. The new tab's pane
     /// owns its own grid, sized to the current window; spawn failures
     /// leave the existing active tab in place and toast to stderr.
+    /// Spawn launcher icon `idx`'s configured `command` (with `args`)
+    /// in a new pty tab. Routed through `ShellSession::spawn_command`
+    /// — same backing pty as a regular shell tab, but the entry
+    /// command is the launcher binary, not `$SHELL`. Out-of-range
+    /// indices silently no-op (rail repaints any time the config
+    /// changes; the index could go stale between paint + click).
+    pub(crate) fn new_launcher_tab(&mut self, idx: usize) {
+        let Some(icon) = self.cfg.launcher_icons.get(idx).cloned() else {
+            return;
+        };
+        let (cols, rows) = match self.gpu.as_ref() {
+            Some(gpu) => (gpu.grid.cols, gpu.grid.rows),
+            None => return,
+        };
+        match ShellSession::spawn_command(
+            rows as u16,
+            cols as u16,
+            palette().text_fg,
+            palette().clear_bg,
+            &icon.command,
+            &icon.args,
+        ) {
+            Ok(s) => {
+                let label = s.shell_name().to_string();
+                let pane = Pane {
+                    kind: PaneKind::Shell { session: Some(s) },
+                    grid: grid::Grid::new(cols, rows, palette().clear_bg),
+                    last_cursor: None,
+                    label: label.clone(),
+                    attention: false,
+                    last_status: None,
+                };
+                self.tabs.push(Tab {
+                    layout: Layout::Leaf(0),
+                    panes: vec![pane],
+                    focused: 0,
+                    label,
+                    custom_name: None,
+                });
+                self.active = self.tabs.len() - 1;
+                self.on_tab_focused();
+            }
+            Err(e) => eprintln!("tmnl: launcher tab for {} failed: {e}", icon.command),
+        }
+    }
+
     pub(crate) fn new_shell_tab(&mut self) {
         let (cols, rows) = match self.gpu.as_ref() {
             Some(gpu) => (gpu.grid.cols, gpu.grid.rows),
@@ -2692,6 +2738,30 @@ impl App {
                 && self.cursor_px.1 >= strip_y
             {
                 self.dragging_sidebar = true;
+                return;
+            }
+        }
+        // Launcher rail click — left-click on a launcher icon
+        // spawns the configured command in a new pty tab. Tested
+        // BEFORE the general strip-region intercept since the rail
+        // sits inside the chrome region (left edge) and clicks
+        // here should fire the launcher specifically rather than
+        // fall through to any tab-chip hit-test.
+        if pressed
+            && button == MouseButton::Left
+            && let Some(gpu) = &self.gpu
+            && gpu.launcher_w_px > 0.0
+        {
+            let (px, py) = self.cursor_px;
+            let hit = gpu
+                .launcher_icon_hit_rects()
+                .iter()
+                .find(|(x0, x1, y0, y1, _)| {
+                    px >= *x0 as f64 && px < *x1 as f64 && py >= *y0 as f64 && py < *y1 as f64
+                })
+                .map(|(_, _, _, _, idx)| *idx);
+            if let Some(idx) = hit {
+                self.new_launcher_tab(idx);
                 return;
             }
         }

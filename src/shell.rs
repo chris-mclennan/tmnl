@@ -96,6 +96,128 @@ pub struct ShellSession {
 const FG_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 
 impl ShellSession {
+    /// Spawn a launcher icon's `command` in a fresh pty pane —
+    /// same backing pty as a normal shell tab, but the entry
+    /// command is the binary the user clicked (not `$SHELL`).
+    /// Routed through the user's login shell so PATH + rc-file
+    /// customization apply (e.g. the user's `~/.cargo/bin` for
+    /// cargo-installed siblings). Themed-prompt env vars are
+    /// suppressed since the target binary is its own TUI, not an
+    /// interactive shell session.
+    pub fn spawn_command(
+        rows: u16,
+        cols: u16,
+        default_fg: [f32; 4],
+        default_bg: [f32; 4],
+        command: &str,
+        args: &[String],
+    ) -> Result<Self, String> {
+        let (rows, cols) = (rows.max(4), cols.max(20));
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| format!("openpty: {e}"))?;
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+        // Quote each argument with single quotes (and double up any
+        // embedded `'`) so the user's shell parses the joined cmdline
+        // exactly. Each arg becomes `'arg'` — POSIX-safe across
+        // bash/zsh/sh.
+        fn sh_quote(s: &str) -> String {
+            format!("'{}'", s.replace('\'', "'\\''"))
+        }
+        let mut joined = sh_quote(command);
+        for a in args {
+            joined.push(' ');
+            joined.push_str(&sh_quote(a));
+        }
+        // `exec` so the target replaces the shell in the pty — when
+        // the binary exits, the pty's child exits cleanly.
+        let cmdline = format!("exec {joined}");
+        let mut cmd = CommandBuilder::new(&shell);
+        cmd.env("TERM", "xterm-256color");
+        cmd.env("TERM_PROGRAM", "tmnl");
+        cmd.env("MNML_CONTEXT", "tmnl");
+        cmd.arg("-l"); // login shell — load .zprofile, get user PATH
+        cmd.arg("-c");
+        cmd.arg(&cmdline);
+        if let Ok(home) = std::env::var("HOME") {
+            cmd.cwd(&home);
+        }
+        let child = pair
+            .slave
+            .spawn_command(cmd)
+            .map_err(|e| format!("spawn {command}: {e}"))?;
+        drop(pair.slave);
+
+        let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
+            rows,
+            cols,
+            SCROLLBACK,
+            TitleSink::default(),
+        )));
+        let exited = Arc::new(Mutex::new(false));
+        let bytes_seen = Arc::new(AtomicU64::new(0));
+
+        let reader_handle = pair
+            .master
+            .try_clone_reader()
+            .map_err(|e| format!("clone pty reader: {e}"))?;
+        let attention_requested = Arc::new(AtomicBool::new(false));
+        let integration = Arc::new(Mutex::new(osc133::State::default()));
+        let reader = spawn_reader_thread(
+            reader_handle,
+            "tmnl-launcher-reader",
+            Arc::clone(&parser),
+            Arc::clone(&exited),
+            Arc::clone(&bytes_seen),
+            Arc::clone(&attention_requested),
+            Arc::clone(&integration),
+        )?;
+
+        let writer = pair
+            .master
+            .take_writer()
+            .map_err(|e| format!("take pty writer: {e}"))?;
+
+        // Strip a leading `mnml-` prefix from the tab label so the
+        // chip reads `slack` / `teams` / `gmail` rather than the
+        // long `mnml-msg-slack` etc. Most launcher icons in the
+        // family share this prefix.
+        let label = command
+            .strip_prefix("mnml-msg-")
+            .or_else(|| command.strip_prefix("mnml-virt-"))
+            .or_else(|| command.strip_prefix("mnml-aws-"))
+            .or_else(|| command.strip_prefix("mnml-tickets-"))
+            .unwrap_or(command)
+            .to_string();
+
+        Ok(ShellSession {
+            parser,
+            writer,
+            master: Some(pair.master),
+            #[cfg(unix)]
+            adopted_fd: None,
+            reader: Some(reader),
+            child: Some(child),
+            exited,
+            last_size: (rows, cols),
+            bytes_seen,
+            last_applied_bytes: 0,
+            default_bg,
+            default_fg,
+            attention_requested,
+            integration,
+            scroll_dirty: false,
+            shell_name: label,
+            fg_proc_cache: None,
+            last_fg_poll: None,
+        })
+    }
+
     pub fn spawn(
         rows: u16,
         cols: u16,
