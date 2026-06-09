@@ -1684,13 +1684,17 @@ impl Gpu {
         }
         let cell_w = self.atlas.cell_w;
         let cell_h = self.atlas.cell_h;
-        // Pixel-x where the button starts. Must clear the macOS
-        // traffic-light buttons including their hit area — on
-        // Retina (2x) the three buttons span ~150px physical, plus
-        // some right-edge padding. 180 leaves a comfortable gap
-        // before our button so the OS doesn't swallow clicks meant
-        // for it.
-        const TOGGLE_X_PX: f32 = 180.0;
+        // Pixel-x where the button starts. tmnl uses
+        // `titlebar_transparent + fullsize_content_view` so wgpu can
+        // paint through the title area — but macOS still treats the
+        // top-left region of the window as a "drag zone" (clicks
+        // get consumed for window-dragging, not passed to the wgpu
+        // surface). Empirically the drag zone extends to roughly
+        // 200 logical pixels from the left edge. Place the button
+        // at 280 physical (= 140 logical on Retina, 280 on standard
+        // DPI) — past the drag zone on both DPIs while still
+        // visually on the LEFT side, next-ish to the traffic lights.
+        const TOGGLE_X_PX: f32 = 280.0;
         // 5 cells wide: pad / pad / glyph / pad / pad.
         let cells = ["  ", "\u{EBF4}", "  "].concat();
         let total_cells = cells.chars().count();
