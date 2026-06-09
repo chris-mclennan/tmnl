@@ -136,21 +136,24 @@ _mnml_build_left() {
     local cwd_text
     cwd_text=$(_mnml_seg_cwd)
 
-    # cwd chip: bright blue bg with dark fg — matches mnml's TREE
-    # pill in the statusline. Bold so the chip text pops over the
-    # blue background the same way mnml's chip text does.
+    # cwd chip: blue bg + dark fg + trailing powerline `` arrow in
+    # blue fg on terminal bg. Matches mnml's TREE pill exactly —
+    # rounded text region + pointy right end.
     out+="$(_mnml_bg "$MNML_PROMPT_BLUE")$(_mnml_fg "$MNML_PROMPT_BG") ${cwd_text} ${_mnml_reset}"
+    out+="$(_mnml_fg "$MNML_PROMPT_BLUE")${_mnml_sep}${_mnml_reset}"
 
     local git_text
     git_text=$(_mnml_seg_git)
     if [ -n "$git_text" ]; then
-        local git_fg="$MNML_PROMPT_GREEN"
+        local git_bg="$MNML_PROMPT_GREEN"
         if [ "$(_mnml_seg_git_dirty)" = "1" ]; then
-            git_fg="$MNML_PROMPT_YELLOW"
+            git_bg="$MNML_PROMPT_YELLOW"
         fi
-        # git: subtle chip with the git color as fg (separate from
-        # the blue cwd chip so the two chip styles read distinctly).
-        out+=" $(_mnml_bg "$MNML_PROMPT_CHIP_BG")$(_mnml_fg "$git_fg") ${_mnml_branch} ${git_text} ${_mnml_reset}"
+        # git: matching powerline segment — green when clean, yellow
+        # when dirty. Branch glyph + name on the colored bg, then
+        # the trailing `` arrow.
+        out+=" $(_mnml_bg "$git_bg")$(_mnml_fg "$MNML_PROMPT_BG") ${_mnml_branch} ${git_text} ${_mnml_reset}"
+        out+="$(_mnml_fg "$git_bg")${_mnml_sep}${_mnml_reset}"
     fi
 
     # Last-exit indicator: red `[N]` only when non-zero.
