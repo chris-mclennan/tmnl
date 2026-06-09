@@ -105,6 +105,14 @@ const VERT_INTER_ROW_GAP_PX: f32 = 12.0;
 /// VERT_PLUS_EXTRA_GAP_PX`. 16px chosen so the `+` clearly reads
 /// as a distinct affordance rather than another tab.
 const VERT_PLUS_EXTRA_GAP_PX: f32 = 16.0;
+
+/// Sidebar-header row height in vertical-tab mode. Sits at the
+/// top of the sidebar (just below the top strip) and contains a
+/// Warp-style search input on the left + a `+` new-tab button on
+/// the right. Tab chips render below it. 36 px = `TAB_ROW_H_PX` +
+/// a 4 px breathing strip so the header reads as separate chrome
+/// from the chip cluster.
+const SIDEBAR_HEADER_H_PX: f32 = 36.0;
 /// Single-tab chrome height — a small breathing-room band above the
 /// grid so the first row of content isn't kissing the macOS traffic
 /// lights, but no visible chrome strip (the strip pipeline paints this
@@ -508,6 +516,16 @@ struct Gpu {
     /// currently painted (e.g. headless probe ran but no actual
     /// render happened).
     strip_sidebar_toggle_rect: Option<(f32, f32, f32, f32)>,
+    /// Sidebar-header search input — the Warp-style search box at
+    /// the top of the vertical-tab sidebar (left side of the
+    /// header row). Click → toggles tab-search on Shell panes,
+    /// fires Ctrl+Shift+P on Native panes (same as the top-strip
+    /// palette chip). `None` when not vertical / no sidebar.
+    sidebar_search_rect: Option<(f32, f32, f32, f32)>,
+    /// Sidebar-header `+` new-tab button — right side of the
+    /// header row in the vertical sidebar. Click → new tab.
+    /// `None` when not vertical / no sidebar.
+    sidebar_plus_rect: Option<(f32, f32, f32, f32)>,
     /// Tab-search mode — when `Some`, the search chip in the
     /// palette cluster shows the user's query instead of the
     /// active-tab label, and any tab chip whose label doesn't
@@ -690,6 +708,8 @@ impl Gpu {
             strip_palette_fwd_rect: None,
             strip_palette_chip_rect: None,
             strip_sidebar_toggle_rect: None,
+            sidebar_search_rect: None,
+            sidebar_plus_rect: None,
             tab_search: None,
             strip_palette_dropdown_rect: None,
             strip_chip_close_rects: Vec::new(),
@@ -813,6 +833,8 @@ impl Gpu {
             strip_palette_fwd_rect: None,
             strip_palette_chip_rect: None,
             strip_sidebar_toggle_rect: None,
+            sidebar_search_rect: None,
+            sidebar_plus_rect: None,
             tab_search: None,
             strip_palette_dropdown_rect: None,
             strip_chip_close_rects: Vec::new(),
@@ -909,12 +931,15 @@ impl Gpu {
         // Plus button is 3 cells — make sure the sidebar accommodates
         // it on the last row so the `+` doesn't overflow.
         let with_plus = widest.max(3.0);
-        // 2026-06-09 user feedback: "the width of the sidebar needs
-        // to be doubled". Was `+ 3.0` cells trailing pad on a
-        // single widest-chip-width allowance — now the chip cell
-        // count gets doubled AND there's still 3 cells of trailing
-        // pad. Roughly Warp-style sidebar width.
-        let raw = Self::SIDEBAR_PAD_LEFT_PX + (with_plus * 2.0 + 3.0) * self.atlas.cell_w;
+        // 2026-06-09 user feedback (second pass): "doesn't appear
+        // to be doubled". Header now also holds a search input +
+        // `+` button, so the sidebar needs to be wide enough to
+        // show "Search tabs…" + magnify glyph + a 3-cell plus
+        // button. A flat 30-cell floor (≈ 240 px logical) reads
+        // like Warp's sidebar regardless of chip-label length;
+        // longer chip labels grow it further.
+        let chip_target_cells = (with_plus * 3.0 + 6.0).max(30.0);
+        let raw = Self::SIDEBAR_PAD_LEFT_PX + chip_target_cells * self.atlas.cell_w;
         // Apply the same `[min, max]` envelope the drag-override path
         // uses — a long chip label can otherwise push the column past
         // the cap and the body shrinks unhelpfully.
@@ -1110,6 +1135,7 @@ impl Gpu {
         let _ = self.strip_chip_instances();
         let _ = self.strip_palette_chip_instances();
         let _ = self.strip_sidebar_toggle_instances();
+        let _ = self.sidebar_header_instances();
     }
 
     /// Emit one cell instance per configured launcher icon — a
@@ -1261,7 +1287,12 @@ impl Gpu {
         // 2026-06-08 first_row_top_px = strip_h, which placed chips
         // ~12px above the prompt.
         let first_row_top_px = if vertical {
-            (self.inset_px + self.strip_h - (TAB_ROW_H_PX - cell_h) * 0.5).max(self.strip_h)
+            // 2026-06-09: shift chips down by SIDEBAR_HEADER_H_PX
+            // to leave a header row above the chips for the
+            // search input + `+` button (see
+            // `sidebar_header_instances`).
+            (self.inset_px + self.strip_h + SIDEBAR_HEADER_H_PX - (TAB_ROW_H_PX - cell_h) * 0.5)
+                .max(self.strip_h + SIDEBAR_HEADER_H_PX)
         } else {
             tab_zone_top_px
         };
@@ -1422,11 +1453,19 @@ impl Gpu {
         // row didn't have space (the chip_layout helper figured this
         // out for us). In vertical mode skipped when scrolled off the
         // bottom; `clamp_sidebar_scroll` keeps it reachable.
-        let (plus_row, plus_col_offset) = plus_slot;
-        let (plus_y0_px, plus_y1_px, plus_base_y) = row_geom(plus_row, true);
-        if row_visible(plus_y0_px) {
-            let plus_x_px = start_x_px + plus_col_offset * cell_w;
-            self.push_plus_button(&mut out, plus_x_px, plus_base_y, plus_y0_px, plus_y1_px);
+        //
+        // 2026-06-09: vertical mode now puts the `+` button in the
+        // sidebar HEADER (next to the search input) — see
+        // `sidebar_header_instances`. So we suppress the bottom-of-
+        // sidebar plus in vertical to avoid duplicate render + hit
+        // rects clobbering each other.
+        if !vertical {
+            let (plus_row, plus_col_offset) = plus_slot;
+            let (plus_y0_px, plus_y1_px, plus_base_y) = row_geom(plus_row, true);
+            if row_visible(plus_y0_px) {
+                let plus_x_px = start_x_px + plus_col_offset * cell_w;
+                self.push_plus_button(&mut out, plus_x_px, plus_base_y, plus_y0_px, plus_y1_px);
+            }
         }
         out
     }
@@ -1721,6 +1760,189 @@ impl Gpu {
         let y0_px = 0.0;
         let y1_px = self.strip_h;
         self.strip_sidebar_toggle_rect = Some((x0, x1, y0_px, y1_px));
+        out
+    }
+
+    /// Warp-style sidebar header row — search input + `+` new-tab
+    /// button stacked at the top of the vertical-tab sidebar (just
+    /// below the macOS top strip). Renders only in vertical-tab
+    /// mode with a non-zero sidebar width.
+    ///
+    /// Layout (left→right):
+    ///   [SIDEBAR_PAD_LEFT_PX] [search input ........... ] [1 cell gap] [+ button] [1 cell pad]
+    ///
+    /// The search input shows the magnify glyph + a placeholder
+    /// "Search tabs…" (or the active `tab_search` query). Clicking
+    /// it toggles tab-search on Shell panes, or fires the palette
+    /// chord on Native panes — same routing as the top-strip
+    /// search chip.
+    fn sidebar_header_instances(&mut self) -> Vec<pipeline::Instance> {
+        use crate::atlas::style_from_attrs;
+        self.sidebar_search_rect = None;
+        self.sidebar_plus_rect = None;
+        let vertical = matches!(self.tab_layout, crate::config::TabLayout::Vertical);
+        if !vertical || self.sidebar_w_px <= 0.0 || self.strip_h <= 0.0 {
+            return Vec::new();
+        }
+        let cell_w = self.atlas.cell_w;
+        let cell_h = self.atlas.cell_h;
+
+        // Total cells the sidebar can host (minus the left pad
+        // before the search box).
+        let sidebar_cells = ((self.sidebar_w_px - Self::SIDEBAR_PAD_LEFT_PX) / cell_w).floor();
+        if sidebar_cells < 8.0 {
+            // Too narrow to fit search + plus; just skip.
+            return Vec::new();
+        }
+        // Reserve right-side cells: 3-cell `+` button + 1 cell gap.
+        let plus_cells = 3.0;
+        let gap_cells = 1.0;
+        let right_pad = 1.0;
+        let search_cells = (sidebar_cells - plus_cells - gap_cells - right_pad).max(4.0);
+
+        // Header sits in the body region just below the top strip.
+        let y0_px = self.inset_px + self.strip_h;
+        let y1_px = y0_px + SIDEBAR_HEADER_H_PX;
+        let label_y_px = y0_px + (SIDEBAR_HEADER_H_PX - cell_h) * 0.5;
+        let inset_y_total = self.inset_px + self.strip_h;
+        let base_y = (label_y_px - inset_y_total) / cell_h;
+
+        // Cell pipeline applies (inset_px + sidebar_w_px) as x-inset.
+        // We render in the sidebar's own column, so cancel both.
+        let start_x_px = self.inset_px + Self::SIDEBAR_PAD_LEFT_PX;
+        let start_col = (start_x_px - self.inset_px - self.sidebar_w_px) / cell_w;
+
+        // Search-box label: same source-of-truth as the top-strip
+        // palette chip — tab_search query if armed, else a placeholder.
+        let label_raw = match self.tab_search.as_deref() {
+            Some("") | None => "Search tabs…".to_string(),
+            Some(q) => format!("{q}▏"),
+        };
+        // Build body: " 🔍 label …pad… "
+        // 1 cell pad + 1 cell magnify + 1 cell pad + label + right pad
+        let inner_label_cells = (search_cells as usize).saturating_sub(4);
+        let mut label_text: String = label_raw.chars().take(inner_label_cells).collect();
+        while label_text.chars().count() < inner_label_cells {
+            label_text.push(' ');
+        }
+        // Magnify glyph: F0349 nf-md-magnify (same as top-strip chip).
+        let magnify = '\u{F0349}';
+
+        let chip_bg = palette().chip_bg;
+        const SEARCH_FG: [f32; 4] = [0.62, 0.65, 0.72, 1.0];
+        const PLUS_BG: [f32; 4] = [0.18, 0.20, 0.24, 1.0];
+
+        let mut out: Vec<pipeline::Instance> = Vec::new();
+        let push = |out: &mut Vec<pipeline::Instance>,
+                    col: f32,
+                    ch: char,
+                    fg: [f32; 4],
+                    bg: [f32; 4],
+                    atlas: &mut crate::atlas::Atlas,
+                    queue: &wgpu::Queue| {
+            let g = atlas.glyph(ch, style_from_attrs(0), queue);
+            out.push(pipeline::Instance {
+                cell_pos: [col, base_y],
+                fg,
+                bg,
+                uv_min: g.uv_min,
+                uv_max: g.uv_max,
+                glyph_offset: g.offset,
+                glyph_size: g.size,
+                attrs: 0,
+                _pad: 0,
+            });
+        };
+
+        // Search input — full search_cells wide.
+        let mut col = start_col;
+        let search_start_col = col;
+        // Leading pad.
+        push(
+            &mut out,
+            col,
+            ' ',
+            SEARCH_FG,
+            chip_bg,
+            &mut self.atlas,
+            &self.queue,
+        );
+        col += 1.0;
+        // Magnify glyph.
+        push(
+            &mut out,
+            col,
+            magnify,
+            SEARCH_FG,
+            chip_bg,
+            &mut self.atlas,
+            &self.queue,
+        );
+        col += 1.0;
+        // Gap.
+        push(
+            &mut out,
+            col,
+            ' ',
+            SEARCH_FG,
+            chip_bg,
+            &mut self.atlas,
+            &self.queue,
+        );
+        col += 1.0;
+        // Label.
+        for ch in label_text.chars() {
+            push(
+                &mut out,
+                col,
+                ch,
+                SEARCH_FG,
+                chip_bg,
+                &mut self.atlas,
+                &self.queue,
+            );
+            col += 1.0;
+        }
+        // Trailing pad.
+        push(
+            &mut out,
+            col,
+            ' ',
+            SEARCH_FG,
+            chip_bg,
+            &mut self.atlas,
+            &self.queue,
+        );
+        col += 1.0;
+        let search_end_col = col;
+
+        // Gap between search and `+`.
+        col += gap_cells;
+
+        // `+` button — 3 cells, distinct bg from search input.
+        let plus_start_col = col;
+        for (i, ch) in [' ', '+', ' '].iter().enumerate() {
+            push(
+                &mut out,
+                col + i as f32,
+                *ch,
+                palette().text_fg,
+                PLUS_BG,
+                &mut self.atlas,
+                &self.queue,
+            );
+        }
+        let plus_end_col = plus_start_col + 3.0;
+
+        // Pixel-rect hit targets — convert from cell coords back to
+        // window pixels.
+        let cell_to_x_px = |c: f32| -> f32 { c * cell_w + self.inset_px + self.sidebar_w_px };
+        let sx0 = cell_to_x_px(search_start_col);
+        let sx1 = cell_to_x_px(search_end_col);
+        let px0 = cell_to_x_px(plus_start_col);
+        let px1 = cell_to_x_px(plus_end_col);
+        self.sidebar_search_rect = Some((sx0, sx1, y0_px, y1_px));
+        self.sidebar_plus_rect = Some((px0, px1, y0_px, y1_px));
         out
     }
 
@@ -2109,6 +2331,7 @@ impl Gpu {
         instances.extend(self.strip_chip_instances());
         instances.extend(self.strip_palette_chip_instances());
         instances.extend(self.strip_sidebar_toggle_instances());
+        instances.extend(self.sidebar_header_instances());
         instances.extend(self.launcher_chip_instances());
         self.pipeline
             .ensure_capacity(&self.device, instances.len() as u64);

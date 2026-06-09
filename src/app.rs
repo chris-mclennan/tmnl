@@ -3093,17 +3093,63 @@ impl App {
                     }
                     // `+` new-tab button sits past the last chip;
                     // check it first since its rect is disjoint.
+                    // Both the bottom-of-sidebar (`strip_new_tab_rect`)
+                    // and the sidebar-header (`sidebar_plus_rect`)
+                    // `+` buttons route here — only one is rendered at
+                    // any time (vertical mode shows the header one).
                     let on_plus = gpu
                         .strip_new_tab_rect
                         .map(|(x0, x1, y0, y1)| {
                             px >= x0 as f64 && px < x1 as f64 && py >= y0 as f64 && py < y1 as f64
                         })
-                        .unwrap_or(false);
+                        .unwrap_or(false)
+                        || gpu
+                            .sidebar_plus_rect
+                            .map(|(x0, x1, y0, y1)| {
+                                px >= x0 as f64
+                                    && px < x1 as f64
+                                    && py >= y0 as f64
+                                    && py < y1 as f64
+                            })
+                            .unwrap_or(false);
                     if on_plus && button == MouseButton::Left {
                         if self.editor_template.is_some() {
                             self.new_native_tab();
                         } else {
                             self.new_shell_tab();
+                        }
+                        return;
+                    }
+                    // Sidebar-header search input — same routing as
+                    // the top-strip palette chip. For Shell panes
+                    // toggles tab-search; for Native panes fires
+                    // Ctrl+Shift+P (palette).
+                    let on_sidebar_search = gpu
+                        .sidebar_search_rect
+                        .map(|(x0, x1, y0, y1)| {
+                            px >= x0 as f64 && px < x1 as f64 && py >= y0 as f64 && py < y1 as f64
+                        })
+                        .unwrap_or(false);
+                    if on_sidebar_search && button == MouseButton::Left {
+                        match self.tabs[self.active].focused_pane().kind {
+                            PaneKind::Shell { .. } => {
+                                self.tab_search = if self.tab_search.is_some() {
+                                    None
+                                } else {
+                                    Some(String::new())
+                                };
+                            }
+                            PaneKind::Native { ref server, .. } => {
+                                server.send_input(&InputEvent::Key(KeyInput {
+                                    code: KeyCode::Char('P'),
+                                    mods: MOD_CTRL | MOD_SHIFT,
+                                    press: true,
+                                }));
+                            }
+                            _ => {}
+                        }
+                        if let Some(w) = &self.window {
+                            w.request_redraw();
                         }
                         return;
                     }
@@ -3150,6 +3196,18 @@ impl App {
                             // Right-click → rename the tab inline.
                             MouseButton::Right => self.start_rename(idx),
                             _ => {}
+                        }
+                    } else if button == MouseButton::Left {
+                        // Empty chrome area — no chip / button hit.
+                        // `disable_window_drag` swizzled
+                        // mouseDownCanMoveWindow → NO so macOS no
+                        // longer auto-drags from the title bar.
+                        // Initiate window drag manually so the user
+                        // can still grab the chrome to move the
+                        // window. Toggle stays clickable because its
+                        // own hit-test above already `return`ed.
+                        if let Some(w) = &self.window {
+                            let _ = w.drag_window();
                         }
                     }
                 } else if button == MouseButton::Left {
