@@ -2404,6 +2404,30 @@ impl App {
     /// Tab-search keystrokes — Esc dismisses, Enter jumps to the
     /// first matching tab, Backspace deletes, printable chars
     /// extend the query. Returns true when the key was consumed.
+    /// ⌘A — select every visible cell in the focused pane. Sets
+    /// the anchor to `(0, 0)` and the focus to the bottom-right
+    /// cell of the pane's grid. ⌘C then copies the selection
+    /// (`edit.copy` checks for an active selection first); a
+    /// click anywhere clears it.
+    pub(crate) fn select_all_focused_pane(&mut self) {
+        let tab = self.active;
+        let pane_idx = self.tabs[tab].focused;
+        let Some(pane) = self.tabs[tab].panes.get(pane_idx) else {
+            return;
+        };
+        let cols = pane.grid.cols;
+        let rows = pane.grid.rows;
+        if cols == 0 || rows == 0 {
+            return;
+        }
+        let max_c = (cols - 1) as u16;
+        let max_r = (rows - 1) as u16;
+        self.text_selection = Some((tab, pane_idx, 0, 0, max_c, max_r));
+        if let Some(w) = &self.window {
+            w.request_redraw();
+        }
+    }
+
     /// Open the in-pane find bar for the currently focused pane.
     /// Idempotent — re-pressing ⌘F while find is already open
     /// re-scans + keeps the bar visible (so the user can see the

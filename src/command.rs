@@ -1070,11 +1070,29 @@ fn builtin_commands() -> Vec<Command> {
             when: Some(no_modal_open),
         },
         Command {
-            id: "fwd.cmd_c",
-            title: "Copy (⌘C → ⌃C)",
-            group: "Forwarded chords",
+            id: "edit.copy",
+            title: "Copy (⌘C)",
+            group: "Edit",
             keys: &["cmd+c"],
-            run: |a, _, k| forward_as_ctrl(a, k),
+            run: |a, _, k| {
+                // If the user has a text selection, copy it to the
+                // system clipboard and clear the selection — the
+                // standard macOS-app behavior. With no selection,
+                // fall through to the legacy ⌘C → ⌃C forward so
+                // the chord still interrupts running shell
+                // commands.
+                if let Some(text) = a.extract_selected_text()
+                    && !text.is_empty()
+                {
+                    write_clipboard_text(&text);
+                    a.text_selection = None;
+                    if let Some(w) = &a.window {
+                        w.request_redraw();
+                    }
+                    return;
+                }
+                forward_as_ctrl(a, k);
+            },
             when: Some(no_modal_open),
         },
         Command {
@@ -1086,11 +1104,13 @@ fn builtin_commands() -> Vec<Command> {
             when: Some(no_modal_open),
         },
         Command {
-            id: "fwd.cmd_a",
-            title: "Select all (⌘A → ⌃A)",
-            group: "Forwarded chords",
+            id: "edit.select_all",
+            title: "Select all (⌘A)",
+            group: "Edit",
             keys: &["cmd+a"],
-            run: |a, _, k| forward_as_ctrl(a, k),
+            run: |a, _, _| {
+                a.select_all_focused_pane();
+            },
             when: Some(no_modal_open),
         },
         Command {

@@ -1973,10 +1973,17 @@ impl Gpu {
         let start_x_px = self.inset_px + Self::SIDEBAR_PAD_LEFT_PX;
         let start_col = (start_x_px - self.inset_px - self.sidebar_w_px) / cell_w;
 
-        // Search-box label: same source-of-truth as the top-strip
-        // palette chip — tab_search query if armed, else a placeholder.
+        // Search-box label — caret semantics:
+        //   * None          — input is INACTIVE; show dim
+        //                     "Search tabs…" placeholder.
+        //   * Some(empty)   — input is ACTIVE but no chars yet;
+        //                     show a caret so the click registers
+        //                     visually.
+        //   * Some(query)   — input has chars; show them with a
+        //                     trailing caret.
         let label_raw = match self.tab_search.as_deref() {
-            Some("") | None => "Search tabs…".to_string(),
+            None => "Search tabs…".to_string(),
+            Some("") => "▏".to_string(),
             Some(q) => format!("{q}▏"),
         };
         // Build body: " 🔍 label …pad… "
