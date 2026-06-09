@@ -804,9 +804,6 @@ impl Gpu {
     /// flush against a tight border, and the body starts right
     /// after the column.
     pub fn compute_sidebar_w_px(&self, chips: &[(String, bool, bool)]) -> f32 {
-        if chips.len() <= 1 {
-            return 0.0;
-        }
         let widest = chips
             .iter()
             .map(|(label, active, attention)| Self::chip_cells(label, *active, *attention))
@@ -818,17 +815,28 @@ impl Gpu {
         // breathing room past the chip text instead of running it
         // up against the right border. (2026-06-08: was `+ 1.0`,
         // user said the column felt cramped.)
-        Self::SIDEBAR_PAD_LEFT_PX + (with_plus + 3.0) * self.atlas.cell_w
+        let raw = Self::SIDEBAR_PAD_LEFT_PX + (with_plus + 3.0) * self.atlas.cell_w;
+        // Apply the same `[min, max]` envelope the drag-override path
+        // uses — a long chip label can otherwise push the column past
+        // half the window and the body shrinks to nothing.
+        self.clamp_sidebar_w_px(raw)
     }
 
-    /// Clamp a user-drag-supplied sidebar width to `[min, max]` so a
-    /// drag can't make the column disappear (min = enough for the
-    /// `+` button + a tiny chip) or take over the window (max =
-    /// half the window width). Called by the App's tick when a
-    /// `sidebar_w_override` is active.
+    /// Clamp a sidebar width to `[min, max]` — covers both
+    /// user-drag overrides and the auto-fit path. `min` is enough
+    /// for the `+` button + a tiny chip; `max` is half the window
+    /// width so the column can't take over.
+    ///
+    /// Narrow-window guard: if `viewport / 2 < min`, we hand back
+    /// `min` rather than `f32::clamp(min, max)`, which panics when
+    /// `min > max`. Headless / startup with a tiny viewport hits
+    /// this if not defended.
     pub fn clamp_sidebar_w_px(&self, w: f32) -> f32 {
         let min_w = Self::SIDEBAR_PAD_LEFT_PX + 4.0 * self.atlas.cell_w;
         let max_w = (self.config.width as f32) * 0.5;
+        if max_w < min_w {
+            return min_w;
+        }
         w.clamp(min_w, max_w)
     }
 

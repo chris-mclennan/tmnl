@@ -559,6 +559,10 @@ impl App {
         self.renaming_tab = None;
         let was_dragging_this_tab = self.dragging_tab == Some(idx);
         self.dragging_divider = None;
+        // 2026-06-08 vert-tabs SEV-2 fix: a sidebar-resize drag in
+        // flight would keep `dragging_sidebar` true after the tab
+        // close — the next mouse-move kept resizing. Clear it.
+        self.dragging_sidebar = false;
         if self.tabs.len() <= 1 {
             self.should_quit = true;
             return;
@@ -728,11 +732,14 @@ impl App {
             };
             let target_strip = Gpu::required_strip_h(self.cfg.tab_layout, &chips, rows, tui_active);
             let target_sidebar =
-                if matches!(self.cfg.tab_layout, crate::config::TabLayout::Vertical) && multi_tab {
+                if matches!(self.cfg.tab_layout, crate::config::TabLayout::Vertical) {
                     // User-drag override wins over auto-fit. Clamped
                     // each tick so a window-resize that shrinks the
                     // viewport doesn't leave the column past the
-                    // body's reasonable bounds.
+                    // body's reasonable bounds. Single-tab vertical
+                    // still shows a sidebar so the `+` chip is
+                    // mouse-reachable (the top strip's palette is
+                    // hidden in vertical mode).
                     self.sidebar_w_override
                         .map(|w| gpu.clamp_sidebar_w_px(w))
                         .unwrap_or_else(|| gpu.compute_sidebar_w_px(&chips))
