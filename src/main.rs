@@ -1186,9 +1186,17 @@ impl Gpu {
         self.strip_chip_rects.clear();
         self.strip_chip_close_rects.clear();
         self.strip_new_tab_rect = None;
-        // Skip rendering chips when there's only one tab. Also bail
-        // when strip is disabled (non-macOS without strip support).
-        if self.strip_chips.len() <= 1 || self.strip_h <= 0.0 {
+        // Skip when strip is disabled (non-macOS without strip
+        // support). For single-tab horizontal mode, also bail — one
+        // chip in a row reads weird. For single-tab VERTICAL mode,
+        // keep rendering so the user sees their one tab in the
+        // sidebar (gives the layout toggle a visible effect even
+        // with a single tab).
+        let vertical = matches!(self.tab_layout, crate::config::TabLayout::Vertical);
+        if self.strip_h <= 0.0 {
+            return Vec::new();
+        }
+        if !vertical && self.strip_chips.len() <= 1 {
             return Vec::new();
         }
         let cell_w = self.atlas.cell_w;
