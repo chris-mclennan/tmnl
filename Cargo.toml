@@ -91,6 +91,12 @@ uds_windows = "1.1"
 # graph (candle-core/metal pulls that in).
 [target.'cfg(target_os = "macos")'.dependencies]
 fim-engine = { path = "../fim-engine", version = "0.1.0", features = ["metal"] }
+# AppKit bindings — used to swizzle the NSView so chrome controls in
+# the title-bar region (sidebar toggle next to traffic lights, etc)
+# receive clicks instead of being consumed by macOS for window-
+# dragging. See main.rs::disable_window_drag.
+objc2 = "0.6"
+objc2-app-kit = "0.3"
 
 [dev-dependencies]
 # Sandboxed temp dirs for tests that touch `$HOME` / `$XDG_CONFIG_HOME`

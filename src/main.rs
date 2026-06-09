@@ -909,14 +909,15 @@ impl Gpu {
         // Plus button is 3 cells — make sure the sidebar accommodates
         // it on the last row so the `+` doesn't overflow.
         let with_plus = widest.max(3.0);
-        // `+ 3.0` cells trailing pad — gives the column visible
-        // breathing room past the chip text instead of running it
-        // up against the right border. (2026-06-08: was `+ 1.0`,
-        // user said the column felt cramped.)
-        let raw = Self::SIDEBAR_PAD_LEFT_PX + (with_plus + 3.0) * self.atlas.cell_w;
+        // 2026-06-09 user feedback: "the width of the sidebar needs
+        // to be doubled". Was `+ 3.0` cells trailing pad on a
+        // single widest-chip-width allowance — now the chip cell
+        // count gets doubled AND there's still 3 cells of trailing
+        // pad. Roughly Warp-style sidebar width.
+        let raw = Self::SIDEBAR_PAD_LEFT_PX + (with_plus * 2.0 + 3.0) * self.atlas.cell_w;
         // Apply the same `[min, max]` envelope the drag-override path
         // uses — a long chip label can otherwise push the column past
-        // half the window and the body shrinks to nothing.
+        // the cap and the body shrinks unhelpfully.
         self.clamp_sidebar_w_px(raw)
     }
 
@@ -1108,6 +1109,7 @@ impl Gpu {
     pub fn populate_hit_rects(&mut self) {
         let _ = self.strip_chip_instances();
         let _ = self.strip_palette_chip_instances();
+        let _ = self.strip_sidebar_toggle_instances();
     }
 
     /// Emit one cell instance per configured launcher icon — a
@@ -1519,20 +1521,12 @@ impl Gpu {
         let chip_body = chip_body.as_str();
         let dropdown_text = " \u{EAB4} ";
 
-        // Sidebar-toggle button glyph (VS Code-style sidebar pill).
-        // Lives at the right end of the cluster, padded with a space
-        // each side so the icon doesn't kiss the dropdown chevron or
-        // the strip edge.
-        let toggle_text = "  \u{EBF4} ";
-
         let back_cells = back_text.chars().count();
         let fwd_cells = fwd_text.chars().count();
         let gap_cells = gap_text.chars().count();
         let chip_body_cells = chip_body.chars().count();
         let dropdown_cells = dropdown_text.chars().count();
-        let toggle_cells = toggle_text.chars().count();
-        let total_cells =
-            back_cells + fwd_cells + gap_cells + chip_body_cells + dropdown_cells + toggle_cells;
+        let total_cells = back_cells + fwd_cells + gap_cells + chip_body_cells + dropdown_cells;
         let total_w_px = total_cells as f32 * cell_w;
         let window_w_px = self.config.width as f32;
         if window_w_px < Self::CHIP_START_X_PX + total_w_px + 40.0 {
@@ -1655,21 +1649,8 @@ impl Gpu {
             );
             col += 1.0;
         }
-        // Sidebar-toggle button — slightly lifted bg (btn_bg) so it
-        // reads as a separate affordance from the search chip body.
-        let toggle_start_col = col;
-        for ch in toggle_text.chars() {
-            push(
-                &mut out,
-                col,
-                ch,
-                BTN_FG,
-                btn_bg,
-                &mut self.atlas,
-                &self.queue,
-            );
-            col += 1.0;
-        }
+        let _ = btn_bg;
+        let _ = col;
 
         // Map cells back to pixel rects.
         let cells_x = |c0: usize, c_count: usize| -> (f32, f32) {
@@ -1689,10 +1670,57 @@ impl Gpu {
         self.strip_palette_fwd_rect = Some((fx0, fx1, y0, y1));
         self.strip_palette_chip_rect = Some((cx0, cx1, y0, y1));
         self.strip_palette_dropdown_rect = Some((dx0, dx1, y0, y1));
-        // Toggle button rect — pixel-x bounds from its start col.
-        let toggle_x0 = start_x_px + (toggle_start_col - start_col) * cell_w;
-        let toggle_x1 = toggle_x0 + toggle_cells as f32 * cell_w;
-        self.strip_sidebar_toggle_rect = Some((toggle_x0, toggle_x1, y0, y1));
+        out
+    }
+
+    /// Sidebar-toggle button — sits between the macOS traffic-light
+    /// buttons and the start of the tab chip cluster (just like
+    /// Warp's toggle, image #21 reference). Clicking cycles
+    /// `cfg.tab_layout` Horizontal ↔ Vertical (App handles the flip
+    /// via `strip_sidebar_toggle_rect`).
+    ///
+    /// Geometry: 5-cell pill at pixel-x = 180, vertically centered
+    /// in the strip. The `disable_window_drag` swizzle in
+    /// `App::resumed` is what makes this position clickable —
+    /// without it, macOS swallows clicks for window-dragging.
+    fn strip_sidebar_toggle_instances(&mut self) -> Vec<pipeline::Instance> {
+        use crate::atlas::style_from_attrs;
+        self.strip_sidebar_toggle_rect = None;
+        if self.strip_h <= 0.0 {
+            return Vec::new();
+        }
+        let cell_w = self.atlas.cell_w;
+        let cell_h = self.atlas.cell_h;
+        const TOGGLE_X_PX: f32 = 180.0;
+        let cells = ["  ", "\u{EBF4}", "  "].concat();
+        let total_cells = cells.chars().count();
+        let strip_h = self.strip_h;
+        let inset_y_total = self.inset_px + self.strip_h;
+        let label_y = (strip_h - cell_h) * 0.5;
+        let base_y = (label_y - inset_y_total) / cell_h;
+        let start_col = (TOGGLE_X_PX - self.inset_px - self.sidebar_w_px) / cell_w;
+        const TOGGLE_FG: [f32; 4] = [0.78, 0.80, 0.85, 1.0];
+        let btn_bg = palette().btn_bg;
+        let mut out: Vec<pipeline::Instance> = Vec::new();
+        for (i, ch) in cells.chars().enumerate() {
+            let g = self.atlas.glyph(ch, style_from_attrs(0), &self.queue);
+            out.push(pipeline::Instance {
+                cell_pos: [start_col + i as f32, base_y],
+                fg: TOGGLE_FG,
+                bg: btn_bg,
+                uv_min: g.uv_min,
+                uv_max: g.uv_max,
+                glyph_offset: g.offset,
+                glyph_size: g.size,
+                attrs: 0,
+                _pad: 0,
+            });
+        }
+        let x0 = TOGGLE_X_PX;
+        let x1 = x0 + total_cells as f32 * cell_w;
+        let y0_px = 0.0;
+        let y1_px = self.strip_h;
+        self.strip_sidebar_toggle_rect = Some((x0, x1, y0_px, y1_px));
         out
     }
 
@@ -2080,6 +2108,7 @@ impl Gpu {
         // strip area above the grid).
         instances.extend(self.strip_chip_instances());
         instances.extend(self.strip_palette_chip_instances());
+        instances.extend(self.strip_sidebar_toggle_instances());
         instances.extend(self.launcher_chip_instances());
         self.pipeline
             .ensure_capacity(&self.device, instances.len() as u64);
@@ -2943,6 +2972,58 @@ fn tick_secondary_pane(pane: &mut Pane, visible: bool) -> Vec<Vec<tmnl_protocol:
 ///
 /// No-op when launched from a shell — stdin is a tty there, PATH
 /// already has the user's customizations.
+/// Override `mouseDownCanMoveWindow` on winit's NSView so clicks in
+/// the title-bar region reach our event loop instead of being
+/// consumed by macOS for window-dragging.
+///
+/// With `titlebar_transparent + fullsize_content_view`, our wgpu
+/// surface paints through the OS title region — but macOS still
+/// treats the top-left half as a drag handle. Without this
+/// override, the sidebar toggle button near the traffic lights is
+/// visible but un-clickable.
+///
+/// Same pattern Warp's `WarpHostView` uses (returning `NO` from
+/// `mouseDownCanMoveWindow` — see warpdotdev/warp's host_view.m).
+/// We runtime-swizzle the existing NSView class via
+/// `class_replaceMethod` so all instances return NO.
+///
+/// Side effect: window can no longer be dragged by clicking
+/// anywhere in the chrome region. Standard Cmd-drag-anywhere
+/// still works.
+#[cfg(target_os = "macos")]
+pub fn disable_window_drag(window: &winit::window::Window) {
+    use objc2::ffi::class_replaceMethod;
+    use objc2::runtime::{AnyObject, Sel};
+    use objc2::sel;
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    unsafe extern "C-unwind" fn mouse_down_can_move_window(_this: &AnyObject, _sel: Sel) -> bool {
+        false
+    }
+
+    let Ok(handle) = window.window_handle() else {
+        return;
+    };
+    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+        return;
+    };
+    let ns_view_ptr: *mut AnyObject = appkit.ns_view.as_ptr() as *mut _;
+    if ns_view_ptr.is_null() {
+        return;
+    }
+    unsafe {
+        let view = &*ns_view_ptr;
+        let cls = view.class();
+        let sel = sel!(mouseDownCanMoveWindow);
+        let types = c"B@:".as_ptr();
+        let imp_typed: unsafe extern "C-unwind" fn(&AnyObject, Sel) -> bool =
+            mouse_down_can_move_window;
+        let imp: unsafe extern "C-unwind" fn() = std::mem::transmute(imp_typed);
+        let cls_ptr: *const objc2::runtime::AnyClass = cls;
+        class_replaceMethod(cls_ptr as *mut _, sel, imp, types);
+    }
+}
+
 fn load_login_shell_env_if_needed() {
     use std::ffi::OsString;
     use std::io::IsTerminal;

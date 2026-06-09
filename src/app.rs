@@ -39,6 +39,12 @@ impl ApplicationHandler for App {
                 .with_fullsize_content_view(true);
         }
         let window = Arc::new(event_loop.create_window(attrs).unwrap());
+        // macOS: swizzle NSView's mouseDownCanMoveWindow so clicks
+        // in the title-bar region (toggle button near traffic
+        // lights) reach our event loop instead of dragging the
+        // window. Cmd-drag-anywhere still moves the window.
+        #[cfg(target_os = "macos")]
+        crate::disable_window_drag(&window);
         // Install the native menu bar once NSApp is alive (winit has
         // bootstrapped it by the time `resumed` fires).
         if self.app_menu.is_none() {
