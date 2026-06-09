@@ -39,6 +39,17 @@ impl ApplicationHandler for App {
                 .with_fullsize_content_view(true);
         }
         let window = Arc::new(event_loop.create_window(attrs).unwrap());
+        // macOS: disable click-to-drag on the window so chrome
+        // controls placed at the top of the wgpu surface (sidebar
+        // toggle, eventually search bar / `+` button) become
+        // clickable. Without this, macOS treats the top-left half
+        // of the window as a "drag titlebar" zone and swallows
+        // mouse-down events before they reach our event loop. The
+        // user can still drag the window by holding Cmd + dragging
+        // anywhere (standard macOS gesture independent of
+        // setMovable). 2026-06-09 user-requested fix.
+        #[cfg(target_os = "macos")]
+        crate::disable_window_drag(&window);
         // Install the native menu bar once NSApp is alive (winit has
         // bootstrapped it by the time `resumed` fires).
         if self.app_menu.is_none() {

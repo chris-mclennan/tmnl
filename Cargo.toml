@@ -1,6 +1,6 @@
 [package]
 name = "tmnl-rs"
-version = "0.0.5"
+version = "0.0.7"
 edition = "2024"
 rust-version = "1.85"
 description = "A GPU-rendered terminal for macOS — and a structured-cell display surface that apps can draw to directly."
@@ -91,6 +91,11 @@ uds_windows = "1.1"
 # graph (candle-core/metal pulls that in).
 [target.'cfg(target_os = "macos")'.dependencies]
 fim-engine = { path = "../fim-engine", version = "0.1.0", features = ["metal"] }
+# AppKit bindings — used to call NSWindow.setMovable(false) so chrome
+# clicks in the title-bar area reach our event loop instead of being
+# consumed by macOS for window-dragging. See main.rs::disable_window_drag.
+objc2 = "0.6"
+objc2-app-kit = "0.3"
 
 [dev-dependencies]
 # Sandboxed temp dirs for tests that touch `$HOME` / `$XDG_CONFIG_HOME`

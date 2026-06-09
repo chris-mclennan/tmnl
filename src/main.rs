@@ -1684,17 +1684,13 @@ impl Gpu {
         }
         let cell_w = self.atlas.cell_w;
         let cell_h = self.atlas.cell_h;
-        // Pixel-x where the button starts. tmnl uses
-        // `titlebar_transparent + fullsize_content_view` so wgpu can
-        // paint through the title area — but macOS still treats the
-        // top-left region of the window as a "drag zone" (clicks
-        // get consumed for window-dragging, not passed to the wgpu
-        // surface). Empirically the drag zone extends to roughly
-        // 200 logical pixels from the left edge. Place the button
-        // at 280 physical (= 140 logical on Retina, 280 on standard
-        // DPI) — past the drag zone on both DPIs while still
-        // visually on the LEFT side, next-ish to the traffic lights.
-        const TOGGLE_X_PX: f32 = 280.0;
+        // Pixel-x where the button starts. Sits just past the
+        // macOS traffic-light buttons (~150px physical wide on
+        // Retina). The window's `setMovable(false)` call in
+        // `disable_window_drag` (main.rs) is what makes this
+        // position clickable — without it, macOS swallows clicks
+        // in the top-left half of the window for window-dragging.
+        const TOGGLE_X_PX: f32 = 180.0;
         // 5 cells wide: pad / pad / glyph / pad / pad.
         let cells = ["  ", "\u{EBF4}", "  "].concat();
         let total_cells = cells.chars().count();
@@ -2979,6 +2975,41 @@ fn tick_secondary_pane(pane: &mut Pane, visible: bool) -> Vec<Vec<tmnl_protocol:
 ///
 /// No-op when launched from a shell — stdin is a tty there, PATH
 /// already has the user's customizations.
+/// Disable macOS's "click anywhere in title area to drag the window"
+/// behavior. With `titlebar_transparent + fullsize_content_view`,
+/// our wgpu surface paints through the OS title area — but macOS
+/// still treats that region as a drag handle, swallowing mouse-down
+/// events before they reach winit.
+///
+/// `setMovable:NO` is the supported AppKit API for this. The user
+/// loses the ability to drag the window by clicking anywhere in the
+/// title region, but standard macOS drag-by-Cmd-click still works
+/// (Cmd-drag anywhere → moves the window).
+///
+/// Called once during window creation.
+#[cfg(target_os = "macos")]
+pub fn disable_window_drag(window: &winit::window::Window) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let Ok(handle) = window.window_handle() else {
+        return;
+    };
+    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+        return;
+    };
+    let ns_view: *mut AnyObject = appkit.ns_view.as_ptr() as *mut _;
+    if ns_view.is_null() {
+        return;
+    }
+    unsafe {
+        let ns_window: *mut AnyObject = msg_send![ns_view, window];
+        if !ns_window.is_null() {
+            let _: () = msg_send![ns_window, setMovable: false];
+        }
+    }
+}
+
 fn load_login_shell_env_if_needed() {
     use std::ffi::OsString;
     use std::io::IsTerminal;
@@ -3033,6 +3064,17 @@ fn main() {
     // to silence subsequent launches.
     family_offer::maybe_offer_at_launch();
     let argv: Vec<String> = std::env::args().skip(1).collect();
+    // --version: print the version and exit. Useful for confirming
+    // which build is actually running when debugging chrome / UI
+    // issues across multiple bundles (tmnl.app, tmnl-nightly.app,
+    // direct cargo binary).
+    if argv.iter().any(|a| a == "--version" || a == "-v") {
+        println!("tmnl {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+    // Print version on EVERY launch so the user can confirm they're
+    // running the latest binary without having to invoke --version.
+    eprintln!("tmnl {} starting", env!("CARGO_PKG_VERSION"));
     // Headless mode — no window, scripted stdin, text grid dumps (see
     // `src/headless.rs`). Branches out before any winit / wgpu / AppKit
     // setup so it runs fine with no display.
