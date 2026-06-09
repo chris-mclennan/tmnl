@@ -931,14 +931,11 @@ impl Gpu {
         // Plus button is 3 cells — make sure the sidebar accommodates
         // it on the last row so the `+` doesn't overflow.
         let with_plus = widest.max(3.0);
-        // 2026-06-09 user feedback (second pass): "doesn't appear
-        // to be doubled". Header now also holds a search input +
-        // `+` button, so the sidebar needs to be wide enough to
-        // show "Search tabs…" + magnify glyph + a 3-cell plus
-        // button. A flat 30-cell floor (≈ 240 px logical) reads
-        // like Warp's sidebar regardless of chip-label length;
-        // longer chip labels grow it further.
-        let chip_target_cells = (with_plus * 3.0 + 6.0).max(30.0);
+        // 2026-06-09 user feedback (third pass): "reduce sidebar
+        // width by ~25%". Scaled formula + floor by 0.75 — was
+        // `widest * 3 + 6` / floor 30; now ~2.25/4.5/22. Still
+        // wide enough for "Search tabs…" + magnify + plus button.
+        let chip_target_cells = (with_plus * 2.25 + 4.5).max(22.0);
         let raw = Self::SIDEBAR_PAD_LEFT_PX + chip_target_cells * self.atlas.cell_w;
         // Apply the same `[min, max]` envelope the drag-override path
         // uses — a long chip label can otherwise push the column past
