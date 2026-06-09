@@ -198,6 +198,7 @@ impl App {
             dragging_divider: None,
             sidebar_w_override: None,
             dragging_sidebar: false,
+            sidebar_drag_press_x: None,
             text_selection: None,
             dragging_selection: false,
             tab_search: None,
@@ -620,6 +621,7 @@ impl App {
         // flight would keep `dragging_sidebar` true after the tab
         // close — the next mouse-move kept resizing. Clear it.
         self.dragging_sidebar = false;
+        self.sidebar_drag_press_x = None;
         if self.tabs.len() <= 1 {
             self.should_quit = true;
             return;
@@ -2715,12 +2717,25 @@ impl App {
         // override to the current cursor x (clamped by the next
         // tick's `Gpu::clamp_sidebar_w_px`). Returns early so the
         // chip-reorder + body-forward paths below don't also fire.
+        //
+        // Require a minimum DRAG_THRESHOLD movement before the
+        // first width-update so a plain click in the 4-px grab
+        // zone doesn't snap the border to the cursor on
+        // sub-pixel jitter. Once the threshold is crossed once,
+        // the press-x is cleared and subsequent updates flow
+        // freely until release.
         if self.dragging_sidebar && self.buttons_down & (1u8 << BUTTON_LEFT) != 0 {
-            self.sidebar_w_override = Some(position.x as f32);
-            // Request a redraw so the next render picks up the new
-            // override; the actual width-apply happens in tick.
-            if let Some(w) = &self.window {
-                w.request_redraw();
+            const DRAG_THRESHOLD_PX: f64 = 4.0;
+            let above_threshold = match self.sidebar_drag_press_x {
+                Some(start_x) => (position.x - start_x).abs() >= DRAG_THRESHOLD_PX,
+                None => true,
+            };
+            if above_threshold {
+                self.sidebar_drag_press_x = None;
+                self.sidebar_w_override = Some(position.x as f32);
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
             }
             return;
         }
@@ -2936,6 +2951,7 @@ impl App {
                 && self.cursor_px.1 >= strip_y
             {
                 self.dragging_sidebar = true;
+                self.sidebar_drag_press_x = Some(self.cursor_px.0);
                 return;
             }
         }
@@ -3224,6 +3240,7 @@ impl App {
             self.dragging_tab = None;
             self.dragging_divider = None;
             self.dragging_sidebar = false;
+            self.sidebar_drag_press_x = None;
             if self.dragging_selection {
                 self.dragging_selection = false;
                 // Copy the selected text to the system clipboard

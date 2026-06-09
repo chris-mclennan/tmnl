@@ -414,6 +414,13 @@ struct App {
     /// border is in flight. Updates `sidebar_w_override` to track
     /// the cursor each move event; cleared on left-release.
     dragging_sidebar: bool,
+    /// Pixel-x of the original left-press when `dragging_sidebar`
+    /// armed. Cursor-moved events compare against this to require
+    /// a minimum drag distance before changing the sidebar width —
+    /// without it, a plain click in the 4-px grab zone would snap
+    /// the border to the cursor x as soon as any sub-pixel jitter
+    /// reached the move handler. `None` outside an armed drag.
+    sidebar_drag_press_x: Option<f64>,
     /// In-flight text selection on the focused body grid — `Some`
     /// while a drag is in progress AND for as long as the user keeps
     /// the selection visible (cleared on a click outside, on Esc, or
@@ -3509,6 +3516,7 @@ fn main() {
         dragging_divider: None,
         sidebar_w_override: None,
         dragging_sidebar: false,
+        sidebar_drag_press_x: None,
         text_selection: None,
         dragging_selection: false,
         tab_search: None,
