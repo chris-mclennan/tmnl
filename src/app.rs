@@ -807,11 +807,22 @@ impl App {
                     0.0
                 };
             // 2026-06-09: launcher_position setting lets the user
-            // pick Left / Top / Bottom, but Top + Bottom rendering
-            // isn't wired yet — fall back to Left so the launchers
-            // stay reachable. Logged once via the warn-deduped path
-            // so a misconfigured setting doesn't flood stderr.
-            let target_launcher = gpu.compute_launcher_w_px(self.cfg.launcher_icons.len());
+            // pick Left / Top / Bottom. Top paints icons inline in
+            // the top strip (left rail width = 0). Bottom isn't
+            // wired yet (needs a 2nd strip + shader globals); falls
+            // through to Top for now so users picking Bottom at
+            // least see their icons.
+            let launcher_count = self.cfg.launcher_icons.len();
+            let target_launcher = match self.cfg.launcher_position {
+                crate::config::LauncherPosition::Left => gpu.compute_launcher_w_px(launcher_count),
+                crate::config::LauncherPosition::Top | crate::config::LauncherPosition::Bottom => {
+                    0.0
+                }
+            };
+            let launcher_in_top_strip = matches!(
+                self.cfg.launcher_position,
+                crate::config::LauncherPosition::Top | crate::config::LauncherPosition::Bottom
+            );
             // Resolve each icon's `(glyph, fg)` into the Gpu-side
             // cache so the per-frame paint doesn't re-parse hex.
             // Invalid `#rrggbb` strings fall back to the chrome
@@ -832,6 +843,7 @@ impl App {
                 })
                 .collect();
             gpu.set_launcher_icons(icons);
+            gpu.set_launcher_in_top_strip(launcher_in_top_strip);
             let r1 = gpu.set_strip_h(target_strip);
             let r2 = gpu.set_sidebar_w_px(target_sidebar);
             let r3 = gpu.set_launcher_w_px(target_launcher);
