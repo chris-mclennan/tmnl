@@ -7,6 +7,58 @@ messages and `findings/` reports.
 
 ---
 
+## Bottom-anchored prompt (Warp / Claude Code style)
+
+The shell prompt sticks to the bottom of the window; command
+output history scrolls upward above it. Same UX Warp + Claude
+Code + (optionally) iTerm have. Removes the "where did my prompt
+go?" hunt after a long-output command.
+
+Mechanism:
+
+- **OSC 133 prompt-boundary tracking**: already partially wired
+  via `osc133::State` in `shell.rs`. The shell (zsh with
+  `precmd`/`preexec` hooks, or fish, or bash with PROMPT_COMMAND)
+  emits `OSC 133 ; A ST` (prompt start), `OSC 133 ; B ST`
+  (command start), `OSC 133 ; C ST` (output start),
+  `OSC 133 ; D [;exit] ST` (output end). tmnl's prompt script
+  needs `A` / `B` markers added; mnml-prompt.sh currently only
+  emits `MNML_CONTEXT` plumbing.
+- **Split-region renderer**: today the grid is one flat region.
+  Bottom-mode would split the body grid into two virtual regions:
+  - **Scrollback region** — top portion, height = N rows. Renders
+    the accumulated command-output history. Wheel scrolls this
+    region independently.
+  - **Live prompt region** — bottom portion, height = (1 + edit
+    rows). Renders the current prompt + the edit line as the user
+    types. Always visible.
+- **vt100 grid integration**: vt100::Parser tracks the full
+  scrollback as a single grid. The split-region renderer needs
+  to (a) freeze rows above the current prompt as scrollback when
+  a `C` marker arrives, (b) render the live cursor region at the
+  bottom inset row, (c) auto-scroll the scrollback region as new
+  output lands.
+- **Settings UI**: new `PromptPosition` enum with `Natural`
+  (current) + `Bottom`. New settings row.
+
+Open questions:
+
+- Does the scrollback region get its own wheel handling? (Yes —
+  scroll up reveals older commands. Scrolling down past the
+  newest output snaps back to "live" mode.)
+- Behavior under TUI alt-screen apps (vim, htop)? They take over
+  the full grid — bottom-prompt mode should silently fall back
+  to natural rendering while alt-screen is active.
+- Does the prompt's bg get a subtle divider to visually separate
+  scrollback from the active prompt zone? (Probably yes — one
+  pixel of `dim_fg` is enough.)
+
+Scope: ~500 lines + a small shell-script update + significant
+testing under different shells. Real feature build, not a
+one-pass session.
+
+---
+
 ## Mouse drag-select + copy (body text)
 
 Standard terminal: mouse-press in body starts a selection, drag
@@ -41,6 +93,34 @@ Open questions:
 - Selection across scrollback (only the visible viewport, or also
   hidden scrollback)? The pty's scrollback lives in vt100's
   parser state — accessible but needs different cell-coord math.
+
+---
+
+## Launcher rail: Top + Bottom position implementations
+
+The `launcher_position` setting accepts `Left` / `Top` / `Bottom`
+but only `Left` is wired. Top and Bottom currently fall back to
+Left silently.
+
+**Top** — render the configured launcher icons inline in the top
+bufferline strip, after the `+` new-tab chip. Reuse the existing
+`strip_chip_instances` infrastructure (or a new sibling method).
+Hit-rects record into a new `launcher_top_icon_rects` Vec on
+`PaneRects`. Mouse dispatcher gets a new branch parallel to the
+existing left-rail handler. Strip-width math doesn't change since
+launchers slot into existing strip room.
+
+**Bottom** — new chrome region below the body grid (mirror of
+the top strip's geometry). Requires:
+- New `StripGlobals.bottom_strip_h` + a 6th quad in `strip.wgsl`.
+- Cell-pipeline globals `inset_y` becomes `inset_top` /
+  `inset_bottom` so the body grid leaves room for the rail.
+- `compute_bottom_strip_h` on Gpu, parallel to `compute_launcher_w_px`.
+- New `bottom_launcher_chip_instances` emitter.
+- Hit-rects + dispatcher branch.
+
+Estimate: Top ~150 lines, Bottom ~300 lines (including the
+shader + globals work).
 
 ---
 

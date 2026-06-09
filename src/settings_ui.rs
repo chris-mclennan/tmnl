@@ -12,7 +12,7 @@
 //! Section headers / per-section grouping ship when there are
 //! enough rows to justify them.
 
-use crate::config::{Config, TabLayout};
+use crate::config::{Config, LauncherPosition, TabLayout};
 use crate::grid::Grid;
 
 const BG: [f32; 4] = [0.07, 0.08, 0.10, 1.0];
@@ -30,9 +30,15 @@ enum RowKind {
     Inset,
     TabLayout,
     ThemedPrompt,
+    LauncherPosition,
 }
 
-const ROWS: &[RowKind] = &[RowKind::Inset, RowKind::TabLayout, RowKind::ThemedPrompt];
+const ROWS: &[RowKind] = &[
+    RowKind::Inset,
+    RowKind::TabLayout,
+    RowKind::ThemedPrompt,
+    RowKind::LauncherPosition,
+];
 
 pub struct SettingsState {
     pub cfg: Config,
@@ -83,6 +89,14 @@ impl SettingsState {
                 // Boolean toggle — any non-zero delta flips.
                 self.cfg.themed_prompt = !self.cfg.themed_prompt;
             }
+            RowKind::LauncherPosition => {
+                // Three-way cycle: Left → Top → Bottom → Left.
+                self.cfg.launcher_position = match self.cfg.launcher_position {
+                    LauncherPosition::Left => LauncherPosition::Top,
+                    LauncherPosition::Top => LauncherPosition::Bottom,
+                    LauncherPosition::Bottom => LauncherPosition::Left,
+                };
+            }
         }
     }
 
@@ -92,6 +106,9 @@ impl SettingsState {
             RowKind::Inset => self.cfg.inset = Config::default().inset,
             RowKind::TabLayout => self.cfg.tab_layout = Config::default().tab_layout,
             RowKind::ThemedPrompt => self.cfg.themed_prompt = Config::default().themed_prompt,
+            RowKind::LauncherPosition => {
+                self.cfg.launcher_position = Config::default().launcher_position;
+            }
         }
     }
 
@@ -112,11 +129,16 @@ impl SettingsState {
         self.cfg.themed_prompt != Config::default().themed_prompt
     }
 
+    fn launcher_position_modified(&self) -> bool {
+        self.cfg.launcher_position != Config::default().launcher_position
+    }
+
     fn row_modified(&self, kind: RowKind) -> bool {
         match kind {
             RowKind::Inset => self.inset_modified(),
             RowKind::TabLayout => self.tab_layout_modified(),
             RowKind::ThemedPrompt => self.themed_prompt_modified(),
+            RowKind::LauncherPosition => self.launcher_position_modified(),
         }
     }
 }
@@ -129,6 +151,7 @@ fn row_label(kind: RowKind) -> &'static str {
         RowKind::Inset => "Inset (px)",
         RowKind::TabLayout => "Tab layout",
         RowKind::ThemedPrompt => "Themed prompt",
+        RowKind::LauncherPosition => "Launcher position",
     }
 }
 
@@ -140,6 +163,9 @@ fn row_help(kind: RowKind) -> &'static str {
         }
         RowKind::ThemedPrompt => {
             "Powerline-style prompt that color-matches tmnl's theme. First time you turn it on, tmnl appends a source line to ~/.zshrc."
+        }
+        RowKind::LauncherPosition => {
+            "Where the launcher icons render. Left = vertical rail (default). Top/Bottom not yet implemented — they fall back to Left."
         }
     }
 }
@@ -204,6 +230,7 @@ pub fn draw(grid: &mut Grid, st: &SettingsState) {
             RowKind::Inset => format!("{:>3}", st.cfg.inset as i32),
             RowKind::TabLayout => render_enum_choices(st.cfg.tab_layout),
             RowKind::ThemedPrompt => render_bool_choices(st.cfg.themed_prompt),
+            RowKind::LauncherPosition => render_launcher_position(st.cfg.launcher_position),
         };
         let modified = st.row_modified(*kind);
         let suffix_w = if modified { 6 } else { 4 };
@@ -255,6 +282,30 @@ fn render_bool_choices(current: bool) -> String {
 /// Render the `[active]` / other format for an enum field. Active
 /// choice is in brackets, others are plain — matches the family UI
 /// convention.
+/// Three-way `[active]` / other / other display for the launcher
+/// position row. Order: left, top, bottom — most-implemented first.
+fn render_launcher_position(current: LauncherPosition) -> String {
+    let choices = [
+        ("left", LauncherPosition::Left),
+        ("top", LauncherPosition::Top),
+        ("bottom", LauncherPosition::Bottom),
+    ];
+    let mut out = String::new();
+    for (i, (label, value)) in choices.iter().enumerate() {
+        if i > 0 {
+            out.push_str(" / ");
+        }
+        if *value == current {
+            out.push('[');
+            out.push_str(label);
+            out.push(']');
+        } else {
+            out.push_str(label);
+        }
+    }
+    out
+}
+
 fn render_enum_choices(current: TabLayout) -> String {
     let mut out = String::new();
     let choices = [

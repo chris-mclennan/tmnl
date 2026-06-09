@@ -797,6 +797,11 @@ impl App {
                 } else {
                     0.0
                 };
+            // 2026-06-09: launcher_position setting lets the user
+            // pick Left / Top / Bottom, but Top + Bottom rendering
+            // isn't wired yet — fall back to Left so the launchers
+            // stay reachable. Logged once via the warn-deduped path
+            // so a misconfigured setting doesn't flood stderr.
             let target_launcher = gpu.compute_launcher_w_px(self.cfg.launcher_icons.len());
             // Resolve each icon's `(glyph, fg)` into the Gpu-side
             // cache so the per-frame paint doesn't re-parse hex.

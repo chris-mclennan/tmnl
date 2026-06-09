@@ -75,6 +75,11 @@ pub struct Config {
     /// ```
     #[serde(default, rename = "launcher_icon")]
     pub launcher_icons: Vec<LauncherIcon>,
+    /// Where launcher icons render. Default: `Left` (vertical
+    /// column on window's left edge). `Top` puts them inline in
+    /// the bufferline; `Bottom` is reserved (not yet wired).
+    #[serde(default)]
+    pub launcher_position: LauncherPosition,
 }
 
 /// One entry in the left-edge launcher rail. `id` is the stable
@@ -113,6 +118,24 @@ pub enum TabLayout {
     Vertical,
 }
 
+/// Where the launcher rail's icons render.
+///
+/// * `Left` — vertical column on the window's left edge (default;
+///   matches mnml's `> INTEGRATIONS` placement).
+/// * `Top` — chips inline in the bufferline strip after the `+`
+///   new-tab chip.
+/// * `Bottom` — chips on a dedicated bottom strip below the body
+///   grid. Not yet wired — selecting it currently falls back to
+///   `Left` with a log line; queued in TODO.md.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LauncherPosition {
+    #[default]
+    Left,
+    Top,
+    Bottom,
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -121,6 +144,7 @@ impl Default for Config {
             tab_layout: TabLayout::Horizontal,
             themed_prompt: false,
             launcher_icons: Vec::new(),
+            launcher_position: LauncherPosition::Left,
         }
     }
 }
@@ -210,6 +234,7 @@ mod tests {
             tab_layout: TabLayout::Horizontal,
             themed_prompt: false,
             launcher_icons: Vec::new(),
+            launcher_position: LauncherPosition::Left,
         }
     }
 
