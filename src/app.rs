@@ -780,14 +780,17 @@ impl App {
             };
             let target_strip = Gpu::required_strip_h(self.cfg.tab_layout, &chips, rows, tui_active);
             let target_sidebar =
-                if matches!(self.cfg.tab_layout, crate::config::TabLayout::Vertical) {
+                if matches!(self.cfg.tab_layout, crate::config::TabLayout::Vertical) && multi_tab {
                     // User-drag override wins over auto-fit. Clamped
                     // each tick so a window-resize that shrinks the
                     // viewport doesn't leave the column past the
-                    // body's reasonable bounds. Single-tab vertical
-                    // still shows a sidebar so the `+` chip is
-                    // mouse-reachable (the top strip's palette is
-                    // hidden in vertical mode).
+                    // body's reasonable bounds. 2026-06-09: the
+                    // single-tab branch (was: keep a sliver of
+                    // sidebar so `+` is mouse-reachable) is gone —
+                    // it left an unwanted blank column for users
+                    // who don't actively use vert-tabs. `+` is
+                    // still keyboard-reachable via `Cmd+T` and
+                    // shows up the moment a second tab exists.
                     self.sidebar_w_override
                         .map(|w| gpu.clamp_sidebar_w_px(w))
                         .unwrap_or_else(|| gpu.compute_sidebar_w_px(&chips))
