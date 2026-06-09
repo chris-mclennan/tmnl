@@ -1288,11 +1288,12 @@ impl Gpu {
         // ~12px above the prompt.
         let first_row_top_px = if vertical {
             // 2026-06-09: shift chips down by SIDEBAR_HEADER_H_PX
-            // to leave a header row above the chips for the
-            // search input + `+` button (see
-            // `sidebar_header_instances`).
-            (self.inset_px + self.strip_h + SIDEBAR_HEADER_H_PX - (TAB_ROW_H_PX - cell_h) * 0.5)
-                .max(self.strip_h + SIDEBAR_HEADER_H_PX)
+            // (header row) + SIDEBAR_HEADER_GAP_PX (breathing strip
+            // — was 0, first chip kissed the search box).
+            const SIDEBAR_HEADER_GAP_PX: f32 = 10.0;
+            let off = SIDEBAR_HEADER_H_PX + SIDEBAR_HEADER_GAP_PX;
+            (self.inset_px + self.strip_h + off - (TAB_ROW_H_PX - cell_h) * 0.5)
+                .max(self.strip_h + off)
         } else {
             tab_zone_top_px
         };
@@ -1487,6 +1488,15 @@ impl Gpu {
         self.strip_palette_chip_rect = None;
         self.strip_palette_dropdown_rect = None;
         if self.strip_h <= 0.0 {
+            return Vec::new();
+        }
+        // Vertical-tab mode: the sidebar header owns the search +
+        // plus chrome; rendering the top-strip palette chip too
+        // mirrors `tab_search` into both places and reads as
+        // distracting. Skip the whole cluster (incl. back/fwd nav
+        // arrows + dropdown) — toggle stays, that's enough chrome
+        // up top. 2026-06-09 user feedback.
+        if matches!(self.tab_layout, crate::config::TabLayout::Vertical) {
             return Vec::new();
         }
         let cell_w = self.atlas.cell_w;
@@ -1733,9 +1743,16 @@ impl Gpu {
         const TOGGLE_X_PX: f32 = 180.0;
         let cells = ["  ", "\u{EBF4}", "  "].concat();
         let total_cells = cells.chars().count();
-        let strip_h = self.strip_h;
+        // Vertically center against the palette zone (same constant
+        // `strip_palette_chip_instances` uses) so the toggle sits at
+        // the same y as the macOS traffic-light buttons regardless
+        // of whether the strip has grown to hold wrapped tab rows.
+        // 2026-06-09 user feedback: was using `self.strip_h` which
+        // walks down with extra tab rows; toggle drifted up vs the
+        // traffic lights.
+        let palette_zone_h = MACOS_TAB_STRIP_PX_SINGLE;
         let inset_y_total = self.inset_px + self.strip_h;
-        let label_y = (strip_h - cell_h) * 0.5;
+        let label_y = ((palette_zone_h - cell_h) * 0.5).max(0.0);
         let base_y = (label_y - inset_y_total) / cell_h;
         let start_col = (TOGGLE_X_PX - self.inset_px - self.sidebar_w_px) / cell_w;
         const TOGGLE_FG: [f32; 4] = [0.78, 0.80, 0.85, 1.0];
@@ -1795,9 +1812,12 @@ impl Gpu {
             return Vec::new();
         }
         // Reserve right-side cells: 3-cell `+` button + 1 cell gap.
+        // `right_pad` = 2 cells of breathing room between the plus
+        // button and the sidebar's right divider — was 1, plus
+        // visibly kissed the divider. 2026-06-09 user feedback.
         let plus_cells = 3.0;
         let gap_cells = 1.0;
-        let right_pad = 1.0;
+        let right_pad = 2.0;
         let search_cells = (sidebar_cells - plus_cells - gap_cells - right_pad).max(4.0);
 
         // Header sits in the body region just below the top strip.
