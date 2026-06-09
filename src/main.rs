@@ -558,6 +558,14 @@ struct Gpu {
     /// per-cell bg in the body grid so selected cells visually
     /// inverted (selection_bg color).
     selection_bounds: Option<((u16, u16), (u16, u16))>,
+    /// When `true`, body-grid rows are shifted down so the cursor
+    /// row lands at the bottom of the visible area. App sets this
+    /// from `cfg.prompt_position` before calling `render`. Empty
+    /// rows fill the top of the body until enough output exists.
+    /// Suppressed automatically when an alt-screen TUI is active —
+    /// those apps take over the whole grid and would render weirdly
+    /// if shifted.
+    bottom_prompt: bool,
     /// One entry per launcher rail glyph — `(glyph, fg_color)`.
     /// App pushes the live list into Gpu via `set_launcher_icons`
     /// whenever the config changes. Rendered by
@@ -678,6 +686,7 @@ impl Gpu {
             sidebar_scroll_rows: 0.0,
             launcher_w_px: 0.0,
             selection_bounds: None,
+            bottom_prompt: false,
             launcher_icons: Vec::new(),
             launcher_icon_rects: Vec::new(),
         }
@@ -791,6 +800,7 @@ impl Gpu {
             sidebar_scroll_rows: 0.0,
             launcher_w_px: 0.0,
             selection_bounds: None,
+            bottom_prompt: false,
             launcher_icons: Vec::new(),
             launcher_icon_rects: Vec::new(),
         })
@@ -1937,6 +1947,35 @@ impl Gpu {
             self.launcher_w_px,
         );
         let mut instances = CellPipeline::build_instances(&self.grid, &mut self.atlas, &self.queue);
+        // Bottom-prompt mode — shift every body cell down so the
+        // cursor row lands at the bottom of the visible grid. The
+        // cursor's row is recovered from the per-cell cursor
+        // attribute bits (set by `apply_frame_to_grid`). When the
+        // cursor isn't on screen (e.g. just after a clear, no
+        // output yet), the shift is 0 — natural rendering. Strip
+        // chips + palette + launcher rail were appended AFTER this
+        // call and are NOT shifted; they live in chrome cells.
+        if self.bottom_prompt {
+            let cols = self.grid.cols;
+            let rows = self.grid.rows;
+            let cursor_idx = instances.iter().take((cols * rows) as usize).position(|i| {
+                i.attrs & (ATTR_CURSOR_BLOCK | ATTR_CURSOR_UNDERLINE | ATTR_CURSOR_BAR) != 0
+            });
+            if let Some(idx) = cursor_idx {
+                let cursor_row = (idx as u32 / cols) as i32;
+                let shift = (rows as i32 - 1 - cursor_row).max(0) as f32;
+                if shift > 0.0 {
+                    // Only touch body cells — strip + palette + rail
+                    // chips append later in `render`. Body cells are
+                    // the first `cols * rows` instances since
+                    // `build_instances` writes row-major.
+                    let body_count = (cols * rows) as usize;
+                    for inst in instances.iter_mut().take(body_count) {
+                        inst.cell_pos[1] += shift;
+                    }
+                }
+            }
+        }
         // Text-selection overlay — override the bg color for every
         // cell inside the selection bounds. Cells live in row-major
         // order in `instances` (col 0..cols, then row 0..rows), so

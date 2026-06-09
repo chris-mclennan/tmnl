@@ -80,6 +80,10 @@ pub struct Config {
     /// the bufferline; `Bottom` is reserved (not yet wired).
     #[serde(default)]
     pub launcher_position: LauncherPosition,
+    /// Anchor shell prompts at the bottom of the body, Warp-style.
+    /// Default `Natural` matches every other terminal.
+    #[serde(default)]
+    pub prompt_position: PromptPosition,
 }
 
 /// One entry in the left-edge launcher rail. `id` is the stable
@@ -118,6 +122,25 @@ pub enum TabLayout {
     Vertical,
 }
 
+/// Whether shell prompts render at their natural cursor position
+/// or anchored to the bottom of the body grid (Warp / Claude Code
+/// style). v1: render-time shift only — empty rows appear at top
+/// of the body when output is short. Full Warp-style scrollback
+/// rendering is a later iteration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum PromptPosition {
+    /// Prompt sits wherever the shell put it. Natural terminal
+    /// behavior — short output stays at the top, long output
+    /// scrolls naturally.
+    #[default]
+    Natural,
+    /// Prompt is shifted to the bottom row regardless of how much
+    /// output preceded it. Empty rows fill the top until enough
+    /// output exists to fill the grid.
+    Bottom,
+}
+
 /// Where the launcher rail's icons render.
 ///
 /// * `Left` — vertical column on the window's left edge (default;
@@ -145,6 +168,7 @@ impl Default for Config {
             themed_prompt: false,
             launcher_icons: Vec::new(),
             launcher_position: LauncherPosition::Left,
+            prompt_position: PromptPosition::Natural,
         }
     }
 }
@@ -235,6 +259,7 @@ mod tests {
             themed_prompt: false,
             launcher_icons: Vec::new(),
             launcher_position: LauncherPosition::Left,
+            prompt_position: PromptPosition::Natural,
         }
     }
 

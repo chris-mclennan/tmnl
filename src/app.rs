@@ -3325,8 +3325,16 @@ impl App {
         // GPU so the cell pipeline can override the bg for selected
         // cells. Cleared when no selection.
         let sel = self.selection_bounds();
+        // Bottom-prompt mode is suppressed while an alt-screen TUI
+        // is active (vim, htop, etc.) — those apps take over the
+        // grid and rely on natural cursor placement.
+        let bottom_prompt = matches!(
+            self.cfg.prompt_position,
+            crate::config::PromptPosition::Bottom
+        ) && !self.altscreen_active;
         if let Some(gpu) = &mut self.gpu {
             gpu.selection_bounds = sel;
+            gpu.bottom_prompt = bottom_prompt;
             gpu.render();
         }
         if let Some(w) = &self.window {

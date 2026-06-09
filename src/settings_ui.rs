@@ -12,7 +12,7 @@
 //! Section headers / per-section grouping ship when there are
 //! enough rows to justify them.
 
-use crate::config::{Config, LauncherPosition, TabLayout};
+use crate::config::{Config, LauncherPosition, PromptPosition, TabLayout};
 use crate::grid::Grid;
 
 const BG: [f32; 4] = [0.07, 0.08, 0.10, 1.0];
@@ -30,6 +30,7 @@ enum RowKind {
     Inset,
     TabLayout,
     ThemedPrompt,
+    PromptPosition,
     LauncherPosition,
 }
 
@@ -37,6 +38,7 @@ const ROWS: &[RowKind] = &[
     RowKind::Inset,
     RowKind::TabLayout,
     RowKind::ThemedPrompt,
+    RowKind::PromptPosition,
     RowKind::LauncherPosition,
 ];
 
@@ -97,6 +99,13 @@ impl SettingsState {
                     LauncherPosition::Bottom => LauncherPosition::Left,
                 };
             }
+            RowKind::PromptPosition => {
+                // Two-way toggle: Natural ↔ Bottom.
+                self.cfg.prompt_position = match self.cfg.prompt_position {
+                    PromptPosition::Natural => PromptPosition::Bottom,
+                    PromptPosition::Bottom => PromptPosition::Natural,
+                };
+            }
         }
     }
 
@@ -108,6 +117,9 @@ impl SettingsState {
             RowKind::ThemedPrompt => self.cfg.themed_prompt = Config::default().themed_prompt,
             RowKind::LauncherPosition => {
                 self.cfg.launcher_position = Config::default().launcher_position;
+            }
+            RowKind::PromptPosition => {
+                self.cfg.prompt_position = Config::default().prompt_position;
             }
         }
     }
@@ -133,12 +145,17 @@ impl SettingsState {
         self.cfg.launcher_position != Config::default().launcher_position
     }
 
+    fn prompt_position_modified(&self) -> bool {
+        self.cfg.prompt_position != Config::default().prompt_position
+    }
+
     fn row_modified(&self, kind: RowKind) -> bool {
         match kind {
             RowKind::Inset => self.inset_modified(),
             RowKind::TabLayout => self.tab_layout_modified(),
             RowKind::ThemedPrompt => self.themed_prompt_modified(),
             RowKind::LauncherPosition => self.launcher_position_modified(),
+            RowKind::PromptPosition => self.prompt_position_modified(),
         }
     }
 }
@@ -151,6 +168,7 @@ fn row_label(kind: RowKind) -> &'static str {
         RowKind::Inset => "Inset (px)",
         RowKind::TabLayout => "Tab layout",
         RowKind::ThemedPrompt => "Themed prompt",
+        RowKind::PromptPosition => "Prompt position",
         RowKind::LauncherPosition => "Launcher position",
     }
 }
@@ -163,6 +181,9 @@ fn row_help(kind: RowKind) -> &'static str {
         }
         RowKind::ThemedPrompt => {
             "Powerline-style prompt that color-matches tmnl's theme. First time you turn it on, tmnl appends a source line to ~/.zshrc."
+        }
+        RowKind::PromptPosition => {
+            "Bottom anchors the shell prompt to the last row (Warp / Claude Code style); empty space appears at the top when output is short. Alt-screen TUIs (vim, htop) ignore this setting."
         }
         RowKind::LauncherPosition => {
             "Where the launcher icons render. Left = vertical rail (default). Top/Bottom not yet implemented — they fall back to Left."
@@ -230,6 +251,7 @@ pub fn draw(grid: &mut Grid, st: &SettingsState) {
             RowKind::Inset => format!("{:>3}", st.cfg.inset as i32),
             RowKind::TabLayout => render_enum_choices(st.cfg.tab_layout),
             RowKind::ThemedPrompt => render_bool_choices(st.cfg.themed_prompt),
+            RowKind::PromptPosition => render_prompt_position(st.cfg.prompt_position),
             RowKind::LauncherPosition => render_launcher_position(st.cfg.launcher_position),
         };
         let modified = st.row_modified(*kind);
@@ -282,6 +304,27 @@ fn render_bool_choices(current: bool) -> String {
 /// Render the `[active]` / other format for an enum field. Active
 /// choice is in brackets, others are plain — matches the family UI
 /// convention.
+fn render_prompt_position(current: PromptPosition) -> String {
+    let choices = [
+        ("natural", PromptPosition::Natural),
+        ("bottom", PromptPosition::Bottom),
+    ];
+    let mut out = String::new();
+    for (i, (label, value)) in choices.iter().enumerate() {
+        if i > 0 {
+            out.push_str(" / ");
+        }
+        if *value == current {
+            out.push('[');
+            out.push_str(label);
+            out.push(']');
+        } else {
+            out.push_str(label);
+        }
+    }
+    out
+}
+
 /// Three-way `[active]` / other / other display for the launcher
 /// position row. Order: left, top, bottom — most-implemented first.
 fn render_launcher_position(current: LauncherPosition) -> String {
