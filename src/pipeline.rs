@@ -289,16 +289,22 @@ pub struct StripGlobals {
     pub viewport: [f32; 2],
     pub strip_h: f32,
     /// Pixel width of the left-edge tab sidebar (when
-    /// `tab_layout = Vertical`). `0.0` ⇒ no sidebar — the second
-    /// quad collapses to zero area and the strip pipeline draws only
-    /// the top strip.
+    /// `tab_layout = Vertical`). `0.0` ⇒ no sidebar — instances 1+2
+    /// collapse to zero area.
     pub sidebar_w: f32,
     pub strip_color: [f32; 4],
-    /// Color of the 1-px vertical border at the right edge of the
-    /// sidebar. Slightly lighter than `strip_color` so the column
-    /// reads as a distinct region. Ignored when `sidebar_w == 0.0`
-    /// (third quad collapses to zero area).
+    /// Color of the 1-px vertical border on the right edge of the
+    /// tab sidebar AND the launcher rail. Slightly lighter than
+    /// `strip_color` so each chrome region reads as distinct.
     pub border_color: [f32; 4],
+    /// Pixel width of the left-edge launcher rail (when
+    /// `launcher_icons` is non-empty). Sits left of the tab
+    /// sidebar; the sidebar's x offset is `launcher_w` not `0`.
+    /// `0.0` ⇒ no rail — instances 3+4 collapse to zero area.
+    pub launcher_w: f32,
+    /// Padding to 16-byte alignment — WGSL uniform buffers expect
+    /// vec4 boundaries.
+    pub _pad: [f32; 3],
 }
 
 pub struct StripPipeline {
@@ -386,6 +392,11 @@ impl StripPipeline {
         }
     }
 
+    // Eight params is over clippy's default-7 threshold, but each
+    // is load-bearing (viewport + the four chrome dimensions + two
+    // colors + the rail width) and there's no natural grouping that
+    // wouldn't just be a tuple-of-arguments.
+    #[allow(clippy::too_many_arguments)]
     pub fn write_globals(
         &self,
         queue: &wgpu::Queue,
@@ -394,6 +405,7 @@ impl StripPipeline {
         sidebar_w: f32,
         strip_color: [f32; 4],
         border_color: [f32; 4],
+        launcher_w: f32,
     ) {
         let g = StripGlobals {
             viewport,
@@ -401,6 +413,8 @@ impl StripPipeline {
             sidebar_w,
             strip_color,
             border_color,
+            launcher_w,
+            _pad: [0.0; 3],
         };
         queue.write_buffer(&self.globals_buf, 0, bytemuck::bytes_of(&g));
     }

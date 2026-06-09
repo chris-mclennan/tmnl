@@ -748,9 +748,31 @@ impl App {
                 } else {
                     0.0
                 };
+            let target_launcher = gpu.compute_launcher_w_px(self.cfg.launcher_icons.len());
+            // Resolve each icon's `(glyph, fg)` into the Gpu-side
+            // cache so the per-frame paint doesn't re-parse hex.
+            // Invalid `#rrggbb` strings fall back to the chrome
+            // accent fg — same forgiving behavior the theme module
+            // uses for malformed theme entries.
+            let accent = crate::theme::palette().accent_fg;
+            let icons: Vec<(String, [f32; 4])> = self
+                .cfg
+                .launcher_icons
+                .iter()
+                .map(|li| {
+                    let fg = li
+                        .color
+                        .as_deref()
+                        .and_then(crate::theme::parse_hex_rgba)
+                        .unwrap_or(accent);
+                    (li.glyph.clone(), fg)
+                })
+                .collect();
+            gpu.set_launcher_icons(icons);
             let r1 = gpu.set_strip_h(target_strip);
             let r2 = gpu.set_sidebar_w_px(target_sidebar);
-            r1.or(r2)
+            let r3 = gpu.set_launcher_w_px(target_launcher);
+            r1.or(r2).or(r3)
         };
         if resize.is_some() {
             self.relayout_all_panes();

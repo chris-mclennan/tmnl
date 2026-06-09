@@ -517,6 +517,26 @@ struct Gpu {
     /// visible_chips + 1` by [`Self::clamp_sidebar_scroll`] so the
     /// `+` button stays reachable. 0 in horizontal mode.
     sidebar_scroll_rows: f32,
+    /// Pixel width of the left-edge launcher rail. Computed from
+    /// the config's `launcher_icons` count: empty ⇒ 0, otherwise a
+    /// fixed 3-cell column. Sits at the window's left edge — the
+    /// tab sidebar (vertical mode) is offset by this width so the
+    /// two chrome regions sit side by side, launcher first. Render
+    /// paths add this to `inset_px` for the x-axis along with
+    /// `sidebar_w_px`. 2026-06-09.
+    launcher_w_px: f32,
+    /// One entry per launcher rail glyph — `(glyph, fg_color)`.
+    /// App pushes the live list into Gpu via `set_launcher_icons`
+    /// whenever the config changes. Rendered by
+    /// `launcher_chip_instances`. Empty ⇒ no rail (launcher_w_px is
+    /// also 0).
+    launcher_icons: Vec<(String, [f32; 4])>,
+    /// Hit rects for left-clicking a launcher icon. `(x0, x1, y0, y1, idx)`
+    /// in window pixels — `idx` is the index into the config's
+    /// `launcher_icons` Vec. Populated by `launcher_chip_instances`
+    /// each frame; consumed by the mouse-press dispatcher. (Click
+    /// handling lands in commit C; this commit only paints.)
+    launcher_icon_rects: Vec<(f32, f32, f32, f32, usize)>,
 }
 
 const FONT_ZOOM_MIN: f32 = 0.6;
@@ -585,6 +605,7 @@ impl Gpu {
             inset_px,
             MACOS_TAB_STRIP_PX_SINGLE,
             0.0, // no sidebar at startup — single tab, App refreshes later
+            0.0, // no launcher rail until App sets launcher_icons
         );
         let g = Grid::new(cols, rows, palette().clear_bg);
 
@@ -622,6 +643,9 @@ impl Gpu {
             tab_layout: crate::config::TabLayout::default(),
             sidebar_w_px: 0.0,
             sidebar_scroll_rows: 0.0,
+            launcher_w_px: 0.0,
+            launcher_icons: Vec::new(),
+            launcher_icon_rects: Vec::new(),
         }
     }
 
@@ -701,6 +725,7 @@ impl Gpu {
             inset_px,
             MACOS_TAB_STRIP_PX_SINGLE,
             0.0,
+            0.0, // no launcher rail in headless until set
         );
         let g = Grid::new(cols, rows, palette().clear_bg);
         let pipeline = CellPipeline::new(&device, format, &atlas, (cols * rows).max(1024) as u64);
@@ -730,6 +755,9 @@ impl Gpu {
             tab_layout: crate::config::TabLayout::default(),
             sidebar_w_px: 0.0,
             sidebar_scroll_rows: 0.0,
+            launcher_w_px: 0.0,
+            launcher_icons: Vec::new(),
+            launcher_icon_rects: Vec::new(),
         })
     }
 
@@ -759,6 +787,7 @@ impl Gpu {
             self.inset_px,
             self.strip_h,
             self.sidebar_w_px,
+            self.launcher_w_px,
         );
         let new_pipeline = CellPipeline::new(
             &self.device,
@@ -1010,6 +1039,77 @@ impl Gpu {
     pub fn populate_hit_rects(&mut self) {
         let _ = self.strip_chip_instances();
         let _ = self.strip_palette_chip_instances();
+    }
+
+    /// Emit one cell instance per configured launcher icon — a
+    /// vertical column on the left edge of the body region. Glyph
+    /// sits in the middle cell of the 3-cell-wide rail (left-pad +
+    /// glyph + right-pad). Each icon occupies `TAB_ROW_H_PX` of
+    /// vertical space starting at the top of the body.
+    ///
+    /// Also (re)populates `launcher_icon_rects` so the click
+    /// dispatcher can hit-test against the same geometry it just
+    /// painted. Returns the instance list; caller appends to the
+    /// frame's instance stream.
+    fn launcher_chip_instances(&mut self) -> Vec<pipeline::Instance> {
+        use crate::atlas::style_from_attrs;
+        self.launcher_icon_rects.clear();
+        if self.launcher_icons.is_empty() || self.launcher_w_px <= 0.0 {
+            return Vec::new();
+        }
+        let cell_w = self.atlas.cell_w;
+        let cell_h = self.atlas.cell_h;
+        let mut out = Vec::with_capacity(self.launcher_icons.len());
+
+        // Glyph sits in col 1 of the 3-cell rail (col 0 is pad,
+        // col 2 is pad). In window pixels: column 1's left edge is
+        // `1.0 * cell_w`. The cell pipeline applies
+        // `inset_px + launcher_w_px + sidebar_w_px` as x-inset; we
+        // subtract that here so the glyph lands at the right window
+        // pixel after the inset is added back. Same trick the strip
+        // chips use against the sidebar.
+        let start_x_px = cell_w; // 1 cell from window left
+        let base_x = (start_x_px - self.inset_px - self.launcher_w_px - self.sidebar_w_px) / cell_w;
+
+        // Icons stack down from the top of the body. y=0 of the
+        // body grid sits at window pixel `inset_px + strip_h`; the
+        // cell pipeline adds that back via `inset_y`. So base_y in
+        // body-grid cell coords is row index.
+        let row_h_px = TAB_ROW_H_PX;
+        let icons = self.launcher_icons.clone();
+        for (i, (glyph, fg)) in icons.iter().enumerate() {
+            let row_top_px = self.strip_h + (i as f32) * row_h_px;
+            // Center the glyph vertically within the row.
+            let glyph_top_px = row_top_px + (row_h_px - cell_h) * 0.5;
+            let base_y = (glyph_top_px - self.inset_px - self.strip_h) / cell_h;
+
+            // First char only — the config's `glyph` is a single
+            // cell. Multi-cell strings paint just their first cell.
+            let Some(ch) = glyph.chars().next() else {
+                continue;
+            };
+            let g = self.atlas.glyph(ch, style_from_attrs(0), &self.queue);
+            out.push(pipeline::Instance {
+                cell_pos: [base_x, base_y],
+                fg: *fg,
+                bg: palette().strip_bg,
+                uv_min: g.uv_min,
+                uv_max: g.uv_max,
+                glyph_offset: g.offset,
+                glyph_size: g.size,
+                attrs: 0,
+                _pad: 0,
+            });
+            // Hit-rect spans the WHOLE row (full rail width) so the
+            // click target is forgiving — users don't need to land
+            // pixel-perfect on the glyph itself.
+            let x0 = 0.0;
+            let x1 = self.launcher_w_px;
+            let y0 = self.inset_px + row_top_px;
+            let y1 = y0 + row_h_px;
+            self.launcher_icon_rects.push((x0, x1, y0, y1, i));
+        }
+        out
     }
 
     fn strip_chip_instances(&mut self) -> Vec<pipeline::Instance> {
@@ -1517,6 +1617,7 @@ impl Gpu {
             self.inset_px,
             self.strip_h,
             self.sidebar_w_px,
+            self.launcher_w_px,
         );
         if cols != self.grid.cols || rows != self.grid.rows {
             self.grid.resize(cols, rows);
@@ -1541,6 +1642,7 @@ impl Gpu {
             self.inset_px,
             self.strip_h,
             self.sidebar_w_px,
+            self.launcher_w_px,
         );
         if cols != self.grid.cols || rows != self.grid.rows {
             self.grid.resize(cols, rows);
@@ -1567,6 +1669,7 @@ impl Gpu {
             self.inset_px,
             self.strip_h,
             self.sidebar_w_px,
+            self.launcher_w_px,
         );
         if cols != self.grid.cols || rows != self.grid.rows {
             self.grid.resize(cols, rows);
@@ -1593,6 +1696,64 @@ impl Gpu {
             self.inset_px,
             self.strip_h,
             self.sidebar_w_px,
+            self.launcher_w_px,
+        );
+        if cols != self.grid.cols || rows != self.grid.rows {
+            self.grid.resize(cols, rows);
+            return Some((cols as u16, rows as u16));
+        }
+        None
+    }
+
+    /// Pixel width of the left-edge launcher rail. The rail is a
+    /// fixed 3-cell column when any launcher icons are configured
+    /// (one cell each side of pad + one for the glyph), and 0 when
+    /// the list is empty.
+    fn compute_launcher_w_px(&self, icon_count: usize) -> f32 {
+        if icon_count == 0 {
+            return 0.0;
+        }
+        // 3 cells: left pad + glyph + right pad. Matches mnml's
+        // integration-rail visual rhythm.
+        3.0 * self.atlas.cell_w
+    }
+
+    /// Replace the cached `(glyph, fg)` list used by
+    /// `launcher_chip_instances`. App calls this with the resolved
+    /// list whenever `cfg.launcher_icons` changes (each entry's
+    /// `color` field, if present, is parsed once here so the
+    /// per-frame render path doesn't re-parse hex on every paint).
+    pub fn set_launcher_icons(&mut self, icons: Vec<(String, [f32; 4])>) {
+        self.launcher_icons = icons;
+    }
+
+    /// Hit rects produced by the last `launcher_chip_instances`
+    /// call — `(x0, x1, y0, y1, idx)` in window pixels with `idx`
+    /// pointing into the config's `launcher_icons` Vec. Click
+    /// dispatch (commit C) consumes this.
+    #[allow(dead_code)] // wired in commit C of the launcher rail series
+    pub fn launcher_icon_hit_rects(&self) -> &[(f32, f32, f32, f32, usize)] {
+        &self.launcher_icon_rects
+    }
+
+    /// Push the requested rail width to the GPU + resize the body
+    /// grid. Returns `Some((cols, rows))` iff the resize actually
+    /// changed the grid (so callers know to relayout). Mirrors
+    /// `set_sidebar_w_px`.
+    fn set_launcher_w_px(&mut self, launcher_w_px: f32) -> Option<(u16, u16)> {
+        if (self.launcher_w_px - launcher_w_px).abs() < f32::EPSILON {
+            return None;
+        }
+        self.launcher_w_px = launcher_w_px;
+        let (w, h) = (self.config.width, self.config.height);
+        let (cols, rows) = grid_dims(
+            w,
+            h,
+            &self.atlas,
+            self.inset_px,
+            self.strip_h,
+            self.sidebar_w_px,
+            self.launcher_w_px,
         );
         if cols != self.grid.cols || rows != self.grid.rows {
             self.grid.resize(cols, rows);
@@ -1686,16 +1847,19 @@ impl Gpu {
         // on top with `inset_y >= strip_h`, so no overlap.
         // inset == 0 still gets the ceil'd grid_dims so the rightmost
         // cells reach the edge — true edge-to-edge for TUIs.
-        // Per-axis inset: x = base inset + sidebar width (so the body
-        // grid shifts right when the vertical tab sidebar is active);
-        // y = base inset + strip height. Sidebar width is 0 in
-        // horizontal mode, so behavior there is unchanged.
+        // Per-axis inset:
+        //   x = base inset + launcher rail width + tab sidebar width.
+        //       Launcher rail sits at the left edge of the window; the
+        //       tab sidebar (vertical mode) sits to its right. Either
+        //       width is 0 when its feature isn't active, so the body
+        //       grid still ends up at the right place in every mode.
+        //   y = base inset + strip height.
         self.pipeline.write_globals(
             &self.queue,
             [self.config.width as f32, self.config.height as f32],
             [self.atlas.cell_w, self.atlas.cell_h],
             [
-                self.inset_px + self.sidebar_w_px,
+                self.inset_px + self.launcher_w_px + self.sidebar_w_px,
                 self.inset_px + self.strip_h,
             ],
         );
@@ -1718,8 +1882,10 @@ impl Gpu {
             // Border between sidebar column and body — slightly more
             // pronounced than `active_chip_bg` so it actually reads
             // as a separator. Roughly `strip_bg + [0.10, 0.10, 0.10]`.
-            // Subtle but visible, no screaming.
+            // Subtle but visible, no screaming. Same color is used
+            // for the launcher rail's right-edge border.
             [0.22, 0.23, 0.26, 1.0],
+            self.launcher_w_px,
         );
         let mut instances = CellPipeline::build_instances(&self.grid, &mut self.atlas, &self.queue);
         // Append tab-strip label glyphs (rendered through the same cell
@@ -1727,6 +1893,7 @@ impl Gpu {
         // strip area above the grid).
         instances.extend(self.strip_chip_instances());
         instances.extend(self.strip_palette_chip_instances());
+        instances.extend(self.launcher_chip_instances());
         self.pipeline
             .ensure_capacity(&self.device, instances.len() as u64);
         self.pipeline.upload(&self.queue, &instances);
@@ -1757,17 +1924,15 @@ impl Gpu {
                 timestamp_writes: None,
             });
             // Chrome backgrounds first — the cell pipeline draws on
-            // top. Two instances: the top tab strip + (in vertical-
-            // tab mode) the left-edge sidebar. The shader collapses
-            // the sidebar quad to zero area when `sidebar_w == 0`,
-            // so passing 2 instances unconditionally is cheap and
-            // simpler than branching the draw call.
+            // top. Five instances total: top strip, tab sidebar +
+            // its right-edge border, launcher rail + its right-edge
+            // border. The shader collapses sidebar quads when
+            // `sidebar_w == 0` (horizontal mode) and launcher quads
+            // when `launcher_w == 0` (no launcher_icons configured),
+            // so passing 5 unconditionally is cheap.
             pass.set_pipeline(&self.strip_pipeline.pipeline);
             pass.set_bind_group(0, &self.strip_pipeline.bind_group, &[]);
-            // 3 instances: top strip, sidebar column, sidebar right-
-            // edge border. Quads 2+3 collapse to zero area when
-            // `sidebar_w == 0` (horizontal mode) — cheap no-op.
-            pass.draw(0..4, 0..3);
+            pass.draw(0..4, 0..5);
             // Cell grid (body content).
             pass.set_pipeline(&self.pipeline.pipeline);
             pass.set_bind_group(0, &self.pipeline.bind_group, &[]);
@@ -1786,7 +1951,12 @@ fn grid_dims(
     inset_px: f32,
     strip: f32,
     sidebar_w: f32,
+    launcher_w: f32,
 ) -> (u32, u32) {
+    // Launcher rail (when present) eats horizontal width the same
+    // way the tab sidebar does — sum them so the body grid shrinks
+    // by the total chrome width on the left edge.
+    let sidebar_w = sidebar_w + launcher_w;
     // `inset_px == 0` → edge-to-edge horizontally; vertically we
     // reserve `strip` pixels for the tab-strip chrome (caller passes
     // the dynamic strip height: shrinks to the single-tab value when

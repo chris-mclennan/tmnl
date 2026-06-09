@@ -191,7 +191,12 @@ fn map_mnml_to_palette(t: &MnmlTheme) -> Palette {
 
 /// Parse a `#rrggbb` (or `rrggbb`) hex string into a normalized
 /// straight-sRGB `[r, g, b, 1.0]` quad. Returns `None` for any
-/// malformed input.
+/// malformed input. Re-exported as `parse_hex_rgba` for callers
+/// outside this module.
+pub fn parse_hex_rgba(s: &str) -> Option<[f32; 4]> {
+    hex(s)
+}
+
 fn hex(s: &str) -> Option<[f32; 4]> {
     let s = s.trim().trim_start_matches('#');
     if s.len() != 6 {
