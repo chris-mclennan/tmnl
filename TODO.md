@@ -78,6 +78,41 @@ Options to make it actually surface:
 Option 1 is the most polite + most discoverable. Worth a small
 dedicated overlay (similar to mnml's settings-row text-edit).
 
+**Also surface as a Settings row.** New discrete-choice row in
+the existing settings overlay:
+
+```
+── Shell ──
+▸ Themed prompt: [off] / on
+```
+
+Behavior on toggle to `on`:
+
+1. Set `cfg.shell.themed_prompt = true` (new config field).
+2. Check `~/.zshrc` (and `.bashrc` if it exists). If neither
+   contains the source line, append it + show a toast: "Added
+   source line to ~/.zshrc — open a new tab to see it."
+3. From now on, new shell spawns export `MNML_PROMPT_SCRIPT`
+   as today; the rc-file line picks it up.
+
+Behavior on toggle to `off`:
+
+1. Set `cfg.shell.themed_prompt = false`.
+2. New shell spawns DON'T export `MNML_PROMPT_SCRIPT`, so the
+   rc-file source line silently no-ops. Leave the rc line in
+   place — toggling back on is then just env-var flip, no rc
+   edit. (Removing the line on `off` is more invasive than the
+   user expects from a toggle.)
+
+Theme awareness: now that `theme.rs` adopts mnml's installed
+theme at startup, tmnl could ALSO export the full palette
+env-var set (`MNML_PROMPT_BG`, `MNML_PROMPT_FG`, …) so the
+prompt colors match the active mnml theme — same way mnml does
+it. Currently we deliberately omit those, letting the script's
+tokyo-night defaults take over. Probably worth adding once the
+settings row exists (one more `if cfg.shell.themed_prompt` block
+in `shell_prompt::env_vars`).
+
 ---
 
 ## Find (Cmd+F in scrollback)
