@@ -39,6 +39,20 @@ pub struct Config {
     ///   logs a "not yet implemented" message on apply; falls back
     ///   to horizontal.)
     pub tab_layout: TabLayout,
+    /// Themed powerline prompt for spawned shells. When `true`, tmnl
+    /// exports `MNML_PROMPT_SCRIPT` + `MNML_CONTEXT=tmnl` (and the
+    /// active theme palette as `MNML_PROMPT_*` colour vars) so the
+    /// user's `~/.zshrc` source line picks up the prompt. When
+    /// `false`, no env vars are exported and shells get the user's
+    /// normal prompt — the rc-file source line silently no-ops, so
+    /// flipping back to `true` is just an env-var change with no
+    /// rc-file edit.
+    ///
+    /// First time it's flipped on (from any path — settings UI, CLI
+    /// flag, manual toml edit), tmnl checks the user's `~/.zshrc`
+    /// (and `.bashrc` if present) and appends the standard source
+    /// line if it's missing. See `shell_prompt::ensure_rc_sourced`.
+    pub themed_prompt: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -55,6 +69,7 @@ impl Default for Config {
             inset: 20.0,
             inset_native: 0.0,
             tab_layout: TabLayout::Horizontal,
+            themed_prompt: false,
         }
     }
 }
@@ -142,6 +157,7 @@ mod tests {
             inset,
             inset_native,
             tab_layout: TabLayout::Horizontal,
+            themed_prompt: false,
         }
     }
 

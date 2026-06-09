@@ -29,9 +29,10 @@ const MODIFIED: [f32; 4] = [0.95, 0.79, 0.30, 1.0];
 enum RowKind {
     Inset,
     TabLayout,
+    ThemedPrompt,
 }
 
-const ROWS: &[RowKind] = &[RowKind::Inset, RowKind::TabLayout];
+const ROWS: &[RowKind] = &[RowKind::Inset, RowKind::TabLayout, RowKind::ThemedPrompt];
 
 pub struct SettingsState {
     pub cfg: Config,
@@ -78,6 +79,10 @@ impl SettingsState {
                     TabLayout::Vertical => TabLayout::Horizontal,
                 };
             }
+            RowKind::ThemedPrompt => {
+                // Boolean toggle — any non-zero delta flips.
+                self.cfg.themed_prompt = !self.cfg.themed_prompt;
+            }
         }
     }
 
@@ -86,6 +91,7 @@ impl SettingsState {
         match self.focused_row() {
             RowKind::Inset => self.cfg.inset = Config::default().inset,
             RowKind::TabLayout => self.cfg.tab_layout = Config::default().tab_layout,
+            RowKind::ThemedPrompt => self.cfg.themed_prompt = Config::default().themed_prompt,
         }
     }
 
@@ -102,10 +108,15 @@ impl SettingsState {
         self.cfg.tab_layout != Config::default().tab_layout
     }
 
+    fn themed_prompt_modified(&self) -> bool {
+        self.cfg.themed_prompt != Config::default().themed_prompt
+    }
+
     fn row_modified(&self, kind: RowKind) -> bool {
         match kind {
             RowKind::Inset => self.inset_modified(),
             RowKind::TabLayout => self.tab_layout_modified(),
+            RowKind::ThemedPrompt => self.themed_prompt_modified(),
         }
     }
 }
@@ -117,6 +128,7 @@ fn row_label(kind: RowKind) -> &'static str {
     match kind {
         RowKind::Inset => "Inset (px)",
         RowKind::TabLayout => "Tab layout",
+        RowKind::ThemedPrompt => "Themed prompt",
     }
 }
 
@@ -125,6 +137,9 @@ fn row_help(kind: RowKind) -> &'static str {
         RowKind::Inset => "Padding around the shell prompt. TUIs always go edge-to-edge.",
         RowKind::TabLayout => {
             "Where tab chips render — horizontal row below the strip, or vertical sidebar."
+        }
+        RowKind::ThemedPrompt => {
+            "Powerline-style prompt that color-matches tmnl's theme. First time you turn it on, tmnl appends a source line to ~/.zshrc."
         }
     }
 }
@@ -188,6 +203,7 @@ pub fn draw(grid: &mut Grid, st: &SettingsState) {
         let value_text = match kind {
             RowKind::Inset => format!("{:>3}", st.cfg.inset as i32),
             RowKind::TabLayout => render_enum_choices(st.cfg.tab_layout),
+            RowKind::ThemedPrompt => render_bool_choices(st.cfg.themed_prompt),
         };
         let modified = st.row_modified(*kind);
         let suffix_w = if modified { 6 } else { 4 };
@@ -222,6 +238,18 @@ pub fn draw(grid: &mut Grid, st: &SettingsState) {
     // doesn't visually merge with the `─` line.
     let h_x = x0 + (w.saturating_sub(HINT.chars().count() as u32)) / 2;
     grid.write(h_x, y0 + h - 3, HINT, FG_DIM, BG);
+}
+
+/// Render the `[active]` / other format for a boolean field — same
+/// `[off] / on` look the family UI gives any 2-value choice. Family
+/// convention puts `off` first so the row reads left-to-right as
+/// least-to-most-side-effect.
+fn render_bool_choices(current: bool) -> String {
+    if current {
+        "off / [on]".to_string()
+    } else {
+        "[off] / on".to_string()
+    }
 }
 
 /// Render the `[active]` / other format for an enum field. Active

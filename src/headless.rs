@@ -349,11 +349,19 @@ pub fn run() {
     let cols: u32 = env_dim("TMNL_COLS", 80);
     let rows: u32 = env_dim("TMNL_ROWS", 24);
 
+    // Headless drive bypasses the persisted Config (it's driven from
+    // env vars + a tiny ad-hoc command loop, not the saved settings
+    // file), so the themed prompt is opt-in via TMNL_THEMED_PROMPT=1
+    // — useful for headless tests that want to snapshot the prompt.
+    let themed = std::env::var("TMNL_THEMED_PROMPT")
+        .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false);
     let mut session = match ShellSession::spawn(
         rows as u16,
         cols as u16,
         crate::palette().text_fg,
         crate::palette().clear_bg,
+        themed,
     ) {
         Ok(s) => s,
         Err(e) => {

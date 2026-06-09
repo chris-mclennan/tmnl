@@ -101,6 +101,7 @@ impl ShellSession {
         cols: u16,
         default_fg: [f32; 4],
         default_bg: [f32; 4],
+        themed_prompt: bool,
     ) -> Result<Self, String> {
         let (rows, cols) = (rows.max(4), cols.max(20));
         let pair = native_pty_system()
@@ -123,12 +124,13 @@ impl ShellSession {
         // Identify ourselves the way Terminal.app / iTerm2 do, so shell
         // integration snippets and other tools can detect tmnl.
         cmd.env("TERM_PROGRAM", "tmnl");
-        // Themed powerline prompt — sets `MNML_PROMPT_SCRIPT` (path to
-        // the installed `prompt.sh`) + `MNML_CONTEXT=tmnl`. The user
-        // opts in once via a source line in their `.zshrc` / `.bashrc`;
-        // see README. Same script ships in mnml — both write the same
-        // content to `~/.config/mnml/prompt.sh` (idempotent).
-        for (k, v) in crate::shell_prompt::env_vars() {
+        // Themed powerline prompt — when `themed_prompt = true`, sets
+        // `MNML_PROMPT_SCRIPT` + the active palette so the user's
+        // `.zshrc` source line picks up the themed prompt. When
+        // `false`, only `MNML_CONTEXT=tmnl` is exported and the
+        // source line silently no-ops. Settings UI offers to
+        // append the source line on first toggle-to-on.
+        for (k, v) in crate::shell_prompt::env_vars(themed_prompt) {
             cmd.env(k, v);
         }
         // Login shell so users' rc files load and the prompt is set up.

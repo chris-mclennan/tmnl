@@ -62,6 +62,7 @@ impl ApplicationHandler for App {
                     cols as u16,
                     palette().text_fg,
                     palette().clear_bg,
+                    self.cfg.themed_prompt,
                 ) {
                     Ok(s) => *session = Some(s),
                     Err(e) => {
@@ -506,6 +507,7 @@ impl App {
             cols as u16,
             palette().text_fg,
             palette().clear_bg,
+            self.cfg.themed_prompt,
         ) {
             Ok(s) => {
                 let label = s.shell_name().to_string();
@@ -872,6 +874,7 @@ impl App {
             cols as u16,
             palette().text_fg,
             palette().clear_bg,
+            self.cfg.themed_prompt,
         ) {
             Ok(s) => s,
             Err(e) => {
@@ -2079,12 +2082,35 @@ impl App {
             }
             Key::Named(NamedKey::Enter) => {
                 let edited = st.cfg.clone();
+                let original = st.original.clone();
                 self.settings = None;
                 self.cfg = edited.clone();
                 if let Err(e) = self.cfg.save() {
                     log::warn!("config save failed: {e}");
                 }
                 self.apply_inset_from_cfg(&edited);
+                // Themed prompt just transitioned false→true: check
+                // the user's rc files and append the source line if
+                // it's not already there. Idempotent — re-toggling
+                // doesn't re-append.
+                if edited.themed_prompt && !original.themed_prompt {
+                    match crate::shell_prompt::ensure_rc_sourced() {
+                        Ok(touched) if !touched.is_empty() => {
+                            for p in &touched {
+                                log::info!(
+                                    "themed prompt: appended source line to {}",
+                                    p.display()
+                                );
+                            }
+                        }
+                        Ok(_) => {
+                            log::info!(
+                                "themed prompt: rc files already wired (or no rc file present)"
+                            );
+                        }
+                        Err(e) => log::warn!("themed prompt: rc write failed: {e}"),
+                    }
+                }
                 true
             }
             Key::Named(NamedKey::ArrowUp) => {
