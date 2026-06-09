@@ -1883,9 +1883,17 @@ impl Gpu {
         // 2026-06-09 user feedback: was using `self.strip_h` which
         // walks down with extra tab rows; toggle drifted up vs the
         // traffic lights.
+        //
+        // Glyph baseline correction — the Codicon sidebar-layout
+        // glyph (U+EBF4) sits noticeably lower in its em-square
+        // than the palette's magnify / arrow glyphs, so even with
+        // identical center math the toggle reads visually below
+        // the traffic-light dots. Nudge UP by 6 physical px to
+        // align with the dots.
         let palette_zone_h = MACOS_TAB_STRIP_PX_SINGLE;
         let inset_y_total = self.inset_px + self.strip_h;
-        let label_y = ((palette_zone_h - cell_h) * 0.5).max(0.0);
+        const TOGGLE_Y_NUDGE_PX: f32 = -6.0;
+        let label_y = ((palette_zone_h - cell_h) * 0.5 + TOGGLE_Y_NUDGE_PX).max(0.0);
         let base_y = (label_y - inset_y_total) / cell_h;
         let start_col = (TOGGLE_X_PX - self.inset_px - self.sidebar_w_px) / cell_w;
         const TOGGLE_FG: [f32; 4] = [0.78, 0.80, 0.85, 1.0];
@@ -2087,15 +2095,26 @@ impl Gpu {
         }
         let plus_end_col = plus_start_col + 3.0;
 
-        // Pixel-rect hit targets — convert from cell coords back to
-        // window pixels.
-        let cell_to_x_px = |c: f32| -> f32 { c * cell_w + self.inset_px + self.sidebar_w_px };
-        let sx0 = cell_to_x_px(search_start_col);
-        let sx1 = cell_to_x_px(search_end_col);
-        let px0 = cell_to_x_px(plus_start_col);
-        let px1 = cell_to_x_px(plus_end_col);
-        self.sidebar_search_rect = Some((sx0, sx1, y0_px, y1_px));
-        self.sidebar_plus_rect = Some((px0, px1, y0_px, y1_px));
+        // Pixel-rect hit targets — computed DIRECTLY from physical
+        // pixels rather than walking the cell-column accumulator
+        // through five padding/glyph increments. The accumulator
+        // matched the render geometry but was easy to get
+        // off-by-one (visually rendered but the click missed by a
+        // cell). The click handler reads window pixels anyway, so
+        // this removes a whole class of mismatch.
+        let _ = (
+            search_start_col,
+            search_end_col,
+            plus_start_col,
+            plus_end_col,
+        );
+        let sidebar_right_x_px = self.inset_px + self.sidebar_w_px;
+        let plus_right_x_px = sidebar_right_x_px - right_pad * cell_w;
+        let plus_left_x_px = plus_right_x_px - plus_cells * cell_w;
+        let search_left_x_px = self.inset_px + Self::SIDEBAR_PAD_LEFT_PX;
+        let search_right_x_px = plus_left_x_px - gap_cells * cell_w;
+        self.sidebar_search_rect = Some((search_left_x_px, search_right_x_px, y0_px, y1_px));
+        self.sidebar_plus_rect = Some((plus_left_x_px, plus_right_x_px, y0_px, y1_px));
         out
     }
 
