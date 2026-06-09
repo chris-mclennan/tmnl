@@ -192,6 +192,8 @@ impl App {
             dragging_divider: None,
             sidebar_w_override: None,
             dragging_sidebar: false,
+            text_selection: None,
+            dragging_selection: false,
             fim: None,
             fim_pending: None,
             fim_next_id: 0,
@@ -2638,6 +2640,22 @@ impl App {
             return;
         }
 
+        // Text selection drag — extend the focus cell to the
+        // current cursor position. Anchor was set on press; this
+        // updates the live end of the selection range.
+        if self.dragging_selection
+            && self.buttons_down & (1u8 << BUTTON_LEFT) != 0
+            && !in_chrome
+            && let Some(sel) = self.text_selection.as_mut()
+        {
+            sel.4 = col;
+            sel.5 = row;
+            if let Some(w) = &self.window {
+                w.request_redraw();
+            }
+            return;
+        }
+
         // Drags that originated in the strip stay in chrome —
         // don't forward them as terminal drag events.
         if in_chrome {
@@ -2719,6 +2737,80 @@ impl App {
                 _ => {}
             }
         }
+    }
+
+    /// Normalize the selection rect — `((min_col, min_row),
+    /// (max_col, max_row))`. Drag-direction-agnostic.
+    pub(crate) fn selection_bounds(&self) -> Option<((u16, u16), (u16, u16))> {
+        let (_, _, a_c, a_r, f_c, f_r) = self.text_selection?;
+        let min_c = a_c.min(f_c);
+        let max_c = a_c.max(f_c);
+        let min_r = a_r.min(f_r);
+        let max_r = a_r.max(f_r);
+        Some(((min_c, min_r), (max_c, max_r)))
+    }
+
+    /// `true` if `(col, row)` falls inside the active selection on
+    /// the focused pane. Always false when no selection exists or
+    /// when the selection lives on a different tab / pane.
+    /// Currently unused by the render path (the bounds-based
+    /// override in `Gpu::render` is faster); kept as a helper for
+    /// future shift-click extend + headless / IPC selection-aware
+    /// queries.
+    #[allow(dead_code)]
+    pub(crate) fn is_cell_selected(&self, col: u16, row: u16) -> bool {
+        let Some((tab, pane, _, _, _, _)) = self.text_selection else {
+            return false;
+        };
+        if tab != self.active {
+            return false;
+        }
+        let focused = self.tabs[self.active].focused;
+        if pane != focused {
+            return false;
+        }
+        let Some(((min_c, min_r), (max_c, max_r))) = self.selection_bounds() else {
+            return false;
+        };
+        if row < min_r || row > max_r {
+            return false;
+        }
+        // Selection model: VS Code-style block, not flow-aware. Every
+        // cell in the bounding rect is selected. Cleaner than line-
+        // aware selection (which needs to track wrap points) and
+        // matches what most TUI users expect from mouse drag.
+        col >= min_c && col <= max_c
+    }
+
+    /// Walk the focused pane's grid, build a string from selected
+    /// cells. Newlines between rows; trailing whitespace per row
+    /// stripped so paste output is clean. `None` if nothing
+    /// selected.
+    pub(crate) fn extract_selected_text(&self) -> Option<String> {
+        let ((min_c, min_r), (max_c, max_r)) = self.selection_bounds()?;
+        let focused = self.tabs[self.active].focused;
+        let pane = &self.tabs[self.active].panes[focused];
+        let cols = pane.grid.cols;
+        let mut out = String::new();
+        for row in min_r..=max_r {
+            let mut line = String::new();
+            for col in min_c..=max_c {
+                let idx = (row as u32 * cols + col as u32) as usize;
+                if let Some(cell) = pane.grid.cells.get(idx) {
+                    line.push(cell.ch);
+                }
+            }
+            // Strip trailing spaces — terminals pad with `' '` on
+            // empty cells, which would leak into the clipboard.
+            while line.ends_with(' ') {
+                line.pop();
+            }
+            if row > min_r {
+                out.push('\n');
+            }
+            out.push_str(&line);
+        }
+        Some(out)
     }
 
     fn handle_mouse_input(&mut self, state: ElementState, button: MouseButton) {
@@ -2933,11 +3025,53 @@ impl App {
             }
         }
         // Releasing the left button ends any in-flight drag —
-        // chip-reorder, divider-resize, or sidebar-resize.
+        // chip-reorder, divider-resize, sidebar-resize, or text-
+        // selection.
         if !pressed && button == MouseButton::Left {
             self.dragging_tab = None;
             self.dragging_divider = None;
             self.dragging_sidebar = false;
+            if self.dragging_selection {
+                self.dragging_selection = false;
+                // Copy the selected text to the system clipboard
+                // on release. If the selection collapsed to zero
+                // chars (just a click, no drag), clear it.
+                if let Some(text) = self.extract_selected_text() {
+                    if text.is_empty() {
+                        self.text_selection = None;
+                    } else {
+                        crate::command::write_clipboard_text(&text);
+                    }
+                } else {
+                    self.text_selection = None;
+                }
+            }
+        }
+        // Left-press in the body region — start a new text selection
+        // (clearing any previous one). The cell under the cursor is
+        // the anchor; cursor-move events extend the focus until
+        // release.
+        if pressed
+            && button == MouseButton::Left
+            && !matches!(self.cursor_cell, (u16::MAX, u16::MAX))
+        {
+            // Only kick in if no other gesture (divider, sidebar,
+            // chrome) has claimed the press. The chrome path returns
+            // early above; getting here means we're in the body.
+            let Some(gpu) = &self.gpu else {
+                return;
+            };
+            let chrome_h = (gpu.inset_px + gpu.strip_h) as f64;
+            let chrome_left = (gpu.inset_px + gpu.launcher_w_px + gpu.sidebar_w_px) as f64;
+            if self.cursor_px.0 >= chrome_left && self.cursor_px.1 >= chrome_h {
+                let (col, row) = self.cursor_cell;
+                let focused = self.tabs[self.active].focused;
+                self.text_selection = Some((self.active, focused, col, row, col, row));
+                self.dragging_selection = true;
+                // fall through — don't return; we still want
+                // potential future scrollback handlers etc. to fire,
+                // and the regular body click below is still useful.
+            }
         }
         // A left-press on a divider starts a drag-resize of that
         // split — it owns the gesture, no pane dispatch.
@@ -3187,7 +3321,12 @@ impl App {
         if let (Some(gpu), Some(st)) = (self.gpu.as_mut(), self.palette.as_ref()) {
             crate::palette::draw(&mut gpu.grid, st);
         }
+        // Push the App's current selection bounds (if any) to the
+        // GPU so the cell pipeline can override the bg for selected
+        // cells. Cleared when no selection.
+        let sel = self.selection_bounds();
         if let Some(gpu) = &mut self.gpu {
+            gpu.selection_bounds = sel;
             gpu.render();
         }
         if let Some(w) = &self.window {

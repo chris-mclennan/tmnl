@@ -406,6 +406,17 @@ struct App {
     /// border is in flight. Updates `sidebar_w_override` to track
     /// the cursor each move event; cleared on left-release.
     dragging_sidebar: bool,
+    /// In-flight text selection on the focused body grid — `Some`
+    /// while a drag is in progress AND for as long as the user keeps
+    /// the selection visible (cleared on a click outside, on Esc, or
+    /// on Cmd+C copy). `(tab_idx, pane_idx, anchor_col, anchor_row,
+    /// focus_col, focus_row)`. anchor is the press-time cell; focus
+    /// tracks the cursor.
+    text_selection: Option<(usize, usize, u16, u16, u16, u16)>,
+    /// `true` between a body-cell mouse-press and its release —
+    /// drives `cursor_moved` selection extension. Cleared on release
+    /// (the selection itself stays visible for copy / clear).
+    dragging_selection: bool,
     /// Local AI command-completion worker (`fim-engine`). Spawned
     /// lazily on the first ⌘I trigger so the model only loads if the
     /// feature is used.
@@ -540,6 +551,13 @@ struct Gpu {
     /// paths add this to `inset_px` for the x-axis along with
     /// `sidebar_w_px`. 2026-06-09.
     launcher_w_px: f32,
+    /// Bounds of the active text selection — `((min_col, min_row),
+    /// (max_col, max_row))`. App sets this each frame from
+    /// `App.text_selection` before calling `render`; cleared back
+    /// to `None` when no selection is active. Used to override the
+    /// per-cell bg in the body grid so selected cells visually
+    /// inverted (selection_bg color).
+    selection_bounds: Option<((u16, u16), (u16, u16))>,
     /// One entry per launcher rail glyph — `(glyph, fg_color)`.
     /// App pushes the live list into Gpu via `set_launcher_icons`
     /// whenever the config changes. Rendered by
@@ -659,6 +677,7 @@ impl Gpu {
             sidebar_w_px: 0.0,
             sidebar_scroll_rows: 0.0,
             launcher_w_px: 0.0,
+            selection_bounds: None,
             launcher_icons: Vec::new(),
             launcher_icon_rects: Vec::new(),
         }
@@ -771,6 +790,7 @@ impl Gpu {
             sidebar_w_px: 0.0,
             sidebar_scroll_rows: 0.0,
             launcher_w_px: 0.0,
+            selection_bounds: None,
             launcher_icons: Vec::new(),
             launcher_icon_rects: Vec::new(),
         })
@@ -1917,6 +1937,24 @@ impl Gpu {
             self.launcher_w_px,
         );
         let mut instances = CellPipeline::build_instances(&self.grid, &mut self.atlas, &self.queue);
+        // Text-selection overlay — override the bg color for every
+        // cell inside the selection bounds. Cells live in row-major
+        // order in `instances` (col 0..cols, then row 0..rows), so
+        // we can index directly into the slice. Color chosen so the
+        // overlay reads against any theme bg without being too
+        // shouty. 2026-06-09: first text-selection shipping.
+        if let Some(((min_c, min_r), (max_c, max_r))) = self.selection_bounds {
+            const SEL_BG: [f32; 4] = [0.32, 0.36, 0.46, 1.0];
+            let cols = self.grid.cols as u16;
+            for row in min_r..=max_r {
+                for col in min_c..=max_c {
+                    let idx = (row as u32 * cols as u32 + col as u32) as usize;
+                    if let Some(inst) = instances.get_mut(idx) {
+                        inst.bg = SEL_BG;
+                    }
+                }
+            }
+        }
         // Append tab-strip label glyphs (rendered through the same cell
         // pipeline via fractional `cell_pos` values — they land in the
         // strip area above the grid).
@@ -3030,6 +3068,8 @@ fn main() {
         dragging_divider: None,
         sidebar_w_override: None,
         dragging_sidebar: false,
+        text_selection: None,
+        dragging_selection: false,
         fim: None,
         fim_pending: None,
         fim_next_id: 0,

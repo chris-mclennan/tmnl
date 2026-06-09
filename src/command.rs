@@ -330,6 +330,43 @@ fn toggle_dashboard_chrome(app: &mut crate::App) {
     let _ = v.evaluate_script(js);
 }
 
+/// Write `text` to the system clipboard. Used by the text-selection
+/// drag → copy path. `pbcopy` on macOS, `wl-copy` / `xclip -i` on
+/// Linux, PowerShell `Set-Clipboard` on Windows. Errors are swallowed
+/// + logged — a missing clipboard tool shouldn't crash the editor.
+pub(crate) fn write_clipboard_text(text: &str) {
+    use std::io::Write;
+    let cmd: (&str, &[&str]);
+    #[cfg(target_os = "macos")]
+    {
+        cmd = ("pbcopy", &[]);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        cmd = if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+            ("wl-copy", &[])
+        } else {
+            ("xclip", &["-selection", "clipboard"])
+        };
+    }
+    #[cfg(target_os = "windows")]
+    {
+        cmd = ("powershell", &["-NoProfile", "-Command", "Set-Clipboard"]);
+    }
+    let child = std::process::Command::new(cmd.0)
+        .args(cmd.1)
+        .stdin(std::process::Stdio::piped())
+        .spawn();
+    let Ok(mut child) = child else {
+        log::warn!("clipboard: spawn {} failed", cmd.0);
+        return;
+    };
+    if let Some(stdin) = child.stdin.as_mut() {
+        let _ = stdin.write_all(text.as_bytes());
+    }
+    let _ = child.wait();
+}
+
 fn read_clipboard_text() -> Option<String> {
     let cmd: (&str, &[&str]);
     #[cfg(target_os = "macos")]
