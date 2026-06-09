@@ -1108,6 +1108,7 @@ impl Gpu {
     pub fn populate_hit_rects(&mut self) {
         let _ = self.strip_chip_instances();
         let _ = self.strip_palette_chip_instances();
+        let _ = self.strip_sidebar_toggle_instances();
     }
 
     /// Emit one cell instance per configured launcher icon — a
@@ -1511,20 +1512,12 @@ impl Gpu {
         let chip_body = chip_body.as_str();
         let dropdown_text = " \u{EAB4} ";
 
-        // Sidebar-toggle button glyph (VS Code-style sidebar pill).
-        // Lives at the right end of the cluster, padded with a space
-        // each side so the icon doesn't kiss the dropdown chevron or
-        // the strip edge.
-        let toggle_text = "  \u{EBF4} ";
-
         let back_cells = back_text.chars().count();
         let fwd_cells = fwd_text.chars().count();
         let gap_cells = gap_text.chars().count();
         let chip_body_cells = chip_body.chars().count();
         let dropdown_cells = dropdown_text.chars().count();
-        let toggle_cells = toggle_text.chars().count();
-        let total_cells =
-            back_cells + fwd_cells + gap_cells + chip_body_cells + dropdown_cells + toggle_cells;
+        let total_cells = back_cells + fwd_cells + gap_cells + chip_body_cells + dropdown_cells;
         let total_w_px = total_cells as f32 * cell_w;
         let window_w_px = self.config.width as f32;
         if window_w_px < Self::CHIP_START_X_PX + total_w_px + 40.0 {
@@ -1647,21 +1640,6 @@ impl Gpu {
             );
             col += 1.0;
         }
-        // Sidebar-toggle button — slightly lifted bg (btn_bg) so it
-        // reads as a separate affordance from the search chip body.
-        let toggle_start_col = col;
-        for ch in toggle_text.chars() {
-            push(
-                &mut out,
-                col,
-                ch,
-                BTN_FG,
-                btn_bg,
-                &mut self.atlas,
-                &self.queue,
-            );
-            col += 1.0;
-        }
 
         // Map cells back to pixel rects.
         let cells_x = |c0: usize, c_count: usize| -> (f32, f32) {
@@ -1681,10 +1659,64 @@ impl Gpu {
         self.strip_palette_fwd_rect = Some((fx0, fx1, y0, y1));
         self.strip_palette_chip_rect = Some((cx0, cx1, y0, y1));
         self.strip_palette_dropdown_rect = Some((dx0, dx1, y0, y1));
-        // Toggle button rect — pixel-x bounds from its start col.
-        let toggle_x0 = start_x_px + (toggle_start_col - start_col) * cell_w;
-        let toggle_x1 = toggle_x0 + toggle_cells as f32 * cell_w;
-        self.strip_sidebar_toggle_rect = Some((toggle_x0, toggle_x1, y0, y1));
+        out
+    }
+
+    /// Sidebar-toggle button — sits between the macOS traffic-light
+    /// buttons and the start of the tab chip cluster. Clicking
+    /// cycles `cfg.tab_layout` Horizontal ↔ Vertical (App handles
+    /// the actual flip via `strip_sidebar_toggle_rect`).
+    ///
+    /// Geometry: a 5-cell pill at pixel-x = 100 (just past the
+    /// right edge of macOS's traffic lights at ~85px) with the
+    /// VS Code-style sidebar glyph centered. Larger / more
+    /// prominent than the old palette-cluster-end variant the
+    /// user reported as too tucked-away.
+    fn strip_sidebar_toggle_instances(&mut self) -> Vec<pipeline::Instance> {
+        use crate::atlas::style_from_attrs;
+        self.strip_sidebar_toggle_rect = None;
+        if self.strip_h <= 0.0 {
+            return Vec::new();
+        }
+        let cell_w = self.atlas.cell_w;
+        let cell_h = self.atlas.cell_h;
+        // Pixel-x where the button starts. Slightly past the
+        // rightmost traffic-light button (~80px wide on a
+        // standard-decoration macOS window).
+        const TOGGLE_X_PX: f32 = 100.0;
+        // 5 cells wide: pad / pad / glyph / pad / pad.
+        let cells = ["  ", "\u{EBF4}", "  "].concat();
+        let total_cells = cells.chars().count();
+        // Vertically center inside the strip — same `base_y`
+        // formula the palette uses.
+        let strip_h = self.strip_h;
+        let inset_y_total = self.inset_px + self.strip_h;
+        let label_y = (strip_h - cell_h) * 0.5;
+        let base_y = (label_y - inset_y_total) / cell_h;
+        let start_col = (TOGGLE_X_PX - self.inset_px - self.sidebar_w_px) / cell_w;
+        const TOGGLE_FG: [f32; 4] = [0.78, 0.80, 0.85, 1.0];
+        let btn_bg = palette().btn_bg;
+        let mut out: Vec<pipeline::Instance> = Vec::new();
+        for (i, ch) in cells.chars().enumerate() {
+            let g = self.atlas.glyph(ch, style_from_attrs(0), &self.queue);
+            out.push(pipeline::Instance {
+                cell_pos: [start_col + i as f32, base_y],
+                fg: TOGGLE_FG,
+                bg: btn_bg,
+                uv_min: g.uv_min,
+                uv_max: g.uv_max,
+                glyph_offset: g.offset,
+                glyph_size: g.size,
+                attrs: 0,
+                _pad: 0,
+            });
+        }
+        // Hit rect in window pixels.
+        let x0 = TOGGLE_X_PX;
+        let x1 = x0 + total_cells as f32 * cell_w;
+        let y0_px = 0.0;
+        let y1_px = self.strip_h;
+        self.strip_sidebar_toggle_rect = Some((x0, x1, y0_px, y1_px));
         out
     }
 
@@ -2072,6 +2104,7 @@ impl Gpu {
         // strip area above the grid).
         instances.extend(self.strip_chip_instances());
         instances.extend(self.strip_palette_chip_instances());
+        instances.extend(self.strip_sidebar_toggle_instances());
         instances.extend(self.launcher_chip_instances());
         self.pipeline
             .ensure_capacity(&self.device, instances.len() as u64);
