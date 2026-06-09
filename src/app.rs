@@ -1373,90 +1373,12 @@ impl App {
                 .unwrap_or_else(|| tab.panes[tab.focused].label.clone());
         }
 
-        // Disambiguate duplicate labels with " (N)" — only when the
-        // same exact string appears more than once. Chrome / VS Code
-        // pattern: don't number eagerly, but number every occurrence
-        // (including the first) once there's a collision.
-        let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
-        for t in &self.tabs {
-            *counts.entry(t.label.as_str()).or_insert(0) += 1;
-        }
-        let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
-        // The tab being renamed (if any) shows its live edit buffer in
-        // the chip instead of its label, with a caret.
-        let rename = self
-            .renaming_tab
-            .as_ref()
-            .map(|r| (r.tab_idx, r.buf.clone()));
-        let chips: Vec<(String, bool, bool)> = self
-            .tabs
-            .iter()
-            .enumerate()
-            .map(|(i, t)| {
-                if let Some((idx, buf)) = &rename
-                    && *idx == i
-                {
-                    // Inline rename field — render active-styled so it's
-                    // clearly the edit target.
-                    return (format!("{buf}▏"), true, false);
-                }
-                let label = if counts.get(t.label.as_str()).copied().unwrap_or(0) > 1 {
-                    let n = seen.entry(t.label.as_str()).or_insert(0);
-                    *n += 1;
-                    format!("{} ({})", t.label, n)
-                } else {
-                    t.label.clone()
-                };
-                // Attention dot is painted by the chip renderer (red `●`).
-                // Cleared on switch-to.
-                let attention = t.panes.iter().any(|p| p.attention) && i != self.active;
-                (label, i == self.active, attention)
-            })
-            .collect();
-
-        // Pick the strip height to match the current mode:
-        // * multi-tab → tall strip with chip space
-        // * single-tab + TUI (native or shell with altscreen)
-        //   → minimal band, just enough to clear the macOS traffic
-        //     lights (pre-tabs look)
-        // * single-tab + bare shell prompt → taller band so the first
-        //   prompt row isn't kissing the traffic lights.
-        let multi_tab = self.tabs.len() > 1;
-        let active_is_native = matches!(
-            &self.tabs[self.active].focused_pane().kind,
-            PaneKind::Native { .. }
-        );
-        let tui_active = active_is_native || self.altscreen_active;
-        // Pre-flight the chip wrap layout to know how many rows the
-        // chips will need at the current window width. The strip
-        // grows by one TAB_ROW_H_PX per row of chips (palette stays
-        // at its single-tab position above). Single-tab path skips
-        // the layout call.
-        let strip_or_sidebar_resize = {
-            let gpu = self.gpu.as_mut().unwrap();
-            // Make sure the GPU knows what the user picked in
-            // `[tab_layout]` — settings UI may have flipped it.
-            gpu.set_tab_layout(self.cfg.tab_layout);
-            gpu.set_strip_chips(&chips);
-            let rows = if multi_tab {
-                gpu.chip_row_count(&chips)
-            } else {
-                1
-            };
-            let target_strip = Gpu::required_strip_h(self.cfg.tab_layout, &chips, rows, tui_active);
-            let target_sidebar =
-                if matches!(self.cfg.tab_layout, crate::config::TabLayout::Vertical) && multi_tab {
-                    gpu.compute_sidebar_w_px(&chips)
-                } else {
-                    0.0
-                };
-            let r1 = gpu.set_strip_h(target_strip);
-            let r2 = gpu.set_sidebar_w_px(target_sidebar);
-            r1.or(r2)
-        };
-        if strip_or_sidebar_resize.is_some() {
-            self.relayout_all_panes();
-        }
+        // Refresh chip layout + strip / sidebar size. Calls the
+        // shared helper that headless drivers also use — this used
+        // to be a copy-pasted inline block that drifted from the
+        // helper (notably ignored `sidebar_w_override`, which the
+        // helper consults). One source of truth now.
+        self.refresh_strip_layout();
 
         // Shell mode only: auto-switch the inset when a full-screen TUI
         // takes the alt-screen (edge-to-edge), and back on exit.
@@ -2697,6 +2619,27 @@ impl App {
         if pressed && self.renaming_tab.is_some() {
             self.commit_rename();
         }
+        // Sidebar drag-resize must arm BEFORE the chrome
+        // intercept below — the grab zone (±4px around the
+        // sidebar's right edge) is itself inside `in_chrome`,
+        // so the chrome branch would otherwise consume the
+        // click and the drag would never arm.
+        if pressed
+            && button == MouseButton::Left
+            && let Some(gpu) = &self.gpu
+            && gpu.sidebar_w_px > gpu.inset_px
+        {
+            let border_x = gpu.sidebar_w_px as f64;
+            let grab = 4.0_f64;
+            let strip_y = gpu.strip_h as f64;
+            if self.cursor_px.0 >= border_x - grab
+                && self.cursor_px.0 <= border_x + grab
+                && self.cursor_px.1 >= strip_y
+            {
+                self.dragging_sidebar = true;
+                return;
+            }
+        }
         // Strip-region intercept — clicks on tab chips switch
         // (left) / close (middle). Tested against the cached
         // pixel cursor against the rects produced by the last
@@ -2849,28 +2792,6 @@ impl App {
             self.dragging_tab = None;
             self.dragging_divider = None;
             self.dragging_sidebar = false;
-        }
-        // A left-press on the sidebar's right-edge border arms a
-        // drag-resize of the sidebar column. Grab zone is ±4px
-        // around the 1-px border so the user doesn't need pixel-
-        // precision. Only active in vertical layout with a real
-        // sidebar (sidebar_w_px > inset_px). Owns the gesture so
-        // chip-click / body-click handlers below don't also fire.
-        if pressed
-            && button == MouseButton::Left
-            && let Some(gpu) = &self.gpu
-            && gpu.sidebar_w_px > gpu.inset_px
-        {
-            let border_x = gpu.sidebar_w_px as f64;
-            let grab = 4.0_f64;
-            let strip_y = gpu.strip_h as f64;
-            if self.cursor_px.0 >= border_x - grab
-                && self.cursor_px.0 <= border_x + grab
-                && self.cursor_px.1 >= strip_y
-            {
-                self.dragging_sidebar = true;
-                return;
-            }
         }
         // A left-press on a divider starts a drag-resize of that
         // split — it owns the gesture, no pane dispatch.
