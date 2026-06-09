@@ -166,6 +166,27 @@ pub fn record(entry: Entry) {
     }
 }
 
+/// Wipe every entry from the recents file. Used by the welcome
+/// overlay's "clear all" action. No-op when the file doesn't
+/// exist (the next `record` will create it fresh).
+pub fn clear_all() {
+    let Some(path) = path() else { return };
+    if !path.exists() {
+        return;
+    }
+    let file = File {
+        entries: Vec::new(),
+    };
+    match toml::to_string_pretty(&file) {
+        Ok(text) => {
+            if let Err(e) = std::fs::write(&path, text) {
+                log::warn!("tmnl: recents: clear_all write {}: {e}", path.display());
+            }
+        }
+        Err(e) => log::warn!("tmnl: recents: clear_all serialize: {e}"),
+    }
+}
+
 /// `$XDG_CONFIG_HOME/tmnl/recents.toml` or
 /// `$HOME/.config/tmnl/recents.toml`.
 fn path() -> Option<PathBuf> {

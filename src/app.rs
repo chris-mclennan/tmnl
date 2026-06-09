@@ -1867,6 +1867,25 @@ impl App {
                     self.welcome = None;
                     true
                 }
+                "R" => {
+                    // Clear ALL recents — wipe the file + close
+                    // the overlay. 2026-06-09 user ask.
+                    crate::recents::clear_all();
+                    self.welcome = None;
+                    true
+                }
+                "D" => {
+                    // "Don't show again" — flip cfg.show_welcome to
+                    // false + dismiss. Persists across restarts so
+                    // the user lands straight in the shell next
+                    // time. Re-enable via Settings.
+                    self.cfg.show_welcome = false;
+                    if let Err(e) = self.cfg.save() {
+                        log::warn!("config save failed: {e}");
+                    }
+                    self.welcome = None;
+                    true
+                }
                 "r" => {
                     // Drop the selected entry from the recents file.
                     // Re-load so the welcome list stays in sync.

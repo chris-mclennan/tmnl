@@ -25,7 +25,8 @@ const ACCENT: [f32; 4] = [0.93, 0.73, 0.45, 1.0];
 const NUM: [f32; 4] = [0.61, 0.69, 0.93, 1.0];
 
 const TITLE: &str = " welcome to tmnl ";
-const HINT: &str = "1-9 open · ↑↓ move · ↵ open · r drop · esc dismiss";
+const HINT: &str =
+    "1-9 open · ↑↓ move · ↵ open · r drop · R clear all · D don't show · esc dismiss";
 const EMPTY_HINT: &str = "no recents yet — drop into the shell or `tmnl --mnml`";
 
 /// State carried across renders while the welcome overlay is up.

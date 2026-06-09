@@ -32,6 +32,7 @@ enum RowKind {
     ThemedPrompt,
     PromptPosition,
     LauncherPosition,
+    ShowWelcome,
 }
 
 const ROWS: &[RowKind] = &[
@@ -40,6 +41,7 @@ const ROWS: &[RowKind] = &[
     RowKind::ThemedPrompt,
     RowKind::PromptPosition,
     RowKind::LauncherPosition,
+    RowKind::ShowWelcome,
 ];
 
 pub struct SettingsState {
@@ -106,6 +108,9 @@ impl SettingsState {
                     PromptPosition::Bottom => PromptPosition::Natural,
                 };
             }
+            RowKind::ShowWelcome => {
+                self.cfg.show_welcome = !self.cfg.show_welcome;
+            }
         }
     }
 
@@ -120,6 +125,9 @@ impl SettingsState {
             }
             RowKind::PromptPosition => {
                 self.cfg.prompt_position = Config::default().prompt_position;
+            }
+            RowKind::ShowWelcome => {
+                self.cfg.show_welcome = Config::default().show_welcome;
             }
         }
     }
@@ -149,6 +157,10 @@ impl SettingsState {
         self.cfg.prompt_position != Config::default().prompt_position
     }
 
+    fn show_welcome_modified(&self) -> bool {
+        self.cfg.show_welcome != Config::default().show_welcome
+    }
+
     fn row_modified(&self, kind: RowKind) -> bool {
         match kind {
             RowKind::Inset => self.inset_modified(),
@@ -156,6 +168,7 @@ impl SettingsState {
             RowKind::ThemedPrompt => self.themed_prompt_modified(),
             RowKind::LauncherPosition => self.launcher_position_modified(),
             RowKind::PromptPosition => self.prompt_position_modified(),
+            RowKind::ShowWelcome => self.show_welcome_modified(),
         }
     }
 }
@@ -170,6 +183,7 @@ fn row_label(kind: RowKind) -> &'static str {
         RowKind::ThemedPrompt => "Themed prompt",
         RowKind::PromptPosition => "Prompt position",
         RowKind::LauncherPosition => "Launcher position",
+        RowKind::ShowWelcome => "Show welcome",
     }
 }
 
@@ -187,6 +201,9 @@ fn row_help(kind: RowKind) -> &'static str {
         }
         RowKind::LauncherPosition => {
             "Where the launcher icons render. Left = vertical rail (default). Top/Bottom not yet implemented — they fall back to Left."
+        }
+        RowKind::ShowWelcome => {
+            "Show the welcome / recents overlay on startup. Flip off via this setting or the panel's `D` (don't show again) action."
         }
     }
 }
@@ -253,6 +270,7 @@ pub fn draw(grid: &mut Grid, st: &SettingsState) {
             RowKind::ThemedPrompt => render_bool_choices(st.cfg.themed_prompt),
             RowKind::PromptPosition => render_prompt_position(st.cfg.prompt_position),
             RowKind::LauncherPosition => render_launcher_position(st.cfg.launcher_position),
+            RowKind::ShowWelcome => render_bool_choices(st.cfg.show_welcome),
         };
         let modified = st.row_modified(*kind);
         let suffix_w = if modified { 6 } else { 4 };

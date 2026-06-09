@@ -84,6 +84,16 @@ pub struct Config {
     /// Default `Natural` matches every other terminal.
     #[serde(default)]
     pub prompt_position: PromptPosition,
+    /// Show the "welcome to tmnl" overlay on startup. Default
+    /// `true` — flip via Settings or the panel's `D` ("don't show
+    /// again") action. When `false`, tmnl drops straight into the
+    /// shell tab without surfacing the recents picker.
+    #[serde(default = "default_show_welcome")]
+    pub show_welcome: bool,
+}
+
+fn default_show_welcome() -> bool {
+    true
 }
 
 /// One entry in the left-edge launcher rail. `id` is the stable
@@ -169,6 +179,7 @@ impl Default for Config {
             launcher_icons: Vec::new(),
             launcher_position: LauncherPosition::Left,
             prompt_position: PromptPosition::Natural,
+            show_welcome: true,
         }
     }
 }
@@ -260,6 +271,7 @@ mod tests {
             launcher_icons: Vec::new(),
             launcher_position: LauncherPosition::Left,
             prompt_position: PromptPosition::Natural,
+            show_welcome: true,
         }
     }
 

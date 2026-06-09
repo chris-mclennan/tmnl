@@ -3124,7 +3124,10 @@ fn main() {
     // can re-open their familiar TUI with a single keypress instead of
     // having to type the path. Skipped in editor mode (the user already
     // told us what to open) + when recents is empty (nothing to offer).
-    if !editor_mode {
+    // Respect the user's `show_welcome` config — when off, skip the
+    // overlay entirely on startup (their explicit opt-out via the
+    // welcome's `D` action or the settings UI).
+    if !editor_mode && app.cfg.show_welcome {
         // Welcome list: user's recents on top, then the always-present
         // built-in launchers (mnml / mixr) so a fresh tmnl install
         // still has a one-keypress path to native-app tabs.
