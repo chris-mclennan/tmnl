@@ -156,14 +156,24 @@ _mnml_build_left() {
         out+="$(_mnml_fg "$git_bg")${_mnml_sep}${_mnml_reset}"
     fi
 
-    # Last-exit indicator: red `[N]` only when non-zero.
-    if [ "$last_exit" != "0" ] && [ -n "$last_exit" ]; then
+    # Last-exit indicator: red `[N]` only when non-zero AND not a
+    # "user just hit Ctrl+C on an unsubmitted line" signal exit.
+    # Common signal exits are 128 + signo: 130 = SIGINT (Ctrl+C),
+    # 131 = SIGQUIT, 137 = SIGKILL, 143 = SIGTERM. None of these
+    # are useful to show in the prompt — they reflect user intent
+    # or external action, not a real command failure.
+    local hide_exit=0
+    case "$last_exit" in
+        130|131|137|143) hide_exit=1 ;;
+    esac
+    if [ "$last_exit" != "0" ] && [ -n "$last_exit" ] && [ "$hide_exit" -eq 0 ]; then
         out+=" $(_mnml_fg "$MNML_PROMPT_RED")[$last_exit]${_mnml_reset}"
     fi
 
-    # Trailing arrow — green on success, red on error.
+    # Trailing arrow — green on success, red on real error (signal
+    # exits stay green since they aren't really a "failed command").
     local arrow_fg="$MNML_PROMPT_GREEN"
-    if [ "$last_exit" != "0" ] && [ -n "$last_exit" ]; then
+    if [ "$last_exit" != "0" ] && [ -n "$last_exit" ] && [ "$hide_exit" -eq 0 ]; then
         arrow_fg="$MNML_PROMPT_RED"
     fi
     out+=" $(_mnml_fg "$arrow_fg")${_mnml_arrow}${_mnml_reset} "

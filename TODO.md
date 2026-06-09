@@ -7,6 +7,59 @@ messages and `findings/` reports.
 
 ---
 
+## Sidebar toggle button in the strip
+
+Add a small chrome button (matching the existing arrow-pill / palette
+chip aesthetic) that toggles the vertical-tab sidebar on/off without
+opening Settings.
+
+- Glyph: nf-md-dock-left (looks like `⊟` / split-pane icon, similar
+  to Warp / VS Code's sidebar toggle).
+- Position: in the top strip, near the palette cluster on the left
+  side of the search chip.
+- Click: cycles `tab_layout` between Horizontal and Vertical without
+  going through the settings overlay.
+- Hover tooltip: "Toggle sidebar (S)".
+- Optional keyboard shortcut: `Cmd+S` for sidebar toggle (won't
+  collide — Cmd+S is the global save passthrough today, but tmnl's
+  shell tabs don't have a meaningful save).
+
+User asked for the icon style from a screenshot of (Warp? Arc?) that
+shows the toggle as a stylized window-split glyph.
+
+---
+
+## Top-strip tab search ("Search tabs..." overlay)
+
+When the user has many tabs open, finding a specific one by name is
+hard. Add a search bar that filters open tabs by name fragment.
+
+- Trigger: click the existing search chip in the top strip, or
+  `Cmd+Shift+T`.
+- Renders as: an inline input field that REPLACES the search chip
+  (or expands it to ~30 cells wide), with a "Search tabs..."
+  placeholder.
+- Live-filter the visible tab chips below as the user types — chips
+  whose label doesn't match the substring fade to dim or get hidden
+  entirely.
+- Right side: a "config" icon (gear) → opens Settings; a `+` icon →
+  spawns a new tab. This visually moves the `+` button UP from its
+  current after-last-tab position into the search bar.
+- Enter / click: switches to the focused match. Esc: dismisses.
+
+Open questions:
+
+- Does the search live inside the existing strip (replacing chrome)
+  or as a centered overlay? Inline feels Warp-ish; overlay feels
+  Cmd+P-ish.
+- Fuzzy match like `Ctrl+P` in mnml, or substring-only?
+- When the search bar is up, do tab chips still receive clicks?
+
+References: image #18 in the user's report (Warp / Arc-style tab
+search bar with config + `+` icons on the right).
+
+---
+
 ## Bottom-anchored prompt (Warp / Claude Code style)
 
 The shell prompt sticks to the bottom of the window; command
