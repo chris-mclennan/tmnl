@@ -157,6 +157,17 @@ pub fn draw(grid: &mut Grid, st: &SettingsState) {
     let t_x = x0 + (w.saturating_sub(TITLE.chars().count() as u32)) / 2;
     grid.write(t_x, y0, TITLE, ACCENT, BG);
 
+    // Version chip in the top-right corner of the panel border —
+    // shows what version of the app the user is running so they
+    // can match it against the public release tag / changelog.
+    // 2026-06-08 family-wide ask.
+    let version = concat!("v", env!("CARGO_PKG_VERSION"));
+    let version_len = version.chars().count() as u32;
+    if w > version_len + 4 {
+        let v_x = x0 + w - version_len - 2;
+        grid.write(v_x, y0, version, FG_DIM, BG);
+    }
+
     // Field rows — start at y0+3 (just below title row + 1 gap). Each
     // row gets 1 line. Focused row's bg = SEL_BG so the cursor is
     // obvious; non-focused row's bg = BG (the box body).
