@@ -29,6 +29,10 @@
 : "${MNML_PROMPT_BG:=#1a1b26}"
 : "${MNML_PROMPT_FG:=#c0caf5}"
 : "${MNML_PROMPT_ACCENT:=#7aa2f7}"
+# Subtle dark-grey bg for the cwd chip — matches the "active chip"
+# tone in mnml's bufferline + the statusline chip bg. Less shouty
+# than painting the chip in the full accent color.
+: "${MNML_PROMPT_CHIP_BG:=#292d35}"
 : "${MNML_PROMPT_GREEN:=#9ece6a}"
 : "${MNML_PROMPT_RED:=#f7768e}"
 : "${MNML_PROMPT_YELLOW:=#e0af68}"
@@ -117,36 +121,40 @@ _mnml_seg_git_dirty() {
 # code (passed in from PROMPT_COMMAND / precmd). Returns a string
 # containing raw escape codes — wrap with shell-specific brackets at
 # the call site.
+#
+# Style (2026-06-09): mnml-statusline-style chips — subtle dark-grey
+# chip bg with the accent only on text + glyphs. No powerline arrows.
+# Reads as a continuation of the bufferline / statusline rather than
+# a 90s-Linux-bash prompt.
 _mnml_build_left() {
     local last_exit=$1
     local out=""
     local cwd_text
     cwd_text=$(_mnml_seg_cwd)
 
-    # cwd segment: accent bg, bg-color fg.
-    out+="$(_mnml_bg "$MNML_PROMPT_ACCENT")$(_mnml_fg "$MNML_PROMPT_BG") ${cwd_text} "
+    # cwd chip: subtle bg, accent fg.
+    out+="$(_mnml_bg "$MNML_PROMPT_CHIP_BG")$(_mnml_fg "$MNML_PROMPT_ACCENT") ${cwd_text} ${_mnml_reset}"
 
     local git_text
     git_text=$(_mnml_seg_git)
     if [ -n "$git_text" ]; then
-        local git_bg="$MNML_PROMPT_GREEN"
+        local git_fg="$MNML_PROMPT_GREEN"
         if [ "$(_mnml_seg_git_dirty)" = "1" ]; then
-            git_bg="$MNML_PROMPT_YELLOW"
+            git_fg="$MNML_PROMPT_YELLOW"
         fi
-        # accent-fg arrow → git bg.
-        out+="$(_mnml_bg "$git_bg")$(_mnml_fg "$MNML_PROMPT_ACCENT")${_mnml_sep}"
-        out+="$(_mnml_bg "$git_bg")$(_mnml_fg "$MNML_PROMPT_BG") ${_mnml_branch} ${git_text} "
-        # git bg → reset (terminal bg).
-        out+="${_mnml_reset}$(_mnml_fg "$git_bg")${_mnml_sep}${_mnml_reset}"
-    else
-        out+="${_mnml_reset}$(_mnml_fg "$MNML_PROMPT_ACCENT")${_mnml_sep}${_mnml_reset}"
+        # git: separate chip, glyph + branch name in the git color.
+        out+=" $(_mnml_bg "$MNML_PROMPT_CHIP_BG")$(_mnml_fg "$git_fg") ${_mnml_branch} ${git_text} ${_mnml_reset}"
     fi
 
-    # Last-exit indicator: red ❯ when non-zero, green otherwise.
+    # Last-exit indicator: red `[N]` only when non-zero.
+    if [ "$last_exit" != "0" ] && [ -n "$last_exit" ]; then
+        out+=" $(_mnml_fg "$MNML_PROMPT_RED")[$last_exit]${_mnml_reset}"
+    fi
+
+    # Trailing arrow — green on success, red on error.
     local arrow_fg="$MNML_PROMPT_GREEN"
     if [ "$last_exit" != "0" ] && [ -n "$last_exit" ]; then
         arrow_fg="$MNML_PROMPT_RED"
-        out+=" $(_mnml_fg "$MNML_PROMPT_RED")[$last_exit]${_mnml_reset}"
     fi
     out+=" $(_mnml_fg "$arrow_fg")${_mnml_arrow}${_mnml_reset} "
 

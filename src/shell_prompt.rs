@@ -68,6 +68,9 @@ pub fn env_vars(themed: bool) -> Vec<(String, String)> {
     v.push(("MNML_PROMPT_FG".into(), rgba_to_hex(p.text_fg)));
     v.push(("MNML_PROMPT_ACCENT".into(), rgba_to_hex(p.accent_fg)));
     v.push(("MNML_PROMPT_GREY".into(), rgba_to_hex(p.dim_fg)));
+    // Chip bg — matches the bufferline / statusline chip color so
+    // the prompt's cwd-chip reads as part of the same family.
+    v.push(("MNML_PROMPT_CHIP_BG".into(), rgba_to_hex(p.chip_bg)));
     v
 }
 

@@ -7,6 +7,43 @@ messages and `findings/` reports.
 
 ---
 
+## Mouse drag-select + copy (body text)
+
+Standard terminal: mouse-press in body starts a selection, drag
+extends it, release copies to clipboard. tmnl tracks
+`dragging_tab` / `dragging_divider` / `dragging_sidebar` but has
+no body-selection state.
+
+Surfaces:
+
+- `App.selection: Option<TextSelection>` where `TextSelection` is
+  `{ pane_id, anchor_cell: (col, row), focus_cell: (col, row) }`
+  — anchor is press-time, focus is the live cursor.
+- Mouse press in body area (not chrome) → start selection at the
+  cell under the cursor. Mouse motion with button held → update
+  focus. Release → copy + clear (or keep visible — VS Code keeps,
+  Terminal.app clears).
+- Renderer: walk visible cells, compute `is_selected(col, row)`
+  for each, override the cell's bg with `palette().selection_bg`
+  (new field — eyedrop from mnml's editor selection). Cleanest is
+  a per-instance override on the cell pipeline.
+- Copy: pbcopy on macOS, wl-copy / xclip on Linux, clip.exe on
+  Windows. Walk selection range in the grid, build a string with
+  `\n` between rows, trim trailing whitespace per row.
+- Cmd+C should also copy the current selection (today it forwards
+  as Ctrl+C and SIGINT's the shell — annoying).
+- Triple-click → select line. Double-click → select word.
+- Shift+click → extend existing selection.
+
+Open questions:
+
+- Block-rectangular selection (Option+drag) like Terminal.app?
+- Selection across scrollback (only the visible viewport, or also
+  hidden scrollback)? The pty's scrollback lives in vt100's
+  parser state — accessible but needs different cell-coord math.
+
+---
+
 ## Left-edge launcher rail (sibling integrations)
 
 Add a vertical icon strip pinned to the left edge of the window,

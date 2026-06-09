@@ -294,8 +294,30 @@ impl Atlas {
         if fonts[STYLE_REGULAR as usize].is_empty() {
             return Err("no regular font loaded".into());
         }
-        if let Some(first) = chains[STYLE_REGULAR as usize].first() {
-            log::info!("atlas: primary regular font {}", first.path.display());
+        // Always print to stderr (independent of `RUST_LOG`) so it
+        // shows up in Console.app for GUI launches — needed when
+        // debugging a "wrong font picked" report. Lists every
+        // successfully-loaded regular font in priority order +
+        // confirms U+276F / U+E0B0 (heavy-right-angle + powerline-
+        // arrow) coverage on each, since those are the glyphs the
+        // themed prompt depends on.
+        eprintln!(
+            "atlas: regular font chain ({} loaded):",
+            fonts[STYLE_REGULAR as usize].len()
+        );
+        for (i, (spec, f)) in chains[STYLE_REGULAR as usize]
+            .iter()
+            .zip(fonts[STYLE_REGULAR as usize].iter())
+            .enumerate()
+        {
+            let has_arrow = f.lookup_glyph_index('\u{276F}') != 0;
+            let has_pwl = f.lookup_glyph_index('\u{E0B0}') != 0;
+            eprintln!(
+                "  [{i}] {}  U+276F={}  U+E0B0={}",
+                spec.path.display(),
+                if has_arrow { "y" } else { "MISS" },
+                if has_pwl { "y" } else { "MISS" },
+            );
         }
 
         let primary = &fonts[STYLE_REGULAR as usize][0];
