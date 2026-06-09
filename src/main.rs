@@ -90,6 +90,19 @@ const TAB_GAP_PX: f32 = 3.0;
 /// palette text inside its 52px zone, so the visible label-to-
 /// label distance between rows matches palette→row-0.
 const INTER_ROW_GAP_PX: f32 = 16.0;
+
+/// Vertical-mode inter-row gap between sidebar tab chips. Smaller
+/// than horizontal's 16 because the sidebar is narrow — too much
+/// gap and the chips read as separate floating pills, but ZERO
+/// (the old behavior) makes them feel cramped. 6px lands between
+/// "too tight" and "too floaty". 2026-06-09 user feedback.
+const VERT_INTER_ROW_GAP_PX: f32 = 6.0;
+
+/// Extra space above the `+` new-tab chip in vertical mode — adds
+/// to whatever inter-row gap the chips above already have. Visually
+/// separates the `+` from the chip cluster so it reads as a
+/// distinct affordance rather than "tab N+1".
+const VERT_PLUS_EXTRA_GAP_PX: f32 = 8.0;
 /// Single-tab chrome height — a small breathing-room band above the
 /// grid so the first row of content isn't kissing the macOS traffic
 /// lights, but no visible chrome strip (the strip pipeline paints this
@@ -1204,17 +1217,31 @@ impl Gpu {
         // of extra space above it so the visible label-to-label
         // distance between wrapped chip rows matches the palette→
         // row-0 distance.
-        // VERTICAL mode: tabs stack tight as a side-list (sidebar
-        // chrome — same y-rhythm as the editor cells beside it); no
-        // inter-row spacing applied. The user's first vertical-mode
-        // screenshot showed 16px gaps between every sidebar chip —
-        // stretched + read as broken.
-        let inter_row_gap_for_mode = if vertical { 0.0 } else { INTER_ROW_GAP_PX };
-        let row_geom = |row: usize| -> (f32, f32, f32) {
+        // VERTICAL mode: 6px inter-row gap (`VERT_INTER_ROW_GAP_PX`)
+        // so tabs read as distinct rows without the 16px-horizontal
+        // gap that made the sidebar look stretched in an earlier
+        // iteration. 2026-06-09 user feedback: the prior 0px felt
+        // cramped.
+        let inter_row_gap_for_mode = if vertical {
+            VERT_INTER_ROW_GAP_PX
+        } else {
+            INTER_ROW_GAP_PX
+        };
+        let row_geom = |row: usize, is_plus: bool| -> (f32, f32, f32) {
             // (y0_px, y1_px, base_y_in_cell_coords)
+            // The `+` chip in vertical mode gets an extra gap above
+            // it (`VERT_PLUS_EXTRA_GAP_PX`) so it's visually
+            // separated from the chip cluster — reads as an
+            // affordance rather than another tab.
+            let plus_extra = if is_plus && vertical {
+                VERT_PLUS_EXTRA_GAP_PX
+            } else {
+                0.0
+            };
             let y0 = first_row_top_px
                 + (row as f32 - scroll_rows) * TAB_ROW_H_PX
-                + row as f32 * inter_row_gap_for_mode;
+                + row as f32 * inter_row_gap_for_mode
+                + plus_extra;
             let y1 = y0 + TAB_ROW_H_PX;
             let label_y = (y0 + (TAB_ROW_H_PX - cell_h) * 0.5).max(0.0);
             (y0, y1, (label_y - inset_y_total) / cell_h)
@@ -1229,7 +1256,7 @@ impl Gpu {
 
         for (i, (label, active, attention)) in chips.iter().enumerate() {
             let (row, slot_col) = slots[i];
-            let (chip_y0_px, chip_y1_px, base_y) = row_geom(row);
+            let (chip_y0_px, chip_y1_px, base_y) = row_geom(row, false);
             // Vertical mode: skip chips scrolled off-screen so we
             // don't paint glyphs over the body grid above/below the
             // sidebar.
@@ -1319,7 +1346,7 @@ impl Gpu {
         // out for us). In vertical mode skipped when scrolled off the
         // bottom; `clamp_sidebar_scroll` keeps it reachable.
         let (plus_row, plus_col_offset) = plus_slot;
-        let (plus_y0_px, plus_y1_px, plus_base_y) = row_geom(plus_row);
+        let (plus_y0_px, plus_y1_px, plus_base_y) = row_geom(plus_row, true);
         if row_visible(plus_y0_px) {
             let plus_x_px = start_x_px + plus_col_offset * cell_w;
             self.push_plus_button(&mut out, plus_x_px, plus_base_y, plus_y0_px, plus_y1_px);
