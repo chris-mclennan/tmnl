@@ -1624,15 +1624,6 @@ impl Gpu {
         if self.strip_h <= 0.0 {
             return Vec::new();
         }
-        // Vertical-tab mode: the sidebar header owns the search +
-        // plus chrome; rendering the top-strip palette chip too
-        // mirrors `tab_search` into both places and reads as
-        // distracting. Skip the whole cluster (incl. back/fwd nav
-        // arrows + dropdown) — toggle stays, that's enough chrome
-        // up top. 2026-06-09 user feedback.
-        if matches!(self.tab_layout, crate::config::TabLayout::Vertical) {
-            return Vec::new();
-        }
         let cell_w = self.atlas.cell_w;
         let cell_h = self.atlas.cell_h;
         // Palette always centers within the single-tab strip
@@ -1673,10 +1664,18 @@ impl Gpu {
         // label length; long titles truncate with `…`.
         const CHIP_LABEL_W: usize = 24;
         // Tab-search mode wins over the active-tab label — show
-        // the user's query (with a trailing cursor caret) so
-        // they can see what they're typing. Empty query renders
-        // a placeholder.
-        let active_label = if let Some(q) = self.tab_search.as_deref() {
+        // the user's query (with a trailing cursor caret) so they
+        // can see what they're typing. Empty query renders a
+        // placeholder.
+        //
+        // Vertical-tab mode: the sidebar header IS the input the
+        // user is typing into; mirroring that query into the top
+        // palette chip too reads as distracting (the top chip is
+        // not the active input). Skip the tab_search branch here
+        // — top chip falls back to the active-tab label, the
+        // sidebar header shows the live query.
+        let vertical = matches!(self.tab_layout, crate::config::TabLayout::Vertical);
+        let active_label = if !vertical && let Some(q) = self.tab_search.as_deref() {
             if q.is_empty() {
                 "Search tabs…".to_string()
             } else {
