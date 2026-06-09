@@ -174,7 +174,7 @@ impl Default for Config {
         Self {
             inset: 20.0,
             inset_native: 0.0,
-            tab_layout: TabLayout::Horizontal,
+            tab_layout: TabLayout::Vertical,
             themed_prompt: false,
             launcher_icons: Vec::new(),
             launcher_position: LauncherPosition::Left,
@@ -266,7 +266,7 @@ mod tests {
         Config {
             inset,
             inset_native,
-            tab_layout: TabLayout::Horizontal,
+            tab_layout: TabLayout::Vertical,
             themed_prompt: false,
             launcher_icons: Vec::new(),
             launcher_position: LauncherPosition::Left,
@@ -324,8 +324,8 @@ mod tests {
     }
 
     #[test]
-    fn tab_layout_defaults_to_horizontal() {
-        assert_eq!(Config::default().tab_layout, TabLayout::Horizontal);
+    fn tab_layout_defaults_to_vertical() {
+        assert_eq!(Config::default().tab_layout, TabLayout::Vertical);
     }
 
     #[test]

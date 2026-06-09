@@ -1880,20 +1880,9 @@ impl Gpu {
         // `strip_palette_chip_instances` uses) so the toggle sits at
         // the same y as the macOS traffic-light buttons regardless
         // of whether the strip has grown to hold wrapped tab rows.
-        // 2026-06-09 user feedback: was using `self.strip_h` which
-        // walks down with extra tab rows; toggle drifted up vs the
-        // traffic lights.
-        //
-        // Glyph baseline correction — the Codicon sidebar-layout
-        // glyph (U+EBF4) sits noticeably lower in its em-square
-        // than the palette's magnify / arrow glyphs, so even with
-        // identical center math the toggle reads visually below
-        // the traffic-light dots. Nudge UP by 6 physical px to
-        // align with the dots.
         let palette_zone_h = MACOS_TAB_STRIP_PX_SINGLE;
         let inset_y_total = self.inset_px + self.strip_h;
-        const TOGGLE_Y_NUDGE_PX: f32 = -6.0;
-        let label_y = ((palette_zone_h - cell_h) * 0.5 + TOGGLE_Y_NUDGE_PX).max(0.0);
+        let label_y = ((palette_zone_h - cell_h) * 0.5).max(0.0);
         let base_y = (label_y - inset_y_total) / cell_h;
         let start_col = (TOGGLE_X_PX - self.inset_px - self.sidebar_w_px) / cell_w;
         const TOGGLE_FG: [f32; 4] = [0.78, 0.80, 0.85, 1.0];
