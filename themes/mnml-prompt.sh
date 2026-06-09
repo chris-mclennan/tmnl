@@ -36,18 +36,36 @@
 : "${MNML_CONTEXT:=}"
 
 # --- Color helpers ----------------------------------------------------------
-# Hex "#RRGGBB" → ANSI 24-bit fg/bg escape. Caller must wrap with
-# %{...%} (zsh) or \[...\] (bash) for PS1/PROMPT cursor accounting —
-# done in the build functions below.
+# zsh + bash need non-printing escape sequences bracketed so the
+# shell's column counter doesn't include the byte length of the
+# escape. zsh uses `%{…%}`, bash uses `\[…\]`. We detect the active
+# shell once at source-time and bake the brackets directly into
+# `_mnml_fg`/`_mnml_bg`/`_mnml_reset` so callers never have to
+# think about it. Without this, PROMPT renders but zsh thinks it
+# is 0 columns wide → RPROMPT mis-aligns + the line gets cleared.
+if [ -n "${ZSH_VERSION:-}" ]; then
+    _mnml_lb='%{'
+    _mnml_rb='%}'
+elif [ -n "${BASH_VERSION:-}" ]; then
+    _mnml_lb='\['
+    _mnml_rb='\]'
+else
+    _mnml_lb=''
+    _mnml_rb=''
+fi
+
+# Hex "#RRGGBB" → bracketed ANSI 24-bit fg/bg escape.
 _mnml_fg() {
     local h="${1#\#}"
-    printf '\033[38;2;%d;%d;%dm' "0x${h:0:2}" "0x${h:2:2}" "0x${h:4:2}"
+    printf '%s\033[38;2;%d;%d;%dm%s' \
+        "$_mnml_lb" "0x${h:0:2}" "0x${h:2:2}" "0x${h:4:2}" "$_mnml_rb"
 }
 _mnml_bg() {
     local h="${1#\#}"
-    printf '\033[48;2;%d;%d;%dm' "0x${h:0:2}" "0x${h:2:2}" "0x${h:4:2}"
+    printf '%s\033[48;2;%d;%d;%dm%s' \
+        "$_mnml_lb" "0x${h:0:2}" "0x${h:2:2}" "0x${h:4:2}" "$_mnml_rb"
 }
-_mnml_reset=$'\033[0m'
+_mnml_reset="${_mnml_lb}"$'\033[0m'"${_mnml_rb}"
 
 # Powerline + nerd-font glyphs.
 _mnml_sep=$''      #  — right-pointing solid arrow (segment end)
@@ -145,23 +163,28 @@ _mnml_build_right() {
 # --- Wire to shell ----------------------------------------------------------
 if [ -n "${ZSH_VERSION:-}" ]; then
     setopt PROMPT_SUBST
-    # %{...%} bracket the non-printing escapes so zsh tracks the
-    # visible-column count correctly (otherwise line wrap breaks).
-    PROMPT='%{$(_mnml_build_left "$?")%}'
-    RPROMPT='%{$(_mnml_build_right)%}'
+    # No outer %{…%} wrap — the escapes inside `_mnml_build_left`
+    # / `_mnml_build_right` are already bracketed by `_mnml_fg`
+    # etc. Wrapping the whole prompt would make zsh treat the
+    # entire output (visible glyphs included) as zero-width,
+    # mis-placing RPROMPT and clearing the line.
+    PROMPT='$(_mnml_build_left "$?")'
+    RPROMPT='$(_mnml_build_right)'
 elif [ -n "${BASH_VERSION:-}" ]; then
     # bash builds the prompt via PROMPT_COMMAND so `$?` is captured
-    # before any other command runs. \[...\] brackets the non-printing
-    # escapes (same role as zsh's %{...%}).
+    # before any other command runs. The build functions already
+    # emit \[…\] brackets around each escape (set up at script
+    # source time when BASH_VERSION was detected), so PS1 just
+    # concatenates left + right without additional wrapping.
     _mnml_set_ps1() {
         local last=$?
-        # We can't easily right-align on bash without `tput cols` math
-        # per-redraw; inline the right side at the end of PS1 with a
-        # newline split so the layout still looks clean.
         local left right
         left=$(_mnml_build_left "$last")
         right=$(_mnml_build_right)
-        PS1="\[${left}\]\[${right}\]\n\[\033[0m\]"
+        # Two-line layout: left on row 1, right on row 2 indented.
+        # bash has no native RPROMPT so right-alignment without a
+        # tput-cols-per-redraw dance gets ugly fast.
+        PS1="${left}"$'\n'"${right} "
     }
     case "$PROMPT_COMMAND" in
         *_mnml_set_ps1*) : ;;

@@ -108,6 +108,32 @@ fn discover_font_chains() -> [Vec<FontSpec>; 4] {
             "SymbolsNerdFontMono-Regular.ttf",
             "SymbolsNerdFontMono-Regular.ttf",
         ),
+        // Non-Mono (proportional) Nerd Font variants — last-resort
+        // fallback for users who installed `JetBrainsMonoNerdFont`
+        // (the default cask name) instead of the strict-monospace
+        // `JetBrainsMonoNerdFontMono`. Powerline arrows + symbols
+        // may render slightly wider than one cell, but missing
+        // powerline glyphs read worse than mis-aligned ones.
+        // 2026-06-09 user report — saw `)` for `` after enabling
+        // the themed prompt.
+        (
+            "JetBrainsMonoNerdFont-Regular.ttf",
+            "JetBrainsMonoNerdFont-Bold.ttf",
+            "JetBrainsMonoNerdFont-Italic.ttf",
+            "JetBrainsMonoNerdFont-BoldItalic.ttf",
+        ),
+        (
+            "FiraCodeNerdFont-Regular.ttf",
+            "FiraCodeNerdFont-Bold.ttf",
+            "FiraCodeNerdFont-Retina.ttf",
+            "FiraCodeNerdFont-Bold.ttf",
+        ),
+        (
+            "HackNerdFont-Regular.ttf",
+            "HackNerdFont-Bold.ttf",
+            "HackNerdFont-Italic.ttf",
+            "HackNerdFont-BoldItalic.ttf",
+        ),
     ];
     for dir in &font_dirs {
         for (r, b, i, bi) in nerd_families {
