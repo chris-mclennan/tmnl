@@ -358,12 +358,68 @@ fn read_clipboard_text() -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// Cmd+V → paste the system clipboard into the focused pane.
+///
+/// Two paths:
+///
+/// - **Native pane** (mnml/mixr/etc.) — forward as `Ctrl+V` so the
+///   client's own paste binding fires. The client decides whether
+///   to consume bytes from its own clipboard or request from us;
+///   we never read the clipboard ourselves on its behalf.
+/// - **Shell pane** — read the system clipboard (`pbpaste` /
+///   `wl-paste` / PowerShell `Get-Clipboard`) and write the bytes
+///   straight to the pty. Wraps the content in bracketed-paste
+///   markers (`ESC[200~ … ESC[201~`) so zsh / bash / fish can
+///   distinguish it from typed input + skip auto-execution of
+///   multi-line pastes.
+///
+/// 2026-06-09 fix — prior version sent `Ctrl+V` to the shell, which
+/// in zsh means `quoted-insert`, not paste, so Cmd+V appeared to do
+/// nothing.
+pub(crate) fn paste_into_focused(app: &mut App, ke: Option<&winit::event::KeyEvent>) {
+    use crate::PaneKind;
+    // Decide path WITHOUT a mutable borrow that conflicts with the
+    // `forward_as_ctrl` call below (which itself takes `&mut App`).
+    let is_shell = matches!(
+        app.tabs[app.active].focused_pane().kind,
+        PaneKind::Shell { .. }
+    );
+    if !is_shell {
+        // Native / Browser / future kinds: forward as Ctrl+V so the
+        // client decides what to do. Browser webview already handles
+        // paste internally via its own AppKit chord pipeline; the
+        // forward is a harmless no-op there.
+        forward_as_ctrl(app, ke);
+        return;
+    }
+    let Some(text) = read_clipboard_text() else {
+        return;
+    };
+    if text.is_empty() {
+        return;
+    }
+    // Bracketed-paste markers. Modern shells parse these out;
+    // older shells will see the literal escape bytes and may
+    // misrender — acceptable trade-off since every shell tmnl
+    // supports (zsh / bash / fish) handles bracketed paste
+    // correctly out of the box.
+    const BP_START: &[u8] = b"\x1b[200~";
+    const BP_END: &[u8] = b"\x1b[201~";
+    if let PaneKind::Shell { session } = &mut app.tabs[app.active].focused_pane_mut().kind
+        && let Some(s) = session.as_mut()
+    {
+        s.write_bytes(BP_START);
+        s.write_bytes(text.as_bytes());
+        s.write_bytes(BP_END);
+    }
+}
+
 /// Forward the current key event to the focused Native pane with
 /// Cmd → Ctrl modifier remap. Used by Mac-style editing chords
 /// (⌘Z/X/C/V/A/S/F/N/P/B/G/⌘/) so mnml's standard-mode bindings
 /// (Ctrl+...) light up under Mac muscle memory. No-op for Shell
 /// tabs (they're bare terminals where the OS already handles
-/// Cmd-clipboard).
+/// Cmd-clipboard, EXCEPT paste — see `paste_into_focused`).
 fn forward_as_ctrl(app: &mut App, ke: Option<&winit::event::KeyEvent>) {
     use crate::PaneKind;
     use crate::protocol::{InputEvent, KeyInput};
@@ -986,10 +1042,10 @@ fn builtin_commands() -> Vec<Command> {
         },
         Command {
             id: "fwd.cmd_v",
-            title: "Paste (⌘V → ⌃V)",
+            title: "Paste (⌘V)",
             group: "Forwarded chords",
             keys: &["cmd+v"],
-            run: |a, _, k| forward_as_ctrl(a, k),
+            run: |a, _, k| paste_into_focused(a, k),
             when: Some(no_modal_open),
         },
         Command {

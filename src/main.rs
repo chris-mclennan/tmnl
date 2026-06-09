@@ -94,15 +94,17 @@ const INTER_ROW_GAP_PX: f32 = 16.0;
 /// Vertical-mode inter-row gap between sidebar tab chips. Smaller
 /// than horizontal's 16 because the sidebar is narrow — too much
 /// gap and the chips read as separate floating pills, but ZERO
-/// (the old behavior) makes them feel cramped. 6px lands between
-/// "too tight" and "too floaty". 2026-06-09 user feedback.
-const VERT_INTER_ROW_GAP_PX: f32 = 6.0;
+/// (the old behavior) makes them feel cramped. 12px lands close
+/// to horizontal mode's 16 but still reads as a coherent column.
+/// 2026-06-09 user feedback: 6 was too tight.
+const VERT_INTER_ROW_GAP_PX: f32 = 12.0;
 
 /// Extra space above the `+` new-tab chip in vertical mode — adds
-/// to whatever inter-row gap the chips above already have. Visually
-/// separates the `+` from the chip cluster so it reads as a
-/// distinct affordance rather than "tab N+1".
-const VERT_PLUS_EXTRA_GAP_PX: f32 = 8.0;
+/// to whatever inter-row gap the chips above already have, so the
+/// total separation `+` ↔ last-tab is `VERT_INTER_ROW_GAP_PX +
+/// VERT_PLUS_EXTRA_GAP_PX`. 16px chosen so the `+` clearly reads
+/// as a distinct affordance rather than another tab.
+const VERT_PLUS_EXTRA_GAP_PX: f32 = 16.0;
 /// Single-tab chrome height — a small breathing-room band above the
 /// grid so the first row of content isn't kissing the macOS traffic
 /// lights, but no visible chrome strip (the strip pipeline paints this

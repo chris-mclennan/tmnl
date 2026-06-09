@@ -1683,6 +1683,19 @@ impl App {
         let menu = self.app_menu.as_ref().unwrap().clone_ids();
         for id in ids {
             // Split-pane items carry plain string IDs (see `menu.rs`).
+            if id == "paste" {
+                // Edit → Paste — same path as Cmd+V (which can't
+                // reach us directly when the menu owns the chord).
+                // The fwd.cmd_v command takes a key event arg; we
+                // pass None since the dispatch wasn't keyboard-
+                // driven. `paste_into_focused` handles Shell vs
+                // Native pane internally.
+                crate::command::paste_into_focused(self, None);
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+                continue;
+            }
             if id == "split_right" {
                 self.split_active_pane(SplitDir::Vertical);
                 if let Some(w) = &self.window {

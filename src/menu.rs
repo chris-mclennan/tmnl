@@ -132,9 +132,21 @@ impl AppMenu {
             ])
             .expect("build Shell menu");
 
-        // ── Edit — predefined items hand off to AppKit so the OS
-        //    intercepts cmd-X/C/V/A natively in any focused text field.
+        // ── Edit — Cut/Copy/Select-All keep the predefined items
+        //    (they hand off to AppKit so the OS intercepts cmd-X/C/A
+        //    natively in any focused text field). Paste is a CUSTOM
+        //    item routed through `paste_into_focused` so it works
+        //    for Shell tabs — predefined paste sends a `paste:`
+        //    selector to the first responder (the winit window),
+        //    which doesn't know how to handle it. 2026-06-09 fix.
         let edit_menu = Submenu::new("Edit", true);
+        let id_paste = MenuId::new("paste");
+        let paste_item = MenuItem::with_id(
+            id_paste.clone(),
+            "Paste",
+            true,
+            Some(Accelerator::new(Some(Modifiers::META), Code::KeyV)),
+        );
         edit_menu
             .append_items(&[
                 &PredefinedMenuItem::undo(None),
@@ -142,7 +154,7 @@ impl AppMenu {
                 &PredefinedMenuItem::separator(),
                 &PredefinedMenuItem::cut(None),
                 &PredefinedMenuItem::copy(None),
-                &PredefinedMenuItem::paste(None),
+                &paste_item,
                 &PredefinedMenuItem::select_all(None),
             ])
             .expect("build Edit menu");
