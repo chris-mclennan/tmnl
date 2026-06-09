@@ -2975,38 +2975,62 @@ fn tick_secondary_pane(pane: &mut Pane, visible: bool) -> Vec<Vec<tmnl_protocol:
 ///
 /// No-op when launched from a shell — stdin is a tty there, PATH
 /// already has the user's customizations.
-/// Disable macOS's "click anywhere in title area to drag the window"
-/// behavior. With `titlebar_transparent + fullsize_content_view`,
-/// our wgpu surface paints through the OS title area — but macOS
-/// still treats that region as a drag handle, swallowing mouse-down
-/// events before they reach winit.
+/// Override `mouseDownCanMoveWindow` on winit's NSView so clicks in
+/// the title-bar region reach our event loop instead of being
+/// consumed for window-dragging. This is the same pattern Warp's
+/// `WarpHostView` uses (returning `NO` from `mouseDownCanMoveWindow`
+/// — see `warpdotdev/warp` crates/warpui/src/platform/mac/objc/host_view.m).
 ///
-/// `setMovable:NO` is the supported AppKit API for this. The user
-/// loses the ability to drag the window by clicking anywhere in the
-/// title region, but standard macOS drag-by-Cmd-click still works
-/// (Cmd-drag anywhere → moves the window).
+/// `setMovable:NO` on the NSWindow disables the drag gesture but
+/// doesn't actually pass clicks through — the title region still
+/// captures mouse events. Only overriding `mouseDownCanMoveWindow`
+/// at the view level lets clicks reach us.
 ///
-/// Called once during window creation.
+/// Implementation: runtime-swizzle the existing NSView class
+/// (`class_replaceMethod`) so all instances return `NO`. winit
+/// creates only one content view per window, so this is safe.
+///
+/// Side effect: the user can no longer drag the window by clicking
+/// anywhere in the title region. They can still Cmd-drag anywhere
+/// (standard macOS gesture) and resize via window edges.
 #[cfg(target_os = "macos")]
 pub fn disable_window_drag(window: &winit::window::Window) {
-    use objc2::msg_send;
-    use objc2::runtime::AnyObject;
+    use objc2::ffi::class_replaceMethod;
+    use objc2::runtime::{AnyObject, Sel};
+    use objc2::sel;
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    // Implementation: always return NO so AppKit doesn't treat
+    // mouse-downs as window-drag gestures. `extern "C-unwind"` is
+    // required by objc2 0.6's class_replaceMethod signature.
+    unsafe extern "C-unwind" fn mouse_down_can_move_window(_this: &AnyObject, _sel: Sel) -> bool {
+        false
+    }
+
     let Ok(handle) = window.window_handle() else {
         return;
     };
     let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
         return;
     };
-    let ns_view: *mut AnyObject = appkit.ns_view.as_ptr() as *mut _;
-    if ns_view.is_null() {
+    let ns_view_ptr: *mut AnyObject = appkit.ns_view.as_ptr() as *mut _;
+    if ns_view_ptr.is_null() {
         return;
     }
     unsafe {
-        let ns_window: *mut AnyObject = msg_send![ns_view, window];
-        if !ns_window.is_null() {
-            let _: () = msg_send![ns_window, setMovable: false];
-        }
+        let view = &*ns_view_ptr;
+        let cls = view.class();
+        let sel = sel!(mouseDownCanMoveWindow);
+        // The Objective-C type encoding for `BOOL (*)(id, SEL)` —
+        // 'B' = BOOL, '@' = id (self), ':' = SEL.
+        let types = c"B@:".as_ptr();
+        // Cast the typed Rust fn to the bare `unsafe extern "C-unwind" fn()`
+        // signature objc2's FFI expects (wrapped in Some).
+        let imp_typed: unsafe extern "C-unwind" fn(&AnyObject, Sel) -> bool =
+            mouse_down_can_move_window;
+        let imp: unsafe extern "C-unwind" fn() = std::mem::transmute(imp_typed);
+        let cls_ptr: *const objc2::runtime::AnyClass = cls;
+        class_replaceMethod(cls_ptr as *mut _, sel, imp, types);
     }
 }
 

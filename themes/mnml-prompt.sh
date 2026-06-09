@@ -157,14 +157,17 @@ _mnml_build_left() {
     fi
 
     # Last-exit indicator: red `[N]` only when non-zero AND not a
-    # "user just hit Ctrl+C on an unsubmitted line" signal exit.
-    # Common signal exits are 128 + signo: 130 = SIGINT (Ctrl+C),
-    # 131 = SIGQUIT, 137 = SIGKILL, 143 = SIGTERM. None of these
-    # are useful to show in the prompt — they reflect user intent
-    # or external action, not a real command failure.
+    # noisy "user-driven" exit code. Suppressed:
+    #   * 127 — command not found (typos; user already sees the
+    #     shell's "command not found" line)
+    #   * 130 — SIGINT (Ctrl+C on unsubmitted line)
+    #   * 131 — SIGQUIT
+    #   * 137 — SIGKILL
+    #   * 143 — SIGTERM
+    # Real command failures (1, 2, 126, etc.) still show.
     local hide_exit=0
     case "$last_exit" in
-        130|131|137|143) hide_exit=1 ;;
+        127|130|131|137|143) hide_exit=1 ;;
     esac
     if [ "$last_exit" != "0" ] && [ -n "$last_exit" ] && [ "$hide_exit" -eq 0 ]; then
         out+=" $(_mnml_fg "$MNML_PROMPT_RED")[$last_exit]${_mnml_reset}"

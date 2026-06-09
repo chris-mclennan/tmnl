@@ -4964,7 +4964,7 @@ dependencies = [
 
 [[package]]
 name = "tmnl-rs"
-version = "0.0.7"
+version = "0.1.0"
 dependencies = [
  "bytemuck",
  "dirs",
