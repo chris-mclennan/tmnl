@@ -1465,7 +1465,12 @@ impl Gpu {
         // strip filler. Same shade as the active chip.
         const PLUS_BG: [f32; 4] = [0.18, 0.20, 0.24, 1.0];
         let cell_w = self.atlas.cell_w;
-        let plus_x = (plus_x_px - self.inset_px) / cell_w;
+        // Same cancel-the-cell-pipeline-x-inset correction the
+        // chip / palette paths use — without `- sidebar_w_px`, the
+        // `+` button renders inside the body column instead of the
+        // sidebar. 2026-06-08: the chip path had this fix but the
+        // `+` button render slipped through.
+        let plus_x = (plus_x_px - self.inset_px - self.sidebar_w_px) / cell_w;
         let space_g = self.atlas.glyph(' ', style_from_attrs(0), &self.queue);
         let plus_g = self.atlas.glyph('+', style_from_attrs(0), &self.queue);
         // 3-cell button: [space, +, space]
