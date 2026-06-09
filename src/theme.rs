@@ -48,6 +48,12 @@ pub struct Palette {
     pub dim_fg: [f32; 4],
     /// Accent color — keymap hints, highlight glyphs.
     pub accent_fg: [f32; 4],
+    /// Blue — mnml's themed "primary" chip color (TREE pill in the
+    /// statusline, `pmenu_bg` / `folder_bg` in the base_30 schema).
+    /// Exported as `MNML_PROMPT_BLUE` so the shell prompt's cwd
+    /// chip can match mnml's chrome chip style. Defaults to
+    /// onedark's `#61afef`.
+    pub blue: [f32; 4],
 }
 
 impl Palette {
@@ -64,6 +70,8 @@ impl Palette {
             tab_fg: [0.624, 0.655, 0.706, 1.0],
             dim_fg: [0.48, 0.50, 0.58, 1.0],
             accent_fg: [0.93, 0.73, 0.45, 1.0],
+            // onedark blue (#61afef = 97, 175, 239).
+            blue: [0.380, 0.686, 0.937, 1.0],
         }
     }
 
@@ -118,6 +126,10 @@ struct MnmlBase30 {
     /// Accent (orange in mnml's defaults).
     #[serde(alias = "yellow", alias = "orange")]
     yellow: Option<String>,
+    /// Primary blue accent — used for "primary" chips (mnml's
+    /// statusline TREE pill etc.).
+    #[serde(default)]
+    blue: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -186,6 +198,7 @@ fn map_mnml_to_palette(t: &MnmlTheme) -> Palette {
             .as_deref()
             .and_then(hex)
             .unwrap_or(d.accent_fg),
+        blue: t.base_30.blue.as_deref().and_then(hex).unwrap_or(d.blue),
     }
 }
 
@@ -370,6 +383,7 @@ mod tests {
                 grey_fg: "#888888".into(),
                 grey_fg2: None,
                 yellow: None,
+                blue: None,
             },
         };
         let p = map_mnml_to_palette(&theme);

@@ -33,6 +33,10 @@
 # tone in mnml's bufferline + the statusline chip bg. Less shouty
 # than painting the chip in the full accent color.
 : "${MNML_PROMPT_CHIP_BG:=#292d35}"
+# Primary blue chip color — matches mnml's statusline TREE / adx
+# pills. Used as the cwd-chip background so the prompt reads like
+# a continuation of the family chrome.
+: "${MNML_PROMPT_BLUE:=#61afef}"
 : "${MNML_PROMPT_GREEN:=#9ece6a}"
 : "${MNML_PROMPT_RED:=#f7768e}"
 : "${MNML_PROMPT_YELLOW:=#e0af68}"
@@ -132,8 +136,10 @@ _mnml_build_left() {
     local cwd_text
     cwd_text=$(_mnml_seg_cwd)
 
-    # cwd chip: subtle bg, accent fg.
-    out+="$(_mnml_bg "$MNML_PROMPT_CHIP_BG")$(_mnml_fg "$MNML_PROMPT_ACCENT") ${cwd_text} ${_mnml_reset}"
+    # cwd chip: bright blue bg with dark fg — matches mnml's TREE
+    # pill in the statusline. Bold so the chip text pops over the
+    # blue background the same way mnml's chip text does.
+    out+="$(_mnml_bg "$MNML_PROMPT_BLUE")$(_mnml_fg "$MNML_PROMPT_BG") ${cwd_text} ${_mnml_reset}"
 
     local git_text
     git_text=$(_mnml_seg_git)
@@ -142,7 +148,8 @@ _mnml_build_left() {
         if [ "$(_mnml_seg_git_dirty)" = "1" ]; then
             git_fg="$MNML_PROMPT_YELLOW"
         fi
-        # git: separate chip, glyph + branch name in the git color.
+        # git: subtle chip with the git color as fg (separate from
+        # the blue cwd chip so the two chip styles read distinctly).
         out+=" $(_mnml_bg "$MNML_PROMPT_CHIP_BG")$(_mnml_fg "$git_fg") ${_mnml_branch} ${git_text} ${_mnml_reset}"
     fi
 

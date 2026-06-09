@@ -71,6 +71,9 @@ pub fn env_vars(themed: bool) -> Vec<(String, String)> {
     // Chip bg — matches the bufferline / statusline chip color so
     // the prompt's cwd-chip reads as part of the same family.
     v.push(("MNML_PROMPT_CHIP_BG".into(), rgba_to_hex(p.chip_bg)));
+    // Primary "blue" chip color — mnml's TREE / adx statusline
+    // pills use this. Exported so the prompt's cwd chip can match.
+    v.push(("MNML_PROMPT_BLUE".into(), rgba_to_hex(p.blue)));
     v
 }
 
