@@ -332,13 +332,14 @@ impl App {
                     return;
                 }
                 Key::Named(NamedKey::Enter) => {
-                    if let Some(query) = self.tab_search.take() {
-                        let q = query.to_lowercase();
-                        if !q.is_empty()
-                            && let Some(idx) = self
-                                .tabs
-                                .iter()
-                                .position(|t| t.label.to_lowercase().contains(&q))
+                    if let Some(q) = self.tab_search.clone()
+                        && !q.is_empty()
+                    {
+                        let q_lower = q.to_lowercase();
+                        if let Some(idx) = self
+                            .tabs
+                            .iter()
+                            .position(|t| t.label.to_lowercase().contains(&q_lower))
                         {
                             self.switch_to_tab(idx);
                         }
@@ -2802,13 +2803,19 @@ impl App {
                 true
             }
             Key::Named(NamedKey::Enter) => {
-                if let Some(query) = self.tab_search.take() {
-                    let q = query.to_lowercase();
-                    if !q.is_empty()
-                        && let Some(idx) = self
-                            .tabs
-                            .iter()
-                            .position(|t| t.label.to_lowercase().contains(&q))
+                // 2026-06-10: previously did `tab_search.take()`,
+                // which cleared the query and the user lost their
+                // search text on Enter. Now switch to the first
+                // matching tab but KEEP the query visible — the
+                // user dismisses with Esc when they're done.
+                if let Some(q) = self.tab_search.clone()
+                    && !q.is_empty()
+                {
+                    let q_lower = q.to_lowercase();
+                    if let Some(idx) = self
+                        .tabs
+                        .iter()
+                        .position(|t| t.label.to_lowercase().contains(&q_lower))
                     {
                         self.switch_to_tab(idx);
                     }
