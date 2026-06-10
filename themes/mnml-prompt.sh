@@ -278,19 +278,19 @@ if [ -n "${ZSH_VERSION:-}" ]; then
     PROMPT='$(_mnml_build_left "$?")'
     RPROMPT='$(_mnml_build_right)'
 
-    # Transient RPROMPT — drop the right-side chip strip from
-    # prior prompts so scrollback isn't littered with stale
-    # chips. Standard Powerlevel10k / Starship / Pure pattern:
-    # `zle-line-finish` (fires when user submits) blanks RPROMPT
-    # + .reset-prompt redraws the current line without it.
-    # `precmd` hook restores RPROMPT for the next prompt.
+    # Transient prompt — old prompts collapse to a minimal
+    # `❯ command` line (no cwd chip, no RPROMPT). Only the
+    # active prompt keeps the full chip strip. Standard
+    # Powerlevel10k / Starship transient pattern.
     autoload -Uz add-zsh-hook 2>/dev/null
     _mnml_zle_line_finish() {
+        PROMPT="$(_mnml_fg "$MNML_PROMPT_GREEN")${_mnml_arrow}${_mnml_reset} "
         RPROMPT=''
         zle .reset-prompt
     }
     zle -N zle-line-finish _mnml_zle_line_finish
     _mnml_precmd() {
+        PROMPT='$(_mnml_build_left "$?")'
         RPROMPT='$(_mnml_build_right)'
     }
     add-zsh-hook precmd _mnml_precmd 2>/dev/null
