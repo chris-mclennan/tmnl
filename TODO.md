@@ -7,6 +7,55 @@ messages and `findings/` reports.
 
 ---
 
+## Top-strip palette cluster — actually do something useful
+
+Right now the palette cluster (back-arrow / forward-arrow /
+search-chip / chevron) in the top strip is mostly inert when the
+active pane is a Shell:
+
+- Back / Forward — Ctrl+PgUp / Ctrl+PgDn forwarded. Means
+  nothing in a bare zsh.
+- Search chip — toggles `tab_search` (the chip we're sitting on
+  in the sidebar header already). Redundant with the sidebar's
+  own search input.
+- Chevron — fires Ctrl+R which is reverse-i-search in zsh.
+  Useful but silent visually; user can't tell it did anything.
+
+For Native (mnml) panes it does meaningful work (back/forward
+buffer nav, ⌘⇧P palette, recent files). For shell-only
+sessions — the dominant use case — the cluster is decoration.
+
+Worth picking one of these directions:
+
+1. **Universal command palette** — `⌘⇧P` opens a fuzzy-match
+   overlay listing: open tabs, recent shell commands across
+   all panes, installed integrations (mnml siblings),
+   workspace paths, recent files. Top-strip search-chip
+   becomes the affordance.
+2. **Quick command runner** — type a command, hit Enter, it
+   fires in the active pane (or opens a new tab if you hold a
+   modifier). Reuses the search-chip's text-input surface.
+3. **Recents picker for shell tabs** — show the last N
+   commands executed in the focused pane, click to re-run.
+   Reuses the chevron as "show history dropdown."
+4. **Context chip — pwd + git branch** — make the search chip
+   display `~/Projects/mnml • main ±` as a context indicator.
+   Click → copy pwd. Right-click → open in mnml.
+5. **Drop the back/forward arrows entirely** — they're noise
+   in shell sessions. Replace with something we actually use
+   (theme picker? font zoom controls? mode chip?).
+
+Open questions:
+
+- Per-pane-kind cluster (Shell vs Native gets different
+  buttons) vs universal "all panes get the same"?
+- Does this overlap too much with the sidebar header's search +
+  `+` buttons?
+- Worth a Settings row to enable/disable specific
+  buttons individually?
+
+---
+
 ## Icons next to tab names in the vertical sidebar
 
 Each tab chip currently shows just its label (`zsh`, `mnml`, etc).
