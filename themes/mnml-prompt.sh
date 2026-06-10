@@ -97,7 +97,10 @@ _mnml_seg_cwd() {
     printf '%s' "$p"
 }
 
-# Outputs "branch±" / "branch" / "" — caller checks for empty.
+# Outputs "branch±↑N↓M" — caller checks for empty. The ahead/
+# behind suffix uses `git rev-list --left-right --count` against
+# the tracked upstream; absent (no upstream / not a tracking
+# branch) ⇒ no arrows.
 _mnml_seg_git() {
     command -v git >/dev/null 2>&1 || return
     local branch
@@ -107,7 +110,50 @@ _mnml_seg_git() {
     if ! git diff --quiet --ignore-submodules HEAD 2>/dev/null; then
         dirty="±"
     fi
-    printf '%s%s' "$branch" "$dirty"
+    local ahead_behind=""
+    local ab
+    ab=$(git rev-list --left-right --count HEAD...@{upstream} 2>/dev/null)
+    if [ -n "$ab" ]; then
+        local ahead behind
+        ahead=$(printf '%s' "$ab" | awk '{print $1}')
+        behind=$(printf '%s' "$ab" | awk '{print $2}')
+        if [ "$ahead" -gt 0 ] 2>/dev/null; then
+            ahead_behind="${ahead_behind}↑${ahead}"
+        fi
+        if [ "$behind" -gt 0 ] 2>/dev/null; then
+            ahead_behind="${ahead_behind}↓${behind}"
+        fi
+    fi
+    printf '%s%s%s' "$branch" "$dirty" "$ahead_behind"
+}
+
+# Now-playing chip — reads ~/.mixr/quick.txt (mixr writes this
+# when a track is playing; absent or empty ⇒ no chip). Same file
+# the mnml + tmnl `now_playing::mixr` sources poll.
+_mnml_seg_now_playing() {
+    local f="$HOME/.mixr/quick.txt"
+    [ -r "$f" ] || return
+    local track
+    track=$(head -n 1 "$f" 2>/dev/null)
+    track="${track#"${track%%[![:space:]]*}"}"
+    track="${track%"${track##*[![:space:]]}"}"
+    [ -n "$track" ] || return
+    if [ "${#track}" -gt 28 ]; then
+        track="${track:0:27}…"
+    fi
+    printf '%s' "$track"
+}
+
+# Attention chip — reads ~/.cache/tmnl/attention-count.txt (tmnl
+# writes the count of attention-flagged tabs each tick). Absent
+# or "0" ⇒ no chip.
+_mnml_seg_attention() {
+    local f="$HOME/.cache/tmnl/attention-count.txt"
+    [ -r "$f" ] || return
+    local count
+    count=$(cat "$f" 2>/dev/null)
+    [ -n "$count" ] && [ "$count" != "0" ] || return
+    printf '%s' "$count"
 }
 
 # Returns "1" when the working tree is dirty, "0" otherwise. Used to
@@ -185,6 +231,26 @@ _mnml_build_left() {
 
 _mnml_build_right() {
     local out=""
+    local sep="$(_mnml_fg "$MNML_PROMPT_GREY") · ${_mnml_reset}"
+    local first=1
+    # Now-playing chip — `♪ track name`.
+    local np
+    np=$(_mnml_seg_now_playing)
+    if [ -n "$np" ]; then
+        [ "$first" -eq 1 ] || out+="$sep"
+        out+="$(_mnml_fg "$MNML_PROMPT_BLUE")♪ ${np}${_mnml_reset}"
+        first=0
+    fi
+    # Attention chip — `● N` in red when other tabs need attention.
+    local at
+    at=$(_mnml_seg_attention)
+    if [ -n "$at" ]; then
+        [ "$first" -eq 1 ] || out+="$sep"
+        out+="$(_mnml_fg "$MNML_PROMPT_RED")● ${at}${_mnml_reset}"
+        first=0
+    fi
+    # Clock + context.
+    [ "$first" -eq 1 ] || out+="$sep"
     local context_label="${MNML_CONTEXT:-$( basename "${SHELL:-sh}" )}"
     out+="$(_mnml_fg "$MNML_PROMPT_GREY")$(date +%H:%M) · ${context_label}${_mnml_reset}"
     printf '%s' "$out"

@@ -64,3 +64,23 @@ pub fn play_chime() {
 
 #[cfg(not(target_os = "macos"))]
 pub fn play_chime() {}
+
+/// Write the current attention-flagged-tab count to
+/// `~/.cache/tmnl/attention-count.txt`. The themed shell prompt
+/// (`mnml-prompt.sh::_mnml_seg_attention`) reads this and renders
+/// a `● N` chip on the right side when N > 0. Creates the parent
+/// dir on first call; swallows fs errors (this is best-effort
+/// surface info, not load-bearing).
+pub fn write_attention_count(count: usize) {
+    let Some(home) = std::env::var_os("HOME") else {
+        return;
+    };
+    let mut path = std::path::PathBuf::from(home);
+    path.push(".cache");
+    path.push("tmnl");
+    if std::fs::create_dir_all(&path).is_err() {
+        return;
+    }
+    path.push("attention-count.txt");
+    let _ = std::fs::write(&path, count.to_string());
+}

@@ -1771,6 +1771,14 @@ impl App {
             };
             crate::notify::set_dock_badge(label.as_deref());
         }
+        // Write the count to `~/.cache/tmnl/attention-count.txt`
+        // whenever it changes. The themed shell prompt
+        // (`mnml-prompt.sh::_mnml_seg_attention`) reads this file
+        // and renders a `● N` chip on the right side. Skipping
+        // writes when unchanged keeps fs churn minimal.
+        if attn_count != self.prev_attention_count {
+            crate::notify::write_attention_count(attn_count);
+        }
         if self.cfg.chime && attn_count > self.prev_attention_count {
             crate::notify::play_chime();
         }
