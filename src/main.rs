@@ -2341,7 +2341,12 @@ impl Gpu {
             out.push(pipeline::Instance {
                 cell_pos: [base_col, base_y],
                 fg: HANDLE_FG,
-                bg: palette().clear_bg,
+                // Match the sidebar's bg so the handle cell reads
+                // as part of the sidebar (left of the divider),
+                // not the body (right of the divider). The handle
+                // was visually drifting right because `clear_bg`
+                // (body color) blended it into the body region.
+                bg: palette().strip_bg,
                 uv_min: g.uv_min,
                 uv_max: g.uv_max,
                 glyph_offset: g.offset,
