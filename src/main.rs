@@ -1568,6 +1568,30 @@ impl Gpu {
                 }};
             }
 
+            // Truncate the label with `…` if the full chip would
+            // overflow the sidebar's available width (vertical
+            // mode only — horizontal lets long chips wrap rows).
+            // User had the divider dragged narrower than the
+            // chip's natural width; the text was spilling past
+            // the divider into the body grid. 2026-06-10 fix.
+            let label = if vertical {
+                let avail = (self.sidebar_w_px - Self::SIDEBAR_PAD_LEFT_PX) / cell_w;
+                let pad = Self::CHIP_PAD_CELLS * 2.0;
+                let attn = if *attention && !*active { 2.0 } else { 0.0 };
+                let overhead = pad + attn + 2.0; // gap + close
+                let right_margin = 1.0;
+                let max_label = ((avail - overhead - right_margin).max(1.0)) as usize;
+                if label.chars().count() > max_label {
+                    let mut s: String = label.chars().take(max_label.saturating_sub(1)).collect();
+                    s.push('\u{2026}');
+                    s
+                } else {
+                    label.clone()
+                }
+            } else {
+                label.clone()
+            };
+
             // Left pad.
             for _ in 0..Self::CHIP_PAD_CELLS as usize {
                 push_cell!(space_g, fg, bg, 0);
