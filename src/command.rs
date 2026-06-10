@@ -26,7 +26,7 @@ use crate::App;
 /// `RunHostCommand` protocol message, ex command, …). Key-forwarding
 /// handlers (`forward_as_ctrl`, `goto_tab_or_forward`) bail when it's
 /// `None`; everything else ignores the parameter.
-pub type CommandFn = fn(&mut App, &ActiveEventLoop, Option<&KeyEvent>);
+pub type CommandFn = fn(&mut App, Option<&ActiveEventLoop>, Option<&KeyEvent>);
 /// Context predicate. Returns true when the command is eligible to
 /// fire for the current `App` state. `None` ⇒ "always eligible"
 /// (rare; most tmnl chords have at least a "no modal open" guard).
@@ -102,7 +102,7 @@ pub fn help_rows() -> Vec<(String, &'static str, &'static str)> {
 /// inside `App` and Rust can't split-borrow it from the rest of the
 /// struct. We resolve to an owned `String` to drop the keymap borrow
 /// before calling the handler.
-pub fn try_dispatch(key: &KeyEvent, app: &mut App, event_loop: &ActiveEventLoop) -> bool {
+pub fn try_dispatch(key: &KeyEvent, app: &mut App, event_loop: Option<&ActiveEventLoop>) -> bool {
     let mods = app.mods;
     let ids: Vec<String> = app.keymap.resolve_all(key, mods).to_vec();
     if ids.is_empty() {
@@ -130,7 +130,7 @@ pub fn try_dispatch(key: &KeyEvent, app: &mut App, event_loop: &ActiveEventLoop)
 /// app, ex commands, …. Returns `true` when the id existed and the
 /// `when` guard passed (the command may still no-op internally if it
 /// genuinely required a key event, e.g. key-forwarding chords).
-pub fn dispatch_by_id(id: &str, app: &mut App, event_loop: &ActiveEventLoop) -> bool {
+pub fn dispatch_by_id(id: &str, app: &mut App, event_loop: Option<&ActiveEventLoop>) -> bool {
     let Some(cmd) = registry().get(id) else {
         return false;
     };

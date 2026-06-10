@@ -184,6 +184,32 @@ pub fn run_app() {
             "state-json" => {
                 println!("{}", app_state_json(&app));
             }
+            "key" => {
+                // Drive the same dispatch chain `handle_keyboard_input`
+                // uses but from a parsed spec string ("cmd+f",
+                // "enter", "shift+a"). Refreshes strip layout first
+                // so chord routing has up-to-date hit-rects (mouse
+                // commands do the same dance — see comment on `click`).
+                if arg.is_empty() {
+                    eprintln!("tmnl --headless --app: usage: key <spec>");
+                } else {
+                    app.refresh_strip_layout();
+                    if let Some(gpu) = app.gpu.as_mut() {
+                        gpu.populate_hit_rects();
+                    }
+                    app.synthetic_key(arg);
+                }
+            }
+            "type" => {
+                // Type literal text into the focused input (tab-search
+                // / find query / focused shell pane — whichever modal
+                // is active).
+                app.refresh_strip_layout();
+                if let Some(gpu) = app.gpu.as_mut() {
+                    gpu.populate_hit_rects();
+                }
+                app.synthetic_type(arg);
+            }
             "quit" => break,
             other => eprintln!("tmnl --headless --app: unknown command '{other}'"),
         }
@@ -335,8 +361,27 @@ fn app_state_json(app: &crate::App) -> String {
         .as_ref()
         .map(|g| (g.grid.cols, g.grid.rows))
         .unwrap_or((0, 0));
+    // Modal-state surface — testers verify Cmd+F / sidebar search
+    // / settings overlay opened by checking these fields.
+    let tab_search = match &app.tab_search {
+        Some(q) => format!(r#""{}""#, escape(q)),
+        None => "null".to_string(),
+    };
+    let find = match &app.find {
+        Some(f) => format!(
+            r#"{{"query":"{q}","matches":{m},"current":{c}}}"#,
+            q = escape(&f.query),
+            m = f.matches.len(),
+            c = f.current,
+        ),
+        None => "null".to_string(),
+    };
+    let settings_open = app.settings.is_some();
+    let welcome_open = app.welcome.is_some();
+    let palette_open = app.palette.is_some();
+    let sidebar_w_px = app.gpu.as_ref().map(|g| g.sidebar_w_px).unwrap_or(0.0);
     format!(
-        r#"{{"tabs":{tabs},"active":{active},"panes":[{panes_json}],"should_quit":{should_quit},"tab_layout":"{tab_layout}","altscreen":{altscreen},"cols":{cols},"rows":{rows},"tabs_detail":[{tabs_detail}]}}"#,
+        r#"{{"tabs":{tabs},"active":{active},"panes":[{panes_json}],"should_quit":{should_quit},"tab_layout":"{tab_layout}","altscreen":{altscreen},"cols":{cols},"rows":{rows},"tabs_detail":[{tabs_detail}],"tab_search":{tab_search},"find":{find},"settings_open":{settings_open},"welcome_open":{welcome_open},"palette_open":{palette_open},"sidebar_w_px":{sidebar_w_px}}}"#,
         tabs = app.tabs.len(),
         active = app.active,
         should_quit = app.should_quit,

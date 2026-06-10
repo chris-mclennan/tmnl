@@ -106,6 +106,39 @@ impl Keymap {
         self.resolve_all(ke, mods).first().map(String::as_str)
     }
 
+    /// Headless-friendly: resolve a chord directly from a logical
+    /// `Key` + `ModifiersState`, skipping the `KeyEvent` envelope.
+    /// winit's `KeyEvent` has private platform-specific fields that
+    /// can't be constructed outside the crate, so synthetic key
+    /// dispatch (used by the `tmnl --headless --app` driver) routes
+    /// here instead of through `resolve_all`.
+    pub fn resolve_all_chord(&self, key: &Key, mods: ModifiersState) -> &[String] {
+        let chord_key = match key {
+            Key::Character(s) => {
+                let Some(c) = s.chars().next() else {
+                    return &[];
+                };
+                ChordKey::Char(c.to_ascii_lowercase())
+            }
+            Key::Named(nk) => ChordKey::Named(*nk),
+            _ => return &[],
+        };
+        let mut m = ChordMods::from(mods);
+        if let ChordKey::Char(_) = &chord_key
+            && let Key::Character(s) = key
+            && s.chars()
+                .next()
+                .is_some_and(|orig| orig.is_ascii_uppercase())
+        {
+            m.shift = true;
+        }
+        let chord = Chord {
+            key: chord_key,
+            mods: m,
+        };
+        self.map.get(&chord).map(Vec::as_slice).unwrap_or(&[])
+    }
+
     pub fn binding_count(&self) -> usize {
         self.map.values().map(Vec::len).sum()
     }

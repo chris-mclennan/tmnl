@@ -108,7 +108,7 @@ impl ApplicationHandler for App {
                 self.mods = m.state();
             }
             WindowEvent::KeyboardInput { event: ke, .. } => {
-                self.handle_keyboard_input(event_loop, ke);
+                self.handle_keyboard_input(Some(event_loop), ke);
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.handle_cursor_moved(position);
@@ -255,6 +255,154 @@ impl App {
         let position = winit::dpi::PhysicalPosition::new(px, py);
         self.handle_cursor_moved(position);
         self.handle_mouse_wheel(winit::event::MouseScrollDelta::LineDelta(0.0, dy));
+    }
+
+    /// Headless-friendly: fire a synthetic key press by spec string
+    /// (e.g. `"cmd+f"`, `"enter"`, `"a"`, `"shift+tab"`,
+    /// `"cmd+shift+p"`). Routes through the same modal-greedy chain
+    /// `handle_keyboard_input` uses (welcome / settings / palette /
+    /// tab-search / find / command registry / pty fallback) but
+    /// constructs a logical `Key` + `ModifiersState` directly so
+    /// no `winit::event::KeyEvent` is needed — that type has
+    /// private platform-specific fields outside-the-crate code
+    /// can't fill in. Unknown specs are eprintln'd + no-op.
+    pub fn synthetic_key(&mut self, spec: &str) {
+        use winit::keyboard::SmolStr;
+        let Some((key, mods)) = parse_synthetic_key_spec(spec) else {
+            eprintln!("tmnl synthetic_key: unrecognized spec {spec:?}");
+            return;
+        };
+        let _ = SmolStr::new("");
+        self.mods = mods;
+        self.dispatch_synthetic_key(&key, mods);
+    }
+
+    /// Headless-friendly: type literal text into the focused input.
+    /// Each char becomes a `Key::Character` press with no modifiers.
+    /// Goes through the same modal chain `synthetic_key` uses, so
+    /// typed chars land in tab-search / find / a focused shell pane
+    /// depending on what's open.
+    pub fn synthetic_type(&mut self, text: &str) {
+        use winit::keyboard::{Key, ModifiersState, SmolStr};
+        let mods = ModifiersState::empty();
+        self.mods = mods;
+        for c in text.chars() {
+            let key = Key::Character(SmolStr::new(c.to_string()));
+            self.dispatch_synthetic_key(&key, mods);
+        }
+    }
+
+    /// Mirror of `handle_keyboard_input`'s dispatch chain, operating
+    /// on a directly-constructed `Key` + `ModifiersState`. Shared by
+    /// `synthetic_key` + `synthetic_type`. Modal handlers
+    /// (tab_search / find) are inlined here since their existing
+    /// `*_handle_key` methods take `&KeyEvent` and we don't have
+    /// one.
+    fn dispatch_synthetic_key(&mut self, key: &Key, mods: ModifiersState) {
+        use winit::keyboard::{Key, NamedKey};
+        // Tab-search overlay greedily consumes keys.
+        if self.tab_search.is_some() {
+            match key {
+                Key::Named(NamedKey::Escape) => {
+                    self.tab_search = None;
+                    return;
+                }
+                Key::Named(NamedKey::Enter) => {
+                    if let Some(query) = self.tab_search.take() {
+                        let q = query.to_lowercase();
+                        if !q.is_empty()
+                            && let Some(idx) = self
+                                .tabs
+                                .iter()
+                                .position(|t| t.label.to_lowercase().contains(&q))
+                        {
+                            self.switch_to_tab(idx);
+                        }
+                    }
+                    return;
+                }
+                Key::Named(NamedKey::Backspace) => {
+                    if let Some(q) = self.tab_search.as_mut() {
+                        q.pop();
+                    }
+                    return;
+                }
+                Key::Character(s) => {
+                    if let Some(q) = self.tab_search.as_mut() {
+                        for c in s.chars() {
+                            if !c.is_control() {
+                                q.push(c);
+                            }
+                        }
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+        // ⌘F find overlay greedily consumes keys.
+        if self.find.is_some() {
+            match key {
+                Key::Named(NamedKey::Escape) => {
+                    self.find = None;
+                    return;
+                }
+                Key::Named(NamedKey::Enter) => {
+                    if let Some(f) = self.find.as_mut()
+                        && !f.matches.is_empty()
+                    {
+                        let shift = mods.shift_key();
+                        if shift {
+                            if f.current == 0 {
+                                f.current = f.matches.len() - 1;
+                            } else {
+                                f.current -= 1;
+                            }
+                        } else {
+                            f.current = (f.current + 1) % f.matches.len();
+                        }
+                    }
+                    return;
+                }
+                Key::Named(NamedKey::Backspace) => {
+                    if let Some(f) = self.find.as_mut() {
+                        f.query.pop();
+                    }
+                    self.rescan_find();
+                    return;
+                }
+                Key::Character(s) => {
+                    if let Some(f) = self.find.as_mut() {
+                        for c in s.chars() {
+                            if !c.is_control() {
+                                f.query.push(c);
+                            }
+                        }
+                    }
+                    self.rescan_find();
+                    return;
+                }
+                _ => {}
+            }
+        }
+        // Command registry — Cmd+F / Cmd+A / Cmd+T / ⌃E …
+        let ids: Vec<String> = self.keymap.resolve_all_chord(key, mods).to_vec();
+        for id in &ids {
+            if crate::command::dispatch_by_id(id, self, None) {
+                return;
+            }
+        }
+        // Pty input fallback — printable chars + named keys forward
+        // to the focused shell pane. Headless tests of typing into
+        // a shell live here.
+        let focused = self.tabs[self.active].focused;
+        if let crate::PaneKind::Shell {
+            session: Some(s), ..
+        } = &mut self.tabs[self.active].panes[focused].kind
+            && let Some(bytes) = crate::shell::winit_key_to_bytes(key, mods)
+        {
+            s.write_bytes(&bytes);
+        }
     }
 
     /// Spawn a new Native (editor) tab — fresh socket, fresh Server,
@@ -1631,7 +1779,7 @@ impl App {
         // registry. Use case: mnml's left-rail INTEGRATIONS chips
         // with `command = "tmnl:browser.attach_dashboard"` etc.
         for id in host_command_reqs.drain(..) {
-            if !crate::command::dispatch_by_id(&id, self, event_loop) {
+            if !crate::command::dispatch_by_id(&id, self, Some(event_loop)) {
                 eprintln!("tmnl: RunHostCommand unknown or guarded id {id:?}");
             }
         }
@@ -2132,7 +2280,7 @@ impl App {
     /// double-fire).
     pub(crate) fn palette_handle_key(
         &mut self,
-        event_loop: &winit::event_loop::ActiveEventLoop,
+        event_loop: Option<&winit::event_loop::ActiveEventLoop>,
         ke: &winit::event::KeyEvent,
     ) -> bool {
         use winit::keyboard::{Key, NamedKey};
@@ -2622,7 +2770,11 @@ impl App {
         }
     }
 
-    fn handle_keyboard_input(&mut self, event_loop: &ActiveEventLoop, ke: winit::event::KeyEvent) {
+    fn handle_keyboard_input(
+        &mut self,
+        event_loop: Option<&ActiveEventLoop>,
+        ke: winit::event::KeyEvent,
+    ) {
         if ke.state != ElementState::Pressed {
             return;
         }
@@ -3774,4 +3926,86 @@ impl App {
             w.request_redraw();
         }
     }
+}
+
+/// Parse a key spec string like `"cmd+f"`, `"enter"`, `"shift+a"`
+/// into a winit (`Key`, `ModifiersState`) pair. Used by the
+/// `--headless --app` `key` command for chord testing. Names match
+/// the keymap's `parse_key_spec` so the user types the same chord
+/// strings they'd put in a hypothetical keybindings file.
+///
+/// Supported names:
+///   * letters `a`-`z` (single char) → `Key::Character`
+///   * `enter`, `esc`, `escape`, `tab`, `backspace`, `space`,
+///     `up`, `down`, `left`, `right`, `home`, `end`, `pageup`,
+///     `pagedown`, `delete`, `f1`..`f12`
+///   * modifier prefixes `cmd+`, `ctrl+`, `alt+`, `shift+` (any
+///     order). `cmd` = `super_key()` (macOS Cmd).
+fn parse_synthetic_key_spec(spec: &str) -> Option<(winit::keyboard::Key, ModifiersState)> {
+    use winit::keyboard::{Key, NamedKey, SmolStr};
+    let mut mods = ModifiersState::empty();
+    let mut rest = spec.trim();
+    loop {
+        let lower = rest.to_ascii_lowercase();
+        if let Some(t) = lower.strip_prefix("cmd+") {
+            mods |= ModifiersState::SUPER;
+            rest = &rest[rest.len() - t.len()..];
+        } else if let Some(t) = lower.strip_prefix("super+") {
+            mods |= ModifiersState::SUPER;
+            rest = &rest[rest.len() - t.len()..];
+        } else if let Some(t) = lower.strip_prefix("ctrl+") {
+            mods |= ModifiersState::CONTROL;
+            rest = &rest[rest.len() - t.len()..];
+        } else if let Some(t) = lower.strip_prefix("alt+") {
+            mods |= ModifiersState::ALT;
+            rest = &rest[rest.len() - t.len()..];
+        } else if let Some(t) = lower.strip_prefix("shift+") {
+            mods |= ModifiersState::SHIFT;
+            rest = &rest[rest.len() - t.len()..];
+        } else {
+            break;
+        }
+    }
+    let token = rest.to_ascii_lowercase();
+    let key = match token.as_str() {
+        "enter" | "return" => Key::Named(NamedKey::Enter),
+        "esc" | "escape" => Key::Named(NamedKey::Escape),
+        "tab" => Key::Named(NamedKey::Tab),
+        "backspace" | "bs" => Key::Named(NamedKey::Backspace),
+        "space" => Key::Named(NamedKey::Space),
+        "up" => Key::Named(NamedKey::ArrowUp),
+        "down" => Key::Named(NamedKey::ArrowDown),
+        "left" => Key::Named(NamedKey::ArrowLeft),
+        "right" => Key::Named(NamedKey::ArrowRight),
+        "home" => Key::Named(NamedKey::Home),
+        "end" => Key::Named(NamedKey::End),
+        "pageup" => Key::Named(NamedKey::PageUp),
+        "pagedown" => Key::Named(NamedKey::PageDown),
+        "delete" | "del" => Key::Named(NamedKey::Delete),
+        "f1" => Key::Named(NamedKey::F1),
+        "f2" => Key::Named(NamedKey::F2),
+        "f3" => Key::Named(NamedKey::F3),
+        "f4" => Key::Named(NamedKey::F4),
+        "f5" => Key::Named(NamedKey::F5),
+        "f6" => Key::Named(NamedKey::F6),
+        "f7" => Key::Named(NamedKey::F7),
+        "f8" => Key::Named(NamedKey::F8),
+        "f9" => Key::Named(NamedKey::F9),
+        "f10" => Key::Named(NamedKey::F10),
+        "f11" => Key::Named(NamedKey::F11),
+        "f12" => Key::Named(NamedKey::F12),
+        other if other.chars().count() == 1 => {
+            let c = other.chars().next().unwrap();
+            // Preserve case in the Character payload so chord
+            // resolution sees an explicit shift via `is_ascii_uppercase`.
+            let final_c = if mods.shift_key() {
+                c.to_ascii_uppercase()
+            } else {
+                c
+            };
+            Key::Character(SmolStr::new(final_c.to_string()))
+        }
+        _ => return None,
+    };
+    Some((key, mods))
 }

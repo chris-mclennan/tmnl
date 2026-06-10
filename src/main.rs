@@ -1714,13 +1714,14 @@ impl Gpu {
         if window_w_px < Self::CHIP_START_X_PX + total_w_px + 40.0 {
             return Vec::new();
         }
-        // Center within the area to the RIGHT of the sidebar column.
-        // In horizontal mode `sidebar_w_px` is 0, so centering is
-        // window-wide. In vertical mode the palette sits centered
-        // over the body (terminal area), not over the full window.
-        let palette_area_left_px = self.sidebar_w_px;
-        let palette_area_w_px = window_w_px - palette_area_left_px;
-        let start_x_px = palette_area_left_px + (palette_area_w_px - total_w_px) / 2.0;
+        // Center over the FULL window in both layouts. Earlier the
+        // palette centered over just the body region (right of the
+        // sidebar), which made it sit visibly far-right in vertical
+        // mode — looked like a misalignment rather than chrome.
+        // Window-wide centering keeps the palette anchored to the
+        // window the user is actually looking at, regardless of
+        // sidebar visibility. 2026-06-09 user feedback.
+        let start_x_px = (window_w_px - total_w_px) / 2.0;
         // Same cancel-out-the-cell-pipeline-x-inset trick the chip
         // path uses — see strip_chip_instances.
         let start_col = (start_x_px - self.inset_px - self.sidebar_w_px) / cell_w;
