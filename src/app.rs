@@ -3376,17 +3376,20 @@ impl App {
             // to click slightly off the visible seam and have a
             // few px of mouse drift arm a drag.
             //
-            // 2026-06-09 second pass: 2-px grab was too tight to
-            // hit intentionally. Settled on 3 px — narrow enough
-            // that the toggle's left edge clears it (with the 5-px
-            // pad in `strip_sidebar_toggle_instances`), wide
-            // enough that the user can land the seam without
-            // sub-pixel precision.
+            // 2026-06-09 third pass — replicating mnml's tree-rail
+            // drag-handle design. mnml's `tree_edge` rect is the
+            // sidebar's rightmost CELL column (1 cell wide, full
+            // height); the ±N-px-around-the-seam variant was
+            // dam-near impossible to hit (user words). Now the
+            // hot zone is the last column of the sidebar
+            // [border_x - cell_w, border_x] — ~17 px wide. The
+            // toggle's at border_x + 5 px so it stays clear of
+            // this zone.
             let border_x = (gpu.inset_px + gpu.sidebar_w_px) as f64;
-            let grab = 3.0_f64;
+            let cell_w = gpu.atlas_cell_w() as f64;
             let strip_y = gpu.strip_h as f64;
-            if self.cursor_px.0 >= border_x - grab
-                && self.cursor_px.0 <= border_x + grab
+            if self.cursor_px.0 >= border_x - cell_w
+                && self.cursor_px.0 <= border_x
                 && self.cursor_px.1 >= strip_y
             {
                 self.dragging_sidebar = true;
@@ -3724,8 +3727,23 @@ impl App {
         // (clearing any previous one). The cell under the cursor is
         // the anchor; cursor-move events extend the focus until
         // release.
+        //
+        // Shell panes only. Native panes (mnml etc.) own their own
+        // mouse interactions — file-tree drag, divider drag, scroll-
+        // bar drag — and the text-selection cursor_moved arm
+        // returns early, so leaving this on for Native swallows
+        // their drags. 2026-06-09 user report.
+        let focused_pane_idx = self.tabs[self.active].focused;
+        let focused_is_shell = matches!(
+            self.tabs[self.active]
+                .panes
+                .get(focused_pane_idx)
+                .map(|p| &p.kind),
+            Some(PaneKind::Shell { .. })
+        );
         if pressed
             && button == MouseButton::Left
+            && focused_is_shell
             && !matches!(self.cursor_cell, (u16::MAX, u16::MAX))
         {
             // Only kick in if no other gesture (divider, sidebar,

@@ -2410,6 +2410,14 @@ impl Gpu {
         self.launcher_icons = icons;
     }
 
+    /// Physical-pixel width of a single cell in the active font.
+    /// Used by App to size the sidebar's drag-handle hot zone to
+    /// the rightmost cell column (matching mnml's tree-rail
+    /// `tree_edge` design).
+    pub fn atlas_cell_w(&self) -> f32 {
+        self.atlas.cell_w
+    }
+
     /// Switch the launcher rail between the left-edge column
     /// (default) and an inline strip in the top chrome bar. App
     /// reads `cfg.launcher_position` each tick and pushes the
