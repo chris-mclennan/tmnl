@@ -449,6 +449,12 @@ struct App {
     /// the border to the cursor x as soon as any sub-pixel jitter
     /// reached the move handler. `None` outside an armed drag.
     sidebar_drag_press_x: Option<f64>,
+    /// Snapshot of `sidebar_w_override` taken at press-time of a
+    /// sidebar drag. If the user clicks in the grab zone but
+    /// releases WITHOUT crossing the drag threshold, we restore
+    /// this value — a click-only gesture doesn't persist any
+    /// change. `None` outside a press session.
+    sidebar_drag_prev_override: Option<Option<f32>>,
     /// In-flight text selection on the focused body grid — `Some`
     /// while a drag is in progress AND for as long as the user keeps
     /// the selection visible (cleared on a click outside, on Esc, or
@@ -2281,6 +2287,60 @@ impl Gpu {
         out
     }
 
+    /// Vertical drag-handle dots painted on the sidebar's right
+    /// edge (the seam) so users can SEE where the drag zone is.
+    /// Three `⋮` glyphs (U+22EE) stacked vertically near the
+    /// vertical center of the body. Click-and-drag within the
+    /// rightmost cell column of the sidebar resizes — see
+    /// `App::handle_mouse_input`'s divider grab check.
+    fn sidebar_drag_handle_instances(&mut self) -> Vec<pipeline::Instance> {
+        use crate::atlas::style_from_attrs;
+        if !matches!(self.tab_layout, crate::config::TabLayout::Vertical)
+            || self.sidebar_w_px <= 0.0
+        {
+            return Vec::new();
+        }
+        let cell_w = self.atlas.cell_w;
+        let cell_h = self.atlas.cell_h;
+        // Place the handle in the LAST cell column of the sidebar
+        // (right against the divider). That column IS the drag
+        // hot-zone, so the visual cue lands exactly where clicks
+        // arm a drag.
+        let handle_x_px = self.inset_px + self.sidebar_w_px - cell_w;
+        let base_col = (handle_x_px - self.inset_px - self.sidebar_w_px) / cell_w;
+        // Vertical center of the body region. body_top = inset_px
+        // + strip_h. body_bottom = config.height. Place three
+        // dots stacked around the midpoint.
+        let body_top_px = self.inset_px + self.strip_h;
+        let body_bottom_px = self.config.height as f32;
+        let mid_py = (body_top_px + body_bottom_px) * 0.5;
+        let inset_y_total = self.inset_px + self.strip_h;
+        // Three `⋮` glyphs (each already three vertical dots).
+        // Stacked top-to-bottom so the column has 9 dots total —
+        // a clear "drag me" hint without dominating the chrome.
+        const HANDLE_FG: [f32; 4] = [0.35, 0.37, 0.42, 1.0];
+        let mut out: Vec<pipeline::Instance> = Vec::with_capacity(3);
+        for offset in -1i32..=1i32 {
+            let glyph_top_px = mid_py + (offset as f32 - 0.5) * cell_h;
+            let base_y = (glyph_top_px - inset_y_total) / cell_h;
+            let g = self
+                .atlas
+                .glyph('\u{22EE}', style_from_attrs(0), &self.queue);
+            out.push(pipeline::Instance {
+                cell_pos: [base_col, base_y],
+                fg: HANDLE_FG,
+                bg: palette().clear_bg,
+                uv_min: g.uv_min,
+                uv_max: g.uv_max,
+                glyph_offset: g.offset,
+                glyph_size: g.size,
+                attrs: 0,
+                _pad: 0,
+            });
+        }
+        out
+    }
+
     fn resize(&mut self, w: u32, h: u32) -> Option<(u16, u16)> {
         if w == 0 || h == 0 {
             return None;
@@ -2681,6 +2741,7 @@ impl Gpu {
         instances.extend(self.strip_palette_chip_instances());
         instances.extend(self.strip_sidebar_toggle_instances());
         instances.extend(self.sidebar_header_instances());
+        instances.extend(self.sidebar_drag_handle_instances());
         instances.extend(self.launcher_chip_instances());
         // Find bar last so it paints over body row 0.
         instances.extend(self.find_bar_instances());
@@ -3845,6 +3906,7 @@ fn main() {
         sidebar_w_override: None,
         dragging_sidebar: false,
         sidebar_drag_press_x: None,
+        sidebar_drag_prev_override: None,
         text_selection: None,
         dragging_selection: false,
         tab_search: None,

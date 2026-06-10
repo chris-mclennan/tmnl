@@ -200,6 +200,7 @@ impl App {
             sidebar_w_override: None,
             dragging_sidebar: false,
             sidebar_drag_press_x: None,
+            sidebar_drag_prev_override: None,
             text_selection: None,
             dragging_selection: false,
             tab_search: None,
@@ -3153,6 +3154,9 @@ impl App {
             };
             if above_threshold {
                 self.sidebar_drag_press_x = None;
+                // Drag committed — drop the press-time snapshot so
+                // release doesn't restore it.
+                self.sidebar_drag_prev_override = None;
                 self.sidebar_w_override = Some(position.x as f32);
                 if let Some(w) = &self.window {
                     w.request_redraw();
@@ -3394,6 +3398,14 @@ impl App {
             {
                 self.dragging_sidebar = true;
                 self.sidebar_drag_press_x = Some(self.cursor_px.0);
+                // Snapshot the current override so a click-without-
+                // drag restores it on release. 2026-06-09 user
+                // report: "single click anywhere just moves the
+                // separator". The cursor_moved threshold already
+                // gates the rising edge, but the user wanted a
+                // stronger guarantee: clicks that don't actually
+                // drag don't change anything.
+                self.sidebar_drag_prev_override = Some(self.sidebar_w_override);
                 return;
             }
         }
@@ -3705,6 +3717,23 @@ impl App {
         if !pressed && button == MouseButton::Left {
             self.dragging_tab = None;
             self.dragging_divider = None;
+            // 2026-06-09: if a sidebar drag was armed but the user
+            // released without crossing the threshold (still has
+            // a stored press_x AND a snapshot prev override), they
+            // didn't actually intend to drag — restore the
+            // snapshot. This guarantees clicks in the grab zone
+            // that aren't followed by a real drag don't move the
+            // separator at all.
+            if self.dragging_sidebar
+                && self.sidebar_drag_press_x.is_some()
+                && let Some(prev) = self.sidebar_drag_prev_override.take()
+            {
+                self.sidebar_w_override = prev;
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+            }
+            self.sidebar_drag_prev_override = None;
             self.dragging_sidebar = false;
             self.sidebar_drag_press_x = None;
             if self.dragging_selection {
