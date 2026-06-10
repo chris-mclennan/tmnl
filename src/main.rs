@@ -2307,11 +2307,13 @@ impl Gpu {
         out
     }
 
-    /// Subtle vertical drag-handle painted on the sidebar's
-    /// right edge. Single `┃` glyph (U+2503, heavy vertical) at
-    /// the body's vertical midpoint, in the same cell column
-    /// that's the drag hot-zone. Mnml-style — visible but quiet,
-    /// not three stacked `⋮` dots that read as visual noise.
+    /// Full-height vertical drag-handle painted on the
+    /// sidebar's right edge — same size as mnml's `tree_edge`
+    /// (the rightmost cell column of the rail, top of body to
+    /// bottom). Each row in the column gets a `┃` glyph in dim
+    /// grey. Lives in the same cell column that's the drag
+    /// hot-zone, so the visual lines up exactly with where
+    /// clicks arm a drag.
     fn sidebar_drag_handle_instances(&mut self) -> Vec<pipeline::Instance> {
         use crate::atlas::style_from_attrs;
         if !matches!(self.tab_layout, crate::config::TabLayout::Vertical)
@@ -2325,28 +2327,32 @@ impl Gpu {
         let base_col = (handle_x_px - self.inset_px - self.sidebar_w_px) / cell_w;
         let body_top_px = self.inset_px + self.strip_h;
         let body_bottom_px = self.config.height as f32;
-        let mid_py = (body_top_px + body_bottom_px) * 0.5;
         let inset_y_total = self.inset_px + self.strip_h;
-        // Dim grey — a hair brighter than the divider line so the
-        // handle reads, but well below chrome accent so it
-        // doesn't dominate.
+        let row_count = ((body_bottom_px - body_top_px) / cell_h).floor() as i32;
+        if row_count <= 0 {
+            return Vec::new();
+        }
         const HANDLE_FG: [f32; 4] = [0.30, 0.32, 0.36, 1.0];
-        let glyph_top_px = mid_py - cell_h * 0.5;
-        let base_y = (glyph_top_px - inset_y_total) / cell_h;
         let g = self
             .atlas
             .glyph('\u{2503}', style_from_attrs(0), &self.queue);
-        vec![pipeline::Instance {
-            cell_pos: [base_col, base_y],
-            fg: HANDLE_FG,
-            bg: palette().clear_bg,
-            uv_min: g.uv_min,
-            uv_max: g.uv_max,
-            glyph_offset: g.offset,
-            glyph_size: g.size,
-            attrs: 0,
-            _pad: 0,
-        }]
+        let mut out: Vec<pipeline::Instance> = Vec::with_capacity(row_count as usize);
+        for i in 0..row_count {
+            let glyph_top_px = body_top_px + i as f32 * cell_h;
+            let base_y = (glyph_top_px - inset_y_total) / cell_h;
+            out.push(pipeline::Instance {
+                cell_pos: [base_col, base_y],
+                fg: HANDLE_FG,
+                bg: palette().clear_bg,
+                uv_min: g.uv_min,
+                uv_max: g.uv_max,
+                glyph_offset: g.offset,
+                glyph_size: g.size,
+                attrs: 0,
+                _pad: 0,
+            });
+        }
+        out
     }
 
     fn resize(&mut self, w: u32, h: u32) -> Option<(u16, u16)> {
