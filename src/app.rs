@@ -4208,11 +4208,22 @@ impl App {
             || self.palette.is_some()
             || self.welcome.is_some()
             || self.help.is_some();
+        // Native panes (mnml / mixr) are full-screen TUIs that own
+        // the entire grid — they're not a shell prompt at the
+        // bottom of a scrollback. Bottom-prompt mode would shift
+        // every cell down and compress the UI against the bottom
+        // (user-reported "open folder via mnml nightly icon"
+        // case). Disable when focused pane is Native.
+        let focused_pane_is_native = matches!(
+            &self.tabs[self.active].focused_pane().kind,
+            PaneKind::Native { .. }
+        );
         let bottom_prompt = matches!(
             self.cfg.prompt_position,
             crate::config::PromptPosition::Bottom
         ) && !self.altscreen_active
-            && !any_overlay_open;
+            && !any_overlay_open
+            && !focused_pane_is_native;
         // Tab-search query — App owns the source of truth; Gpu
         // reads its own copy each frame to drive chrome rendering.
         let tab_search = self.tab_search.clone();
