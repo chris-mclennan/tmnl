@@ -3859,6 +3859,25 @@ impl App {
         if let Some((id, lc, lr)) = self.pane_under_cursor() {
             if pressed {
                 self.tabs[self.active].focused = id;
+                // 2026-06-10 user report: "i should be able to
+                // search [tabs] then click on prompt at bottom
+                // but right now cursor stays on tab search".
+                // Clicking the body means the user is done with
+                // the chrome overlays; dismiss them so keystrokes
+                // flow to the focused pane instead of staying
+                // trapped in tab_search / find.
+                if self.tab_search.is_some() {
+                    self.tab_search = None;
+                    if let Some(w) = &self.window {
+                        w.request_redraw();
+                    }
+                }
+                if self.find.is_some() {
+                    self.find = None;
+                    if let Some(w) = &self.window {
+                        w.request_redraw();
+                    }
+                }
             }
             // Browser pane chrome row — intercept the click before
             // the WebView would otherwise eat it. The WebView
