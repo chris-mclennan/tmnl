@@ -2324,12 +2324,12 @@ impl Gpu {
         let mid_py = (body_top_px + body_bottom_px) * 0.5;
         let inset_y_total = self.inset_px + self.strip_h;
         const HANDLE_FG: [f32; 4] = [0.30, 0.32, 0.36, 1.0];
-        // `│` (U+2502 BOX DRAWINGS LIGHT VERTICAL) — box-drawing
-        // glyphs are specifically designed to abut top-to-bottom
-        // when stacked (that's the point of the box-drawing
-        // unicode block). Font designers extend them to the cell
-        // edges. Two stacked = continuous thin vertical line.
-        let g = self.atlas.glyph('│', style_from_attrs(0), &self.queue);
+        // `┃` (U+2503 BOX DRAWINGS HEAVY VERTICAL) — thicker
+        // sibling of `│`. Box-drawing glyphs are designed to abut
+        // top-to-bottom when stacked, so two cells form a
+        // continuous line with no gap. Heavy variant reads more
+        // clearly than the light one.
+        let g = self.atlas.glyph('┃', style_from_attrs(0), &self.queue);
         let mut out: Vec<pipeline::Instance> = Vec::with_capacity(2);
         for offset in 0..2 {
             let glyph_top_px = mid_py + (offset as f32 - 1.0) * cell_h;
