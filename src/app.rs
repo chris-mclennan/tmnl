@@ -910,21 +910,25 @@ impl App {
     /// don't exist until the chip list does. SEV-2 chrome-hunt fix
     /// 2026-06-08 ("headless --app can't exercise chip clicks").
     pub(crate) fn compute_strip_chips(&self) -> Vec<(String, bool, bool)> {
-        self.compute_strip_chips_inner(true)
+        self.compute_strip_chips_inner(true, false)
     }
 
-    /// Variant used for sidebar-width computation only — produces
-    /// the same chip list but EXCLUDES the rename buffer label,
-    /// so the sidebar doesn't auto-grow as the user types into a
-    /// rename. Render path keeps using `compute_strip_chips` (with
-    /// the rename buffer); only the width math reads this.
-    /// 2026-06-10 user feedback: "when i right click a tab and
-    /// start typing the separator starts moving too soon".
+    /// Variant used for sidebar-width computation only — uses
+    /// the LONGER of (rename buffer, original label) for the
+    /// renamed chip. That way the sidebar stays put while the
+    /// rename buffer is shorter than the auto label, and only
+    /// grows once the user types past it. 2026-06-10 user
+    /// feedback: locking the sidebar entirely was "waiting too
+    /// long" — this is the hysteresis middle.
     pub(crate) fn compute_strip_chips_for_width(&self) -> Vec<(String, bool, bool)> {
-        self.compute_strip_chips_inner(false)
+        self.compute_strip_chips_inner(true, true)
     }
 
-    fn compute_strip_chips_inner(&self, include_rename: bool) -> Vec<(String, bool, bool)> {
+    fn compute_strip_chips_inner(
+        &self,
+        include_rename: bool,
+        rename_floor_to_label: bool,
+    ) -> Vec<(String, bool, bool)> {
         use std::collections::HashMap;
         let mut counts: HashMap<&str, usize> = HashMap::new();
         for t in &self.tabs {
@@ -939,21 +943,33 @@ impl App {
             .iter()
             .enumerate()
             .map(|(i, t)| {
-                if include_rename
-                    && let Some((idx, buf)) = &rename
-                    && *idx == i
-                {
-                    return (format!("{buf}▏"), true, false);
-                }
-                let label = if counts.get(t.label.as_str()).copied().unwrap_or(0) > 1 {
+                let original_label = if counts.get(t.label.as_str()).copied().unwrap_or(0) > 1 {
                     let n = seen.entry(t.label.as_str()).or_insert(0);
                     *n += 1;
                     format!("{} ({})", t.label, n)
                 } else {
                     t.label.clone()
                 };
+                if include_rename
+                    && let Some((idx, buf)) = &rename
+                    && *idx == i
+                {
+                    let chip = format!("{buf}▏");
+                    // Width path: use whichever of (chip, original
+                    // label) is longer, so the sidebar doesn't
+                    // shrink as the buffer starts empty but DOES
+                    // grow once it passes the original label width.
+                    let label = if rename_floor_to_label
+                        && chip.chars().count() < original_label.chars().count()
+                    {
+                        original_label
+                    } else {
+                        chip
+                    };
+                    return (label, true, false);
+                }
                 let attention = t.panes.iter().any(|p| p.attention) && i != self.active;
-                (label, i == self.active, attention)
+                (original_label, i == self.active, attention)
             })
             .collect()
     }
