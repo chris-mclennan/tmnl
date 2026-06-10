@@ -3133,13 +3133,19 @@ impl App {
         // chip-reorder + body-forward paths below don't also fire.
         //
         // Require a minimum DRAG_THRESHOLD movement before the
-        // first width-update so a plain click in the 4-px grab
-        // zone doesn't snap the border to the cursor on
-        // sub-pixel jitter. Once the threshold is crossed once,
-        // the press-x is cleared and subsequent updates flow
-        // freely until release.
+        // first width-update so a plain click in the grab zone
+        // doesn't snap the border to the cursor on sub-pixel
+        // jitter. Once the threshold is crossed once, the
+        // press-x is cleared and subsequent updates flow freely
+        // until release.
+        //
+        // 2026-06-09 follow-up: bumped 4 → 12 px after a user
+        // report of "click near separator + mouse drift = sidebar
+        // jumps halfway across". Combined with the tighter 2-px
+        // grab zone above, accidental drag is now genuinely hard
+        // to trigger; intentional drag still works.
         if self.dragging_sidebar && self.buttons_down & (1u8 << BUTTON_LEFT) != 0 {
-            const DRAG_THRESHOLD_PX: f64 = 4.0;
+            const DRAG_THRESHOLD_PX: f64 = 12.0;
             let above_threshold = match self.sidebar_drag_press_x {
                 Some(start_x) => (position.x - start_x).abs() >= DRAG_THRESHOLD_PX,
                 None => true,
@@ -3362,8 +3368,15 @@ impl App {
             // sits at `inset_px + sidebar_w_px` (the cell-pipeline
             // x-inset); without adding `inset_px` here the grab zone
             // armed ~20 px LEFT of the visible seam.
+            //
+            // 2026-06-09 user-reported follow-up: "click on right
+            // side of separator the separator moves to cursor up
+            // to halfway across, wow". The 4-px grab made it easy
+            // to click slightly off the visible seam and have a
+            // few px of mouse drift arm a drag. Tightened to 2 px
+            // so the cursor must be ON the seam.
             let border_x = (gpu.inset_px + gpu.sidebar_w_px) as f64;
-            let grab = 4.0_f64;
+            let grab = 2.0_f64;
             let strip_y = gpu.strip_h as f64;
             if self.cursor_px.0 >= border_x - grab
                 && self.cursor_px.0 <= border_x + grab

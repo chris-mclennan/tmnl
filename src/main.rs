@@ -1904,14 +1904,17 @@ impl Gpu {
         }
         let cell_w = self.atlas.cell_w;
         let cell_h = self.atlas.cell_h;
-        let cells = ["  ", "\u{EBF4}", "  "].concat();
+        // Tighter chip: 1 cell of internal padding on each side
+        // instead of 2, AND zero cells of pad between the divider
+        // and the chip's left edge. Was reading as "floating off
+        // in body chrome" — now it hugs the seam, which matches
+        // the "control for THIS divider" intent.
+        // 2026-06-09 user feedback.
+        let cells = [" ", "\u{EBF4}", " "].concat();
         let total_cells = cells.chars().count();
         // Position branches on tab_layout:
         //   * Vertical, sidebar visible — anchor to the body's
-        //     LEFT edge (just past the divider, in body chrome).
-        //     Reads as "control for the sidebar to my left".
-        //     2026-06-09 user feedback: was inside the sidebar
-        //     column; should be on the body side of the seam.
+        //     LEFT edge (right against the divider, no pad).
         //   * Vertical, sidebar hidden (single-tab TUI) — same
         //     anchor (inset_px + sidebar_w_px = inset_px), so
         //     the toggle sits at the body's left edge and the
@@ -1919,11 +1922,8 @@ impl Gpu {
         //   * Horizontal — no sidebar; keep the legacy position
         //     next to the macOS traffic lights (x = 180).
         const TOGGLE_X_HORIZONTAL_PX: f32 = 180.0;
-        const TOGGLE_LEFT_PAD_CELLS: f32 = 1.0;
         let toggle_x_px = match self.tab_layout {
-            crate::config::TabLayout::Vertical => {
-                self.inset_px + self.sidebar_w_px + TOGGLE_LEFT_PAD_CELLS * cell_w
-            }
+            crate::config::TabLayout::Vertical => self.inset_px + self.sidebar_w_px,
             _ => TOGGLE_X_HORIZONTAL_PX,
         };
         // Vertically center against the palette zone (same constant
