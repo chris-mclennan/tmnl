@@ -3661,15 +3661,23 @@ impl App {
                             MouseButton::Right => self.start_rename(idx),
                             _ => {}
                         }
-                    } else if button == MouseButton::Left {
-                        // Empty chrome area — no chip / button hit.
+                    } else if button == MouseButton::Left && in_top_strip {
+                        // Empty TOP-STRIP area — no chip / button hit.
                         // `disable_window_drag` swizzled
                         // mouseDownCanMoveWindow → NO so macOS no
                         // longer auto-drags from the title bar.
                         // Initiate window drag manually so the user
-                        // can still grab the chrome to move the
-                        // window. Toggle stays clickable because its
-                        // own hit-test above already `return`ed.
+                        // can still grab the title-bar area to move
+                        // the window.
+                        //
+                        // 2026-06-09 user report: previously also
+                        // fired in the sidebar's empty area, which
+                        // meant trying to drag the divider could
+                        // move the whole window if you missed the
+                        // 2-px grab zone. Now ONLY top-strip empty
+                        // area initiates a window drag; sidebar
+                        // empty rows do nothing (no toast, no
+                        // forwarded click).
                         if let Some(w) = &self.window {
                             let _ = w.drag_window();
                         }
