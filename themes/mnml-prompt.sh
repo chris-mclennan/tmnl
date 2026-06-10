@@ -277,6 +277,23 @@ if [ -n "${ZSH_VERSION:-}" ]; then
     # mis-placing RPROMPT and clearing the line.
     PROMPT='$(_mnml_build_left "$?")'
     RPROMPT='$(_mnml_build_right)'
+
+    # Transient prompt — Powerlevel10k / Starship / Pure idiom.
+    # Before submitting a command, rewrite the just-finished
+    # prompt to drop the RPROMPT (and keep the left side intact).
+    # Without this, every scrollback line that was once a prompt
+    # keeps its RPROMPT chip strip on the right — gets noisy on
+    # bottom-prompt mode where many prompts stack up visibly.
+    _mnml_transient_accept() {
+        RPROMPT=''
+        zle .reset-prompt
+        unset RPROMPT
+        # Restore the live RPROMPT for the *next* prompt that
+        # will fire after the command finishes.
+        RPROMPT='$(_mnml_build_right)'
+        zle .accept-line
+    }
+    zle -N accept-line _mnml_transient_accept
 elif [ -n "${BASH_VERSION:-}" ]; then
     # bash builds the prompt via PROMPT_COMMAND so `$?` is captured
     # before any other command runs. The build functions already
