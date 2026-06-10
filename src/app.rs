@@ -2516,6 +2516,29 @@ impl App {
         if self.renaming_tab.is_some() {
             self.commit_rename();
         }
+        // Scrub any in-flight input state that could create a
+        // parallel keystroke path while the rename is active. Any
+        // of these would normally consume / forward keys before
+        // the rename handler gets a turn:
+        //   * `ghost` — an AI completion suggestion intercepts
+        //     `Tab` for accept; any other key dismisses it AND
+        //     forwards to the shell. With it cleared, the rename
+        //     handler is the sole consumer.
+        //   * `fim_pending` — an in-flight AI request will fire
+        //     a ghost when it returns; pre-emptively cancel.
+        //   * `tab_search` / `find` — concurrent overlays. Mutually
+        //     exclusive in spirit; explicit clear so dispatch
+        //     order doesn't matter.
+        // 2026-06-10 user-reported bug: "right click a tab and
+        // start typing it renames but also begins typing on the
+        // prompt." With these scrubbed the rename handler
+        // (highest-priority modal after welcome/settings) is the
+        // only path keys can take.
+        self.ghost = None;
+        self.fim_pending = None;
+        self.fim_redraw = true;
+        self.tab_search = None;
+        self.find = None;
         // Seed with the current custom name (empty if never renamed) so
         // the user can tweak it or clear it back to the auto label.
         let buf = self.tabs[idx].custom_name.clone().unwrap_or_default();
