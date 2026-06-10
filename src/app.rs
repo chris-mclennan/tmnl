@@ -1063,7 +1063,18 @@ impl App {
                     self.cfg.launcher_position,
                     crate::config::LauncherPosition::Top
                 );
+            // Launcher Bottom + Prompt Bottom would stack two
+            // separate rows of chrome at the bottom edge — the
+            // launcher row paints OVER the shell prompt. Suppress
+            // the launcher row when the prompt already lives at
+            // the bottom; integrating the icons INTO the prompt
+            // chrome is a follow-up. User feedback 2026-06-10.
+            let prompt_at_bottom = matches!(
+                self.cfg.prompt_position,
+                crate::config::PromptPosition::Bottom
+            );
             let launcher_in_bottom = !active_is_native
+                && !prompt_at_bottom
                 && matches!(
                     self.cfg.launcher_position,
                     crate::config::LauncherPosition::Bottom
