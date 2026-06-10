@@ -425,6 +425,13 @@ struct App {
     /// `CursorMoved` event over a *different* chip swaps `tabs[src]`
     /// and `tabs[dst]` and updates the index.
     dragging_tab: Option<usize>,
+    /// Pixel (x, y) of the left-press that armed `dragging_tab`.
+    /// Cursor-move events compare against this — a swap only
+    /// fires once the cursor has moved more than
+    /// `CHIP_DRAG_THRESHOLD_PX` from the press position.
+    /// Mouse-only tester finding: cursor drift during a release
+    /// was swapping tabs accidentally.
+    dragging_tab_press_px: Option<(f64, f64)>,
     /// In-progress tab rename, if any — see [`RenameState`].
     renaming_tab: Option<RenameState>,
     /// Index (into the active tab's `divider_lines`) of the divider
@@ -1651,12 +1658,30 @@ impl Gpu {
             } else {
                 start_x_px + col_offset * cell_w
             };
+            // 2026-06-10 mouse-only tester finding: vertical chip
+            // rects were exactly TAB_ROW_H_PX tall but the chips
+            // STACK with VERT_INTER_ROW_GAP_PX between them — a
+            // ~14 px dead band per chip-row swallowed clicks.
+            // Extend the row's hit-rect to fully absorb the gap
+            // below it (so adjacent chip rects touch). The close-
+            // badge rect stays at the natural y1 — it's narrow on
+            // x anyway and tested first.
+            let chip_y1_px_hit = if vertical {
+                chip_y1_px + VERT_INTER_ROW_GAP_PX
+            } else {
+                chip_y1_px
+            };
             self.strip_chip_rects
-                .push((chip_x0_px, chip_x1_px, chip_y0_px, chip_y1_px, i));
+                .push((chip_x0_px, chip_x1_px, chip_y0_px, chip_y1_px_hit, i));
             if close_glyph_rendered {
+                // 2026-06-10 mouse-only tester finding: the
+                // close `×` hit-rect was 1 cell (~9 px) wide —
+                // way below the industry-standard 24-28 px
+                // target. Extend by 1 cell on each side so the
+                // user has a comfortable click target.
                 self.strip_chip_close_rects.push((
-                    close_x_px,
-                    close_x_px + cell_w,
+                    close_x_px - cell_w,
+                    close_x_px + 2.0 * cell_w,
                     chip_y0_px,
                     chip_y1_px,
                     i,
@@ -3936,6 +3961,7 @@ fn main() {
         editor_template,
         native_tab_nonce: 1,
         dragging_tab: None,
+        dragging_tab_press_px: None,
         renaming_tab: None,
         dragging_divider: None,
         sidebar_w_override: None,

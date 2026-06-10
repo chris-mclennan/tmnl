@@ -519,10 +519,18 @@ fn goto_tab_or_forward(app: &mut App, ke: Option<&winit::event::KeyEvent>, n: us
 /// dispatch tab-management chords. The default guard for tmnl
 /// chord migrations.
 fn no_modal_open(app: &App) -> bool {
+    // 2026-06-10 keyboard-only tester finding: modal stacking
+    // was possible — `⌘F` then `⌘+Shift+T` then `⌘+Shift+P` then
+    // `⌘,` then `⌘+Shift+/` left all five overlays simultaneously
+    // armed, requiring 5× esc to recover. `find`, `tab_search`,
+    // and `help` were missing from the guard.
     app.welcome.is_none()
         && app.settings.is_none()
         && app.renaming_tab.is_none()
         && app.palette.is_none()
+        && app.help.is_none()
+        && app.find.is_none()
+        && app.tab_search.is_none()
 }
 
 /// Initial command set — `Cmd`-prefixed tab/split management chords.
@@ -890,10 +898,21 @@ fn builtin_commands() -> Vec<Command> {
         },
         Command {
             id: "tab.goto_9",
-            title: "Jump to tab 9",
+            title: "Jump to tab 9 (or last)",
             group: "Tabs",
+            // 2026-06-10 keyboard-only tester finding: when
+            // tabs.len() < 9, ⌘9 was a silent no-op. Chrome /
+            // Safari / iTerm2 / Ghostty all treat ⌘9 as "jump
+            // to LAST tab". Clamp here.
             keys: &["cmd+9"],
-            run: |app, _el, ke| goto_tab_or_forward(app, ke, 8),
+            run: |app, _el, ke| {
+                let target = if app.tabs.len() < 9 {
+                    app.tabs.len().saturating_sub(1)
+                } else {
+                    8
+                };
+                goto_tab_or_forward(app, ke, target);
+            },
             when: Some(no_modal_open),
         },
         // Font zoom: ⌘= / ⌘+ in, ⌘- / ⌘_ out, ⌘0 reset.

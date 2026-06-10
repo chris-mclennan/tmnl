@@ -195,6 +195,7 @@ impl App {
             editor_template: None,
             native_tab_nonce: 1,
             dragging_tab: None,
+            dragging_tab_press_px: None,
             renaming_tab: None,
             dragging_divider: None,
             sidebar_w_override: None,
@@ -813,6 +814,7 @@ impl App {
         // wrong tab.
         if was_dragging_this_tab {
             self.dragging_tab = None;
+            self.dragging_tab_press_px = None;
         } else if let Some(d) = self.dragging_tab
             && d > idx
         {
@@ -3267,29 +3269,48 @@ impl App {
                 && self.buttons_down & (1u8 << BUTTON_LEFT) != 0
                 && let Some(gpu) = &self.gpu
             {
-                let dst = gpu
-                    .strip_chip_rects
-                    .iter()
-                    .find(|(x0, x1, y0, y1, _)| {
-                        position.x >= *x0 as f64
-                            && position.x < *x1 as f64
-                            && position.y >= *y0 as f64
-                            && position.y < *y1 as f64
-                    })
-                    .map(|(_, _, _, _, idx)| *idx);
-                if let Some(dst) = dst
-                    && dst != src
-                    && dst < self.tabs.len()
-                {
-                    self.tabs.swap(src, dst);
-                    if self.active == src {
-                        self.active = dst;
-                    } else if self.active == dst {
-                        self.active = src;
+                // 2026-06-10 mouse-only tester finding: cursor
+                // drift during a release was swapping tabs
+                // because the swap fired the instant the cursor
+                // crossed into a different chip's rect. Require
+                // ≥CHIP_DRAG_THRESHOLD_PX movement from the
+                // press position first. Same idiom as the
+                // sidebar-divider drag.
+                const CHIP_DRAG_THRESHOLD_PX: f64 = 6.0;
+                let above_threshold = match self.dragging_tab_press_px {
+                    Some((px, py)) => {
+                        let dx = position.x - px;
+                        let dy = position.y - py;
+                        (dx * dx + dy * dy).sqrt() >= CHIP_DRAG_THRESHOLD_PX
                     }
-                    self.dragging_tab = Some(dst);
-                    if let Some(w) = &self.window {
-                        w.request_redraw();
+                    None => true,
+                };
+                if above_threshold {
+                    let dst = gpu
+                        .strip_chip_rects
+                        .iter()
+                        .find(|(x0, x1, y0, y1, _)| {
+                            position.x >= *x0 as f64
+                                && position.x < *x1 as f64
+                                && position.y >= *y0 as f64
+                                && position.y < *y1 as f64
+                        })
+                        .map(|(_, _, _, _, idx)| *idx);
+                    if let Some(dst) = dst
+                        && dst != src
+                        && dst < self.tabs.len()
+                    {
+                        self.tabs.swap(src, dst);
+                        if self.active == src {
+                            self.active = dst;
+                        } else if self.active == dst {
+                            self.active = src;
+                        }
+                        self.dragging_tab = Some(dst);
+                        self.dragging_tab_press_px = None;
+                        if let Some(w) = &self.window {
+                            w.request_redraw();
+                        }
                     }
                 }
             }
@@ -3592,6 +3613,15 @@ impl App {
                                 crate::config::TabLayout::Horizontal
                             }
                         };
+                        // 2026-06-10 hybrid tester finding: the
+                        // sidebar's search input vanishes on a
+                        // V→H flip, but `tab_search` stays armed
+                        // invisibly — subsequent typed chars
+                        // silently appended. Clear both modal
+                        // states at the moment of flip so input
+                        // routes back to the focused pane.
+                        self.tab_search = None;
+                        self.find = None;
                         // 2026-06-09 SEV-3 mouse-hunt fix: only
                         // persist when the value actually changed.
                         // Was saving on every click — N round-trips
@@ -3750,9 +3780,12 @@ impl App {
                             MouseButton::Left => {
                                 self.switch_to_tab(idx);
                                 // Arm a potential drag — a
-                                // subsequent CursorMoved over
-                                // a different chip will swap.
+                                // subsequent CursorMoved more
+                                // than CHIP_DRAG_THRESHOLD_PX
+                                // from this point AND over a
+                                // different chip will swap.
                                 self.dragging_tab = Some(self.active);
+                                self.dragging_tab_press_px = Some(self.cursor_px);
                             }
                             MouseButton::Middle => self.close_tab_at(idx),
                             // Right-click → rename the tab inline.
@@ -3790,6 +3823,7 @@ impl App {
                     // then mis-armed sidebar drag for ALL subsequent
                     // clicks. 2026-06-09 user-reported regression.
                     self.dragging_tab = None;
+                    self.dragging_tab_press_px = None;
                     self.dragging_divider = None;
                     if self.dragging_sidebar
                         && self.sidebar_drag_press_x.is_some()
@@ -3812,6 +3846,7 @@ impl App {
         // selection.
         if !pressed && button == MouseButton::Left {
             self.dragging_tab = None;
+            self.dragging_tab_press_px = None;
             self.dragging_divider = None;
             // 2026-06-09: if a sidebar drag was armed but the user
             // released without crossing the threshold (still has
