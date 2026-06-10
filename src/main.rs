@@ -1922,8 +1922,17 @@ impl Gpu {
         //   * Horizontal — no sidebar; keep the legacy position
         //     next to the macOS traffic lights (x = 180).
         const TOGGLE_X_HORIZONTAL_PX: f32 = 180.0;
+        // 5 px of pad past the seam so the toggle's leftmost pixel
+        // doesn't overlap the divider's drag grab zone (±3 px on
+        // the seam). Clicking the toggle was getting interpreted
+        // as "arm drag" instead of "flip layout" because the press
+        // handler tests the grab zone before any button hit-rect.
+        // 2026-06-09 user report follow-up.
+        const TOGGLE_LEFT_PAD_PX: f32 = 5.0;
         let toggle_x_px = match self.tab_layout {
-            crate::config::TabLayout::Vertical => self.inset_px + self.sidebar_w_px,
+            crate::config::TabLayout::Vertical => {
+                self.inset_px + self.sidebar_w_px + TOGGLE_LEFT_PAD_PX
+            }
             _ => TOGGLE_X_HORIZONTAL_PX,
         };
         // Vertically center against the palette zone (same constant

@@ -3141,11 +3141,12 @@ impl App {
         //
         // 2026-06-09 follow-up: bumped 4 → 12 px after a user
         // report of "click near separator + mouse drift = sidebar
-        // jumps halfway across". Combined with the tighter 2-px
-        // grab zone above, accidental drag is now genuinely hard
-        // to trigger; intentional drag still works.
+        // jumps halfway across". 12 was too restrictive when
+        // intentional. Settled on 6 — needs a deliberate gesture
+        // (twice the original 4-px threshold) but still feels
+        // responsive once you commit.
         if self.dragging_sidebar && self.buttons_down & (1u8 << BUTTON_LEFT) != 0 {
-            const DRAG_THRESHOLD_PX: f64 = 12.0;
+            const DRAG_THRESHOLD_PX: f64 = 6.0;
             let above_threshold = match self.sidebar_drag_press_x {
                 Some(start_x) => (position.x - start_x).abs() >= DRAG_THRESHOLD_PX,
                 None => true,
@@ -3373,10 +3374,16 @@ impl App {
             // side of separator the separator moves to cursor up
             // to halfway across, wow". The 4-px grab made it easy
             // to click slightly off the visible seam and have a
-            // few px of mouse drift arm a drag. Tightened to 2 px
-            // so the cursor must be ON the seam.
+            // few px of mouse drift arm a drag.
+            //
+            // 2026-06-09 second pass: 2-px grab was too tight to
+            // hit intentionally. Settled on 3 px — narrow enough
+            // that the toggle's left edge clears it (with the 5-px
+            // pad in `strip_sidebar_toggle_instances`), wide
+            // enough that the user can land the seam without
+            // sub-pixel precision.
             let border_x = (gpu.inset_px + gpu.sidebar_w_px) as f64;
-            let grab = 2.0_f64;
+            let grab = 3.0_f64;
             let strip_y = gpu.strip_h as f64;
             if self.cursor_px.0 >= border_x - grab
                 && self.cursor_px.0 <= border_x + grab
