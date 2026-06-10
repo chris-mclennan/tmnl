@@ -230,29 +230,36 @@ _mnml_build_left() {
 }
 
 _mnml_build_right() {
+    # mnml-statusline-style: a single grey "info" chip on the
+    # left (now-playing · attention · clock), then a blue left-
+    # pointing powerline arrow into a blue context pill. Reads
+    # as a mirror of the left-side cwd → branch chips. Matches
+    # the look in mnml's right statusline (image #52 reference).
     local out=""
-    local sep="$(_mnml_fg "$MNML_PROMPT_GREY") · ${_mnml_reset}"
-    local first=1
-    # Now-playing chip — `♪ track name`.
+    # ─── grey info chip ─────────────────────────────────────
+    local info=""
     local np
     np=$(_mnml_seg_now_playing)
     if [ -n "$np" ]; then
-        [ "$first" -eq 1 ] || out+="$sep"
-        out+="$(_mnml_fg "$MNML_PROMPT_BLUE")♪ ${np}${_mnml_reset}"
-        first=0
+        info+="♪ ${np}"
     fi
-    # Attention chip — `● N` in red when other tabs need attention.
     local at
     at=$(_mnml_seg_attention)
     if [ -n "$at" ]; then
-        [ "$first" -eq 1 ] || out+="$sep"
-        out+="$(_mnml_fg "$MNML_PROMPT_RED")● ${at}${_mnml_reset}"
-        first=0
+        [ -n "$info" ] && info+="  "
+        info+="● ${at}"
     fi
-    # Clock + context.
-    [ "$first" -eq 1 ] || out+="$sep"
+    [ -n "$info" ] && info+="  "
+    info+="$(date +%H:%M)"
+    # Paint the grey chip — dark-grey bg, dim grey fg.
+    out+="$(_mnml_bg "$MNML_PROMPT_CHIP_BG")$(_mnml_fg "$MNML_PROMPT_GREY") ${info} ${_mnml_reset}"
+    # ─── blue powerline arrow → blue context pill ──────────
     local context_label="${MNML_CONTEXT:-$( basename "${SHELL:-sh}" )}"
-    out+="$(_mnml_fg "$MNML_PROMPT_GREY")$(date +%H:%M) · ${context_label}${_mnml_reset}"
+    # The arrow's fg = next chip's bg (blue); the arrow renders
+    # on the previous chip's bg (chip_bg), so the apparent
+    # transition is grey → blue.
+    out+="$(_mnml_bg "$MNML_PROMPT_CHIP_BG")$(_mnml_fg "$MNML_PROMPT_BLUE")${_mnml_sep_r}${_mnml_reset}"
+    out+="$(_mnml_bg "$MNML_PROMPT_BLUE")$(_mnml_fg "$MNML_PROMPT_BG") ${context_label} ${_mnml_reset}"
     printf '%s' "$out"
 }
 
