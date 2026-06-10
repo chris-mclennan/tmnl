@@ -278,13 +278,12 @@ if [ -n "${ZSH_VERSION:-}" ]; then
     PROMPT='$(_mnml_build_left "$?")'
     RPROMPT='$(_mnml_build_right)'
 
-    # Transient prompt — drop the RPROMPT from prior prompts so
-    # scrollback isn't littered with stale chip strips. Use the
-    # `zle-line-finish` widget (fires when the user submits a
-    # line) to clear it, and a `precmd` hook to restore it for
-    # the next prompt. More reliable than rebinding accept-line
-    # — that gets clobbered by plugins like zsh-syntax-
-    # highlighting.
+    # Transient RPROMPT — drop the right-side chip strip from
+    # prior prompts so scrollback isn't littered with stale
+    # chips. Standard Powerlevel10k / Starship / Pure pattern:
+    # `zle-line-finish` (fires when user submits) blanks RPROMPT
+    # + .reset-prompt redraws the current line without it.
+    # `precmd` hook restores RPROMPT for the next prompt.
     autoload -Uz add-zsh-hook 2>/dev/null
     _mnml_zle_line_finish() {
         RPROMPT=''
