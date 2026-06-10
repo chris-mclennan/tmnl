@@ -660,6 +660,11 @@ struct Gpu {
     /// `launcher_w_px` is 0 and `launcher_chip_instances` paints
     /// horizontally starting just after the sidebar toggle.
     launcher_in_top_strip: bool,
+    /// `true` when `launcher_position = "bottom"` — icons render
+    /// as a row of cells at the BOTTOM of the body grid (last
+    /// visible row). `launcher_w_px` is 0 in this mode; the icons
+    /// paint via the cell pipeline like `find_bar_instances`.
+    launcher_in_bottom: bool,
     /// Pixel width of the left-edge launcher rail. Computed from
     /// the config's `launcher_icons` count: empty ⇒ 0, otherwise a
     /// fixed 3-cell column. Sits at the window's left edge — the
@@ -811,6 +816,7 @@ impl Gpu {
             sidebar_scroll_rows: 0.0,
             launcher_w_px: 0.0,
             launcher_in_top_strip: false,
+            launcher_in_bottom: false,
             selection_bounds: None,
             bottom_prompt: false,
             launcher_icons: Vec::new(),
@@ -934,6 +940,7 @@ impl Gpu {
             sidebar_scroll_rows: 0.0,
             launcher_w_px: 0.0,
             launcher_in_top_strip: false,
+            launcher_in_bottom: false,
             selection_bounds: None,
             bottom_prompt: false,
             launcher_icons: Vec::new(),
@@ -1305,11 +1312,69 @@ impl Gpu {
         out
     }
 
+    /// Bottom variant — render icons as a horizontal row at the
+    /// LAST visible body row. Each icon is 3 cells wide (pad +
+    /// glyph + pad). Hit-rects in window-px so the click router
+    /// (which reads window-px coords) lands cleanly.
+    fn launcher_bottom_strip_instances(&mut self) -> Vec<pipeline::Instance> {
+        use crate::atlas::style_from_attrs;
+        let cell_w = self.atlas.cell_w;
+        let cell_h = self.atlas.cell_h;
+        // Last visible body row's y-pixel range.
+        let body_top_px = self.inset_px + self.strip_h;
+        let body_bottom_px = self.config.height as f32 - self.inset_px;
+        let row_top_px = body_bottom_px - cell_h;
+        if row_top_px < body_top_px {
+            return Vec::new();
+        }
+        // Start at the body's left edge (skip past sidebar / launcher rail).
+        let start_x_px = self.inset_px + self.sidebar_w_px;
+        let inset_y_total = self.inset_px + self.strip_h;
+        let base_y = (row_top_px - inset_y_total) / cell_h;
+        let icons = self.launcher_icons.clone();
+        let mut out: Vec<pipeline::Instance> = Vec::with_capacity(icons.len() * 3);
+        for (i, (glyph, fg)) in icons.iter().enumerate() {
+            let icon_x_px = start_x_px + i as f32 * 3.0 * cell_w;
+            // Cell pipeline applies (inset_px + launcher_w_px +
+            // sidebar_w_px) as x-inset. Cancel that so the glyph
+            // lands at icon_x_px + 1 cell (the pad before it).
+            let glyph_x_px = icon_x_px + cell_w;
+            let base_col =
+                (glyph_x_px - self.inset_px - self.launcher_w_px - self.sidebar_w_px) / cell_w;
+            let Some(ch) = glyph.chars().next() else {
+                continue;
+            };
+            let g = self.atlas.glyph(ch, style_from_attrs(0), &self.queue);
+            out.push(pipeline::Instance {
+                cell_pos: [base_col, base_y],
+                fg: *fg,
+                bg: palette().strip_bg,
+                uv_min: g.uv_min,
+                uv_max: g.uv_max,
+                glyph_offset: g.offset,
+                glyph_size: g.size,
+                attrs: 0,
+                _pad: 0,
+            });
+            // Hit-rect spans the whole 3-cell column for the click.
+            let x0 = icon_x_px;
+            let x1 = icon_x_px + 3.0 * cell_w;
+            let y0 = row_top_px;
+            let y1 = body_bottom_px;
+            self.launcher_icon_rects.push((x0, x1, y0, y1, i));
+        }
+        out
+    }
+
     fn launcher_chip_instances(&mut self) -> Vec<pipeline::Instance> {
         use crate::atlas::style_from_attrs;
         self.launcher_icon_rects.clear();
         if self.launcher_icons.is_empty() {
             return Vec::new();
+        }
+        // Bottom variant — icons painted at the body's last row.
+        if self.launcher_in_bottom {
+            return self.launcher_bottom_strip_instances();
         }
         // Top-strip variant: icons render horizontally inline in
         // the chrome bar, starting just past the sidebar toggle.
@@ -2544,6 +2609,10 @@ impl Gpu {
     /// value here.
     pub fn set_launcher_in_top_strip(&mut self, on: bool) {
         self.launcher_in_top_strip = on;
+    }
+
+    pub fn set_launcher_in_bottom(&mut self, on: bool) {
+        self.launcher_in_bottom = on;
     }
 
     /// Hit rects produced by the last `launcher_chip_instances`

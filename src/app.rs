@@ -1035,23 +1035,39 @@ impl App {
                 } else {
                     0.0
                 };
-            // 2026-06-09: launcher_position setting lets the user
-            // pick Left / Top / Bottom. Top paints icons inline in
-            // the top strip (left rail width = 0). Bottom isn't
-            // wired yet (needs a 2nd strip + shader globals); falls
-            // through to Top for now so users picking Bottom at
-            // least see their icons.
+            // launcher_position drives where launcher icons render:
+            //   * Left   — narrow vertical rail at window's left edge
+            //              (sets `launcher_w_px`; the body shrinks).
+            //   * Top    — icons inline in the top chrome strip.
+            //   * Bottom — icons painted at the body's last row.
+            //
+            // 2026-06-10: also HIDE the rail when the focused pane
+            // is Native — mnml / mixr ship their own activity bar
+            // and the duplicate tmnl-side rail just steals body
+            // width. User: "when mnml running don't show the extra
+            // launcher bar that tmnl gets".
             let launcher_count = self.cfg.launcher_icons.len();
-            let target_launcher = match self.cfg.launcher_position {
-                crate::config::LauncherPosition::Left => gpu.compute_launcher_w_px(launcher_count),
-                crate::config::LauncherPosition::Top | crate::config::LauncherPosition::Bottom => {
-                    0.0
+            let target_launcher = if active_is_native {
+                0.0
+            } else {
+                match self.cfg.launcher_position {
+                    crate::config::LauncherPosition::Left => {
+                        gpu.compute_launcher_w_px(launcher_count)
+                    }
+                    crate::config::LauncherPosition::Top
+                    | crate::config::LauncherPosition::Bottom => 0.0,
                 }
             };
-            let launcher_in_top_strip = matches!(
-                self.cfg.launcher_position,
-                crate::config::LauncherPosition::Top | crate::config::LauncherPosition::Bottom
-            );
+            let launcher_in_top_strip = !active_is_native
+                && matches!(
+                    self.cfg.launcher_position,
+                    crate::config::LauncherPosition::Top
+                );
+            let launcher_in_bottom = !active_is_native
+                && matches!(
+                    self.cfg.launcher_position,
+                    crate::config::LauncherPosition::Bottom
+                );
             // Resolve each icon's `(glyph, fg)` into the Gpu-side
             // cache so the per-frame paint doesn't re-parse hex.
             // Invalid `#rrggbb` strings fall back to the chrome
@@ -1073,6 +1089,7 @@ impl App {
                 .collect();
             gpu.set_launcher_icons(icons);
             gpu.set_launcher_in_top_strip(launcher_in_top_strip);
+            gpu.set_launcher_in_bottom(launcher_in_bottom);
             let r1 = gpu.set_strip_h(target_strip);
             let r2 = gpu.set_sidebar_w_px(target_sidebar);
             let r3 = gpu.set_launcher_w_px(target_launcher);
