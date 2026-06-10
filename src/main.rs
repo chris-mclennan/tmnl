@@ -1945,22 +1945,13 @@ impl Gpu {
         //     user can click it to RE-OPEN the sidebar.
         //   * Horizontal — no sidebar; keep the legacy position
         //     next to the macOS traffic lights (x = 180).
-        // 2026-06-09: Anchor the toggle to the LEFT of the palette
-        // cluster (just before the back-arrow), in the top strip's
-        // centered chrome row. User-requested — sits with the
-        // other palette controls instead of floating in body
-        // chrome on the body side of the seam.
-        //
-        // Fallback to the legacy traffic-light-adjacent position
-        // when the palette didn't render this tick (it always
-        // does in practice; this is defensive).
-        const TOGGLE_X_HORIZONTAL_PX: f32 = 180.0;
-        let toggle_w_px = total_cells as f32 * cell_w;
-        let gap_px = cell_w; // 1 cell of gap between toggle and back arrow
-        let toggle_x_px = match self.palette_left_x_px {
-            Some(palette_left) => palette_left - toggle_w_px - gap_px,
-            None => TOGGLE_X_HORIZONTAL_PX,
-        };
+        // 2026-06-09 (revisit): user wants the toggle on the
+        // LEFT — next to the traffic-light buttons, not nested in
+        // the palette cluster. Anchor back to x=180 in both
+        // layouts.
+        let _ = total_cells;
+        const TOGGLE_X_LEFT_PX: f32 = 180.0;
+        let toggle_x_px = TOGGLE_X_LEFT_PX;
         // Vertically center against the palette zone (same constant
         // `strip_palette_chip_instances` uses) so the toggle sits at
         // the same y as the macOS traffic-light buttons regardless
@@ -2307,52 +2298,17 @@ impl Gpu {
         out
     }
 
-    /// Full-height vertical drag-handle painted on the
-    /// sidebar's right edge — same size as mnml's `tree_edge`
-    /// (the rightmost cell column of the rail, top of body to
-    /// bottom). Each row in the column gets a `┃` glyph in dim
-    /// grey. Lives in the same cell column that's the drag
-    /// hot-zone, so the visual lines up exactly with where
-    /// clicks arm a drag.
+    /// Mnml-style "invisible" drag handle — no painted glyphs.
+    /// The strip pipeline already paints a 1-px right-edge
+    /// border on the sidebar (instance 2 in `strip.wgsl`); that
+    /// IS the visible divider. The drag hot-zone is the rightmost
+    /// cell column of the sidebar (handled in
+    /// `App::handle_mouse_input`). Returning an empty Vec keeps
+    /// the column structurally a drag zone without painting
+    /// chunky `┃` glyphs that read as "super duper huge"
+    /// (user words). Matches mnml's `tree_edge` design.
     fn sidebar_drag_handle_instances(&mut self) -> Vec<pipeline::Instance> {
-        use crate::atlas::style_from_attrs;
-        if !matches!(self.tab_layout, crate::config::TabLayout::Vertical)
-            || self.sidebar_w_px <= 0.0
-        {
-            return Vec::new();
-        }
-        let cell_w = self.atlas.cell_w;
-        let cell_h = self.atlas.cell_h;
-        let handle_x_px = self.inset_px + self.sidebar_w_px - cell_w;
-        let base_col = (handle_x_px - self.inset_px - self.sidebar_w_px) / cell_w;
-        let body_top_px = self.inset_px + self.strip_h;
-        let body_bottom_px = self.config.height as f32;
-        let inset_y_total = self.inset_px + self.strip_h;
-        let row_count = ((body_bottom_px - body_top_px) / cell_h).floor() as i32;
-        if row_count <= 0 {
-            return Vec::new();
-        }
-        const HANDLE_FG: [f32; 4] = [0.30, 0.32, 0.36, 1.0];
-        let g = self
-            .atlas
-            .glyph('\u{2503}', style_from_attrs(0), &self.queue);
-        let mut out: Vec<pipeline::Instance> = Vec::with_capacity(row_count as usize);
-        for i in 0..row_count {
-            let glyph_top_px = body_top_px + i as f32 * cell_h;
-            let base_y = (glyph_top_px - inset_y_total) / cell_h;
-            out.push(pipeline::Instance {
-                cell_pos: [base_col, base_y],
-                fg: HANDLE_FG,
-                bg: palette().clear_bg,
-                uv_min: g.uv_min,
-                uv_max: g.uv_max,
-                glyph_offset: g.offset,
-                glyph_size: g.size,
-                attrs: 0,
-                _pad: 0,
-            });
-        }
-        out
+        Vec::new()
     }
 
     fn resize(&mut self, w: u32, h: u32) -> Option<(u16, u16)> {

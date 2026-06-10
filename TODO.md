@@ -7,6 +7,87 @@ messages and `findings/` reports.
 
 ---
 
+## Icons next to tab names in the vertical sidebar
+
+Each tab chip currently shows just its label (`zsh`, `mnml`, etc).
+Prefix the label with a small icon that identifies the tab's
+TYPE:
+
+- **Integration tabs** (a sibling spawned via launcher / palette
+  / `host.launch` etc) → the integration's configured glyph from
+  `[[ui.launcher_icon]]` / mnml's `IntegrationIcon`. The user
+  recognizes their integrations by glyph already.
+- **Terminal tabs** (a plain shell pty — zsh / bash / fish) →
+  some kind of terminal icon. Candidates:
+  `\u{F0A0}` `nf-md-console` /  `nf-fa-terminal`. Probably
+  re-color it neutral grey so the integration icons stand out.
+- **Native (mnml/mixr) tabs** → the binary's own glyph (mnml
+  bracket, mixr `♪`). Auto-detect from the focused pane's
+  command + map.
+- **Browser tabs** (Pane::Browser) → globe / `nf-fa-globe`.
+
+Render: `[icon] [label]` inside the chip's existing label area.
+2 cells stolen from the label for the icon + 1 cell pad. Active
+chip already has bold; icon doesn't need a separate accent.
+
+Need to track each tab's `kind` for the icon mapping —
+`PaneKind::{Shell, Native, Browser}` plus an
+`integration_id: Option<String>` on `Pane` that the launcher
+sets when it spawns one.
+
+---
+
+## Restoring tmnl from failure (don't lose Claude / mnml sessions)
+
+If tmnl crashes, the OS force-quits it, or the machine reboots,
+the user loses every in-flight Claude Code or mnml session. The
+shells themselves are easy to respawn — `zsh` in the right cwd
+— but the SESSION (the pty's running process + its in-memory
+state, the scrollback, the mnml workspace open) is gone.
+
+Two layers of restore:
+
+1. **Crash-survival: persisted tab metadata.** On every meaningful
+   change (tab open / close / rename, layout flip), serialize a
+   tiny `~/.local/state/tmnl/session.json`:
+   ```
+   {
+     "tabs": [
+       { "label": "claude", "cwd": "/Users/chris/Projects/mnml",
+         "command": "claude", "args": [], "kind": "Shell" },
+       { "label": "mnml-workspace", "cwd": "/Users/chris/Projects/mnml",
+         "command": "mnml", "args": [], "kind": "Native" }
+     ],
+     "active": 0,
+     "tab_layout": "vertical"
+   }
+   ```
+   On next launch, if a session file exists, offer "Restore N
+   tabs from your last session?" — overlay similar to the
+   welcome overlay. Accept → spawn each tab in its recorded
+   cwd with the recorded command. Decline → wipe the file +
+   continue with the default new-tab flow.
+
+2. **In-flight scrollback dump (stretch).** Every N seconds (or
+   on a SIGTERM hook), dump each pty's vt100 scrollback to
+   `~/.local/state/tmnl/tab-<nonce>.scrollback`. On restore,
+   re-attach the dumped scrollback to the new pty's grid so
+   the user sees their old terminal output above the new
+   prompt. Won't restore the actual running process — that's
+   gone — but the visible history survives.
+
+Open questions:
+
+- Crash detection — explicit clean-exit flag wiped on launch
+  vs sentinel "graceful exit happened" file?
+- Per-tab opt-out (claude session probably yes; bare `htop`
+  probably no)?
+- Native panes (mnml) have their own session-restore inside
+  mnml — does tmnl just spawn the binary and let mnml restore
+  its own state, or does tmnl reconstruct the whole tree?
+
+---
+
 ## Claude-Code-style prompt chrome with mode line
 
 Alt prompt visual that wraps the shell's actual prompt with
