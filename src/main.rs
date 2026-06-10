@@ -4051,33 +4051,12 @@ fn main() {
         // bugfix; do not relocate back into this initializer.
         transfer_listener,
     };
-    // Show the welcome overlay on a "bare" tmnl launch (no --mnml, not
-    // headless) when the user has a recents file with entries — so they
-    // can re-open their familiar TUI with a single keypress instead of
-    // having to type the path. Skipped in editor mode (the user already
-    // told us what to open) + when recents is empty (nothing to offer).
-    // Respect the user's `show_welcome` config — when off, skip the
-    // overlay entirely on startup (their explicit opt-out via the
-    // welcome's `D` action or the settings UI).
-    if !editor_mode && app.cfg.show_welcome {
-        // Welcome list: user's recents on top, then the always-present
-        // built-in launchers (mnml / mixr) so a fresh tmnl install
-        // still has a one-keypress path to native-app tabs.
-        let mut list = recents::load();
-        for built in recents::builtin_entries() {
-            // De-dup: if the user has already launched a built-in,
-            // their (more-specific) recents entry wins.
-            let already = list
-                .iter()
-                .any(|e| e.command == built.command && e.args == built.args);
-            if !already {
-                list.push(built);
-            }
-        }
-        if !list.is_empty() {
-            app.welcome = Some(welcome::WelcomeState::open(list));
-        }
-    }
+    // 2026-06-10: dropped the startup welcome overlay entirely.
+    // Was creating a tab_layout-shifting visual flash on launch
+    // (welcome cells got bottom-prompt-shifted off-screen) and
+    // the user wanted "user-triggered, not auto-popup". Recents
+    // are still reachable via `⌘R` (`view.recents` command) —
+    // same overlay, opened on demand.
     event_loop.run_app(&mut app).unwrap();
     drop(app);
 }

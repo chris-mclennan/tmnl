@@ -1014,6 +1014,19 @@ fn builtin_commands() -> Vec<Command> {
             },
             when: Some(no_modal_open),
         },
+        // ⌘R — Open the recents picker (prior native launches +
+        // built-in launchers). User-triggered; was a startup
+        // welcome overlay before 2026-06-10.
+        Command {
+            id: "view.recents",
+            title: "Open recents picker",
+            group: "View",
+            keys: &["cmd+r"],
+            run: |app, _el, _ke| {
+                app.open_recents();
+            },
+            when: Some(no_modal_open),
+        },
         // ⌘⇧/ — Toggle the help overlay (lists every chord in the
         // registry, grouped by section). macOS Help-key convention.
         Command {

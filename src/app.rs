@@ -2104,6 +2104,28 @@ impl App {
         }
     }
 
+    /// ⌘R — Open the recents picker. Lists prior native-app
+    /// launches + built-in launchers (mnml / mixr); pick with
+    /// 1-9 or arrows + Enter. 2026-06-10 — used to auto-popup
+    /// at launch as the welcome overlay; now user-triggered.
+    pub(crate) fn open_recents(&mut self) {
+        let mut list = crate::recents::load();
+        for built in crate::recents::builtin_entries() {
+            let already = list
+                .iter()
+                .any(|e| e.command == built.command && e.args == built.args);
+            if !already {
+                list.push(built);
+            }
+        }
+        if !list.is_empty() {
+            self.welcome = Some(crate::welcome::WelcomeState::open(list));
+            if let Some(w) = &self.window {
+                w.request_redraw();
+            }
+        }
+    }
+
     /// Apply the inset from the (possibly edited) config to gpu + grid,
     /// and propagate the new dimensions to whatever's filling the grid
     /// — mnml/mixr (via the wire `Resize` message) or the shell's pty
