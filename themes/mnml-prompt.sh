@@ -127,17 +127,21 @@ _mnml_seg_git() {
     printf '%s%s%s' "$branch" "$dirty" "$ahead_behind"
 }
 
-# Now-playing chip — reads ~/.mixr/quick.txt (mixr writes this
-# when a track is playing; absent or empty ⇒ no chip). Same file
-# the mnml + tmnl `now_playing::mixr` sources poll.
+# Now-playing chip — reads ~/.mixr/quick.txt. That file is a
+# `key=value` dump, not a plain track name; the relevant fields
+# are `playing_active=true|false` (chip-show gate) and
+# `playing=<track>` (display text). Mixr writes `—` to `playing`
+# when idle. Output empty ⇒ no chip.
 _mnml_seg_now_playing() {
     local f="$HOME/.mixr/quick.txt"
     [ -r "$f" ] || return
-    local track
-    track=$(head -n 1 "$f" 2>/dev/null)
+    local active track
+    active=$(awk -F= '$1=="playing_active"{print $2; exit}' "$f" 2>/dev/null)
+    [ "$active" = "true" ] || return
+    track=$(awk -F= '$1=="playing"{print $2; exit}' "$f" 2>/dev/null)
     track="${track#"${track%%[![:space:]]*}"}"
     track="${track%"${track##*[![:space:]]}"}"
-    [ -n "$track" ] || return
+    [ -n "$track" ] && [ "$track" != "—" ] || return
     if [ "${#track}" -gt 28 ]; then
         track="${track:0:27}…"
     fi
