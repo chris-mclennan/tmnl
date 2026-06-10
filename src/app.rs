@@ -327,7 +327,9 @@ impl App {
                     }
                     return;
                 }
-                Key::Character(s) => {
+                Key::Character(s)
+                    if !mods.super_key() && !mods.control_key() && !mods.alt_key() =>
+                {
                     if let Some(q) = self.tab_search.as_mut() {
                         for c in s.chars() {
                             if !c.is_control() {
@@ -371,7 +373,9 @@ impl App {
                     self.rescan_find();
                     return;
                 }
-                Key::Character(s) => {
+                Key::Character(s)
+                    if !mods.super_key() && !mods.control_key() && !mods.alt_key() =>
+                {
                     if let Some(f) = self.find.as_mut() {
                         for c in s.chars() {
                             if !c.is_control() {
@@ -941,16 +945,20 @@ impl App {
             let target_strip = Gpu::required_strip_h(self.cfg.tab_layout, &chips, rows, tui_active);
             let target_sidebar =
                 if matches!(self.cfg.tab_layout, crate::config::TabLayout::Vertical) {
-                    // Vertical mode ALWAYS shows the sidebar, even
-                    // with a single tab — gives the toggle a visible
-                    // effect (vertical vs horizontal becomes obvious
-                    // by sidebar presence) AND the user can see
-                    // "I'm in vert mode" via the visible chip.
-                    // 2026-06-09 user feedback: "if only one tab and
-                    // user goes vertical tabs, we show the tab".
-                    self.sidebar_w_override
-                        .map(|w| gpu.clamp_sidebar_w_px(w))
-                        .unwrap_or_else(|| gpu.compute_sidebar_w_px(&chips))
+                    // 2026-06-09: when a single-tab session is hosting
+                    // a TUI (mnml / mixr / vim — `tui_active`), hide
+                    // the sidebar entirely. The TUI owns its own
+                    // chrome and a chip stack with just "mnml" reads
+                    // as noise. With ≥2 tabs, show the sidebar so
+                    // the user can navigate. Toggle stays visible
+                    // (it moves to body chrome when sidebar = 0).
+                    if !multi_tab && tui_active {
+                        0.0
+                    } else {
+                        self.sidebar_w_override
+                            .map(|w| gpu.clamp_sidebar_w_px(w))
+                            .unwrap_or_else(|| gpu.compute_sidebar_w_px(&chips))
+                    }
                 } else {
                     0.0
                 };
@@ -2700,6 +2708,16 @@ impl App {
                 true
             }
             Key::Character(s) => {
+                // 2026-06-09 SEV-2 hunt fix: a `cmd+letter` chord
+                // delivers a `Key::Character` with the modifier on
+                // `self.mods`. If we eat it here as typed text the
+                // chord registry never sees it — `cmd+t` lands as
+                // a literal "t" in the find query. Skip when a
+                // command-level modifier is held; the registry
+                // gets a turn next.
+                if self.mods.super_key() || self.mods.control_key() || self.mods.alt_key() {
+                    return false;
+                }
                 if let Some(f) = self.find.as_mut() {
                     for c in s.chars() {
                         if !c.is_control() {
@@ -2754,6 +2772,12 @@ impl App {
                 true
             }
             Key::Character(s) => {
+                // 2026-06-09 SEV-2 hunt fix: see find_handle_key
+                // — same chord-eating shape. Skip when a
+                // command-level modifier is held.
+                if self.mods.super_key() || self.mods.control_key() || self.mods.alt_key() {
+                    return false;
+                }
                 if let Some(q) = self.tab_search.as_mut() {
                     for c in s.chars() {
                         if !c.is_control() {
@@ -3278,7 +3302,12 @@ impl App {
             && let Some(gpu) = &self.gpu
             && gpu.sidebar_w_px > gpu.inset_px
         {
-            let border_x = gpu.sidebar_w_px as f64;
+            // 2026-06-09 SEV-2 mouse-hunt fix: `sidebar_w_px` is the
+            // sidebar's WIDTH, not the seam's x. The visible divider
+            // sits at `inset_px + sidebar_w_px` (the cell-pipeline
+            // x-inset); without adding `inset_px` here the grab zone
+            // armed ~20 px LEFT of the visible seam.
+            let border_x = (gpu.inset_px + gpu.sidebar_w_px) as f64;
             let grab = 4.0_f64;
             let strip_y = gpu.strip_h as f64;
             if self.cursor_px.0 >= border_x - grab
@@ -3399,9 +3428,14 @@ impl App {
                         if let Err(e) = self.cfg.save() {
                             log::warn!("config save failed: {e}");
                         }
-                        if let Some(w) = &self.window {
-                            w.request_redraw();
-                        }
+                        // 2026-06-09 SEV-1 mouse-hunt fix: the toggle
+                        // changed `cfg.tab_layout` but didn't refresh
+                        // strip layout — `sidebar_w_px` stayed at the
+                        // OLD layout's value until the next mouse event
+                        // (live: 1-frame flicker; headless: structural
+                        // hole). Recompute now so the toggle takes
+                        // effect this tick.
+                        self.refresh_strip_layout();
                         return;
                     }
                     // Shell-pane search-chip click → toggle tab-

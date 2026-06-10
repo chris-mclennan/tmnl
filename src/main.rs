@@ -1555,34 +1555,57 @@ impl Gpu {
             }
             // Gap before close.
             push_cell!(space_g, fg, bg, 0);
-            // Close glyph.
-            let close_fg = if *active {
-                CLOSE_FG_ACTIVE
-            } else {
-                CLOSE_FG_INACTIVE
-            };
-            let close_g = self
-                .atlas
-                .glyph('\u{00D7}', style_from_attrs(0), &self.queue);
+            // Close glyph — SKIPPED for empty labels in vertical
+            // mode. 2026-06-09 SEV-1 mouse-hunt fix: a brand-new
+            // shell tab starts with an empty label, which puts the
+            // close `×` at the LEFT side of the sidebar (x ≈ 50)
+            // — clicking the chip's visible center closed the tab
+            // because the close-rect overlapped the chip body. No
+            // label = no close affordance until the title arrives.
+            let close_glyph_rendered = !(vertical && label.is_empty());
             let close_x_px = start_x_px + col_offset * cell_w;
-            push_cell!(close_g, close_fg, bg, 0);
+            if close_glyph_rendered {
+                let close_fg = if *active {
+                    CLOSE_FG_ACTIVE
+                } else {
+                    CLOSE_FG_INACTIVE
+                };
+                let close_g = self
+                    .atlas
+                    .glyph('\u{00D7}', style_from_attrs(0), &self.queue);
+                push_cell!(close_g, close_fg, bg, 0);
+            } else {
+                push_cell!(space_g, fg, bg, 0);
+            }
             // Right pad.
             for _ in 0..Self::CHIP_PAD_CELLS as usize {
                 push_cell!(space_g, fg, bg, 0);
             }
 
             // Record hit-rects with Y bounds so wrap rows are
-            // distinguished on click.
-            let chip_x1_px = start_x_px + col_offset * cell_w;
+            // distinguished on click. 2026-06-09 SEV-2 mouse-hunt fix:
+            // in vertical mode, EXTEND the chip's hit rect to the
+            // sidebar's right edge so the whole row activates the
+            // chip (Warp / VS Code behavior). The close-badge hit-
+            // rect stays narrow so the × still works, and it's
+            // tested BEFORE this rect in the click router. Horizontal
+            // mode keeps the shrink-wrapped chip width.
+            let chip_x1_px = if vertical {
+                self.inset_px + self.sidebar_w_px
+            } else {
+                start_x_px + col_offset * cell_w
+            };
             self.strip_chip_rects
                 .push((chip_x0_px, chip_x1_px, chip_y0_px, chip_y1_px, i));
-            self.strip_chip_close_rects.push((
-                close_x_px,
-                close_x_px + cell_w,
-                chip_y0_px,
-                chip_y1_px,
-                i,
-            ));
+            if close_glyph_rendered {
+                self.strip_chip_close_rects.push((
+                    close_x_px,
+                    close_x_px + cell_w,
+                    chip_y0_px,
+                    chip_y1_px,
+                    i,
+                ));
+            }
         }
         // `+` new-tab button — wraps to its own row if the last chip
         // row didn't have space (the chip_layout helper figured this
@@ -1877,20 +1900,22 @@ impl Gpu {
         let cells = ["  ", "\u{EBF4}", "  "].concat();
         let total_cells = cells.chars().count();
         // Position branches on tab_layout:
-        //   * Vertical — anchor to the right edge of the sidebar
-        //     column so the toggle sits next to the divider (the
-        //     visual seam between sidebar and body). Reads as
-        //     "control for this divider".
-        //   * Horizontal — no sidebar to anchor against; keep the
-        //     legacy position next to the macOS traffic lights
-        //     (x = 180).
+        //   * Vertical, sidebar visible — anchor to the body's
+        //     LEFT edge (just past the divider, in body chrome).
+        //     Reads as "control for the sidebar to my left".
+        //     2026-06-09 user feedback: was inside the sidebar
+        //     column; should be on the body side of the seam.
+        //   * Vertical, sidebar hidden (single-tab TUI) — same
+        //     anchor (inset_px + sidebar_w_px = inset_px), so
+        //     the toggle sits at the body's left edge and the
+        //     user can click it to RE-OPEN the sidebar.
+        //   * Horizontal — no sidebar; keep the legacy position
+        //     next to the macOS traffic lights (x = 180).
         const TOGGLE_X_HORIZONTAL_PX: f32 = 180.0;
-        const SIDEBAR_RIGHT_PAD_CELLS: f32 = 1.0;
+        const TOGGLE_LEFT_PAD_CELLS: f32 = 1.0;
         let toggle_x_px = match self.tab_layout {
-            crate::config::TabLayout::Vertical if self.sidebar_w_px > 0.0 => {
-                self.inset_px + self.sidebar_w_px
-                    - total_cells as f32 * cell_w
-                    - SIDEBAR_RIGHT_PAD_CELLS * cell_w
+            crate::config::TabLayout::Vertical => {
+                self.inset_px + self.sidebar_w_px + TOGGLE_LEFT_PAD_CELLS * cell_w
             }
             _ => TOGGLE_X_HORIZONTAL_PX,
         };
@@ -2124,12 +2149,18 @@ impl Gpu {
             search_end_col,
             plus_start_col,
             plus_end_col,
+            gap_cells,
         );
+        // 2026-06-09 SEV-2 mouse-hunt fix: search and plus rects
+        // used to leave a 1-cell `gap_cells` dead band between
+        // them — clicks there hit nothing. Extend the search rect
+        // up to the plus rect's left edge so the header has no
+        // dead pixels.
         let sidebar_right_x_px = self.inset_px + self.sidebar_w_px;
         let plus_right_x_px = sidebar_right_x_px - right_pad * cell_w;
         let plus_left_x_px = plus_right_x_px - plus_cells * cell_w;
         let search_left_x_px = self.inset_px + Self::SIDEBAR_PAD_LEFT_PX;
-        let search_right_x_px = plus_left_x_px - gap_cells * cell_w;
+        let search_right_x_px = plus_left_x_px;
         self.sidebar_search_rect = Some((search_left_x_px, search_right_x_px, y0_px, y1_px));
         self.sidebar_plus_rect = Some((plus_left_x_px, plus_right_x_px, y0_px, y1_px));
         out
