@@ -379,9 +379,16 @@ fn app_state_json(app: &crate::App) -> String {
     let settings_open = app.settings.is_some();
     let welcome_open = app.welcome.is_some();
     let palette_open = app.palette.is_some();
+    let help_open = app.help.is_some();
+    let selection_active = app.text_selection.is_some();
     let sidebar_w_px = app.gpu.as_ref().map(|g| g.sidebar_w_px).unwrap_or(0.0);
+    let sidebar_scroll_rows = app
+        .gpu
+        .as_ref()
+        .map(|g| g.sidebar_scroll_rows)
+        .unwrap_or(0.0);
     format!(
-        r#"{{"tabs":{tabs},"active":{active},"panes":[{panes_json}],"should_quit":{should_quit},"tab_layout":"{tab_layout}","altscreen":{altscreen},"cols":{cols},"rows":{rows},"tabs_detail":[{tabs_detail}],"tab_search":{tab_search},"find":{find},"settings_open":{settings_open},"welcome_open":{welcome_open},"palette_open":{palette_open},"sidebar_w_px":{sidebar_w_px}}}"#,
+        r#"{{"tabs":{tabs},"active":{active},"panes":[{panes_json}],"should_quit":{should_quit},"tab_layout":"{tab_layout}","altscreen":{altscreen},"cols":{cols},"rows":{rows},"tabs_detail":[{tabs_detail}],"tab_search":{tab_search},"find":{find},"settings_open":{settings_open},"welcome_open":{welcome_open},"palette_open":{palette_open},"help_open":{help_open},"selection_active":{selection_active},"sidebar_w_px":{sidebar_w_px},"sidebar_scroll_rows":{sidebar_scroll_rows}}}"#,
         tabs = app.tabs.len(),
         active = app.active,
         should_quit = app.should_quit,

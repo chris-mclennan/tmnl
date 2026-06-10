@@ -954,6 +954,47 @@ fn builtin_commands() -> Vec<Command> {
             },
             when: None,
         },
+        // ⌘, — Open the Settings overlay. Standard macOS-app
+        // chord; previously Settings was only reachable via the
+        // macOS menu (fine in live mode but unreachable in headless
+        // tests / for keyboard-only users with no menu focus).
+        Command {
+            id: "view.settings",
+            title: "Toggle settings overlay",
+            group: "View",
+            keys: &["cmd+,"],
+            run: |app, _el, _ke| {
+                if app.settings.is_some() {
+                    app.settings = None;
+                } else {
+                    app.open_settings();
+                }
+                if let Some(w) = &app.window {
+                    w.request_redraw();
+                }
+            },
+            when: None,
+        },
+        // ⌘⇧T — Open the tab-search overlay (filter tabs by name).
+        // Previously unreachable from the keyboard — only mouse-
+        // openable via the strip chip or sidebar header search.
+        Command {
+            id: "view.tab_search",
+            title: "Toggle tab search",
+            group: "View",
+            keys: &["cmd+shift+t"],
+            run: |app, _el, _ke| {
+                app.tab_search = if app.tab_search.is_some() {
+                    None
+                } else {
+                    Some(String::new())
+                };
+                if let Some(w) = &app.window {
+                    w.request_redraw();
+                }
+            },
+            when: Some(no_modal_open),
+        },
         // ⌘⇧/ — Toggle the help overlay (lists every chord in the
         // registry, grouped by section). macOS Help-key convention.
         Command {

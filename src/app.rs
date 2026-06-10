@@ -300,6 +300,28 @@ impl App {
     /// one.
     fn dispatch_synthetic_key(&mut self, key: &Key, mods: ModifiersState) {
         use winit::keyboard::{Key, NamedKey};
+        // Welcome / settings / palette overlays — minimal dispatch
+        // so testers can dismiss them via `key esc`. The real
+        // `handle_keyboard_input` chain routes through the
+        // overlays' `*_handle_key` methods (which take `&KeyEvent`
+        // — a type we can't construct outside winit). For headless
+        // we inline the most-common Esc-dismiss path.
+        if self.welcome.is_some() && matches!(key, Key::Named(NamedKey::Escape)) {
+            self.welcome = None;
+            return;
+        }
+        if self.settings.is_some() && matches!(key, Key::Named(NamedKey::Escape)) {
+            self.settings = None;
+            return;
+        }
+        if self.palette.is_some() && matches!(key, Key::Named(NamedKey::Escape)) {
+            self.palette = None;
+            return;
+        }
+        if self.help.is_some() && matches!(key, Key::Named(NamedKey::Escape)) {
+            self.help = None;
+            return;
+        }
         // Tab-search overlay greedily consumes keys.
         if self.tab_search.is_some() {
             match key {
@@ -1957,7 +1979,7 @@ impl App {
         }
     }
 
-    fn open_settings(&mut self) {
+    pub(crate) fn open_settings(&mut self) {
         if self.settings.is_none() {
             self.settings = Some(SettingsState::open(self.cfg.clone()));
         }
@@ -3417,6 +3439,7 @@ impl App {
                     // fires the toggle exactly once instead of twice.
                     if pressed && button == MouseButton::Left && hits(gpu.strip_sidebar_toggle_rect)
                     {
+                        let prev = self.cfg.tab_layout;
                         self.cfg.tab_layout = match self.cfg.tab_layout {
                             crate::config::TabLayout::Horizontal => {
                                 crate::config::TabLayout::Vertical
@@ -3425,7 +3448,13 @@ impl App {
                                 crate::config::TabLayout::Horizontal
                             }
                         };
-                        if let Err(e) = self.cfg.save() {
+                        // 2026-06-09 SEV-3 mouse-hunt fix: only
+                        // persist when the value actually changed.
+                        // Was saving on every click — N round-trips
+                        // = 2N writes to `~/.config/tmnl/config.toml`.
+                        if prev != self.cfg.tab_layout
+                            && let Err(e) = self.cfg.save()
+                        {
                             log::warn!("config save failed: {e}");
                         }
                         // 2026-06-09 SEV-1 mouse-hunt fix: the toggle
@@ -3517,13 +3546,17 @@ impl App {
                         .unwrap_or(false);
                     if on_sidebar_search && button == MouseButton::Left {
                         match self.tabs[self.active].focused_pane().kind {
-                            PaneKind::Shell { .. } => {
-                                self.tab_search = if self.tab_search.is_some() {
-                                    None
-                                } else {
-                                    Some(String::new())
-                                };
+                            PaneKind::Shell { .. } if self.tab_search.is_none() => {
+                                // 2026-06-09 SEV-3 hybrid-hunt fix:
+                                // was a click-toggle (open ↔ close).
+                                // Re-clicking the search bar while
+                                // already typing dropped the user's
+                                // query — most text inputs treat a
+                                // re-click as a focus no-op. Now
+                                // only OPEN on click; Esc closes.
+                                self.tab_search = Some(String::new());
                             }
+                            PaneKind::Shell { .. } => {}
                             PaneKind::Native { ref server, .. } => {
                                 server.send_input(&InputEvent::Key(KeyInput {
                                     code: KeyCode::Char('P'),

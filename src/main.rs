@@ -627,7 +627,7 @@ struct Gpu {
     /// chips slide UP / off the top). Capped at `chip_count -
     /// visible_chips + 1` by [`Self::clamp_sidebar_scroll`] so the
     /// `+` button stays reachable. 0 in horizontal mode.
-    sidebar_scroll_rows: f32,
+    pub sidebar_scroll_rows: f32,
     /// `true` when `launcher_position` is `Top` / `Bottom` — icons
     /// render inline in the top strip instead of a left-edge
     /// vertical rail. Set by App in tick. When true,
