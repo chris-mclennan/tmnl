@@ -1873,9 +1873,26 @@ impl Gpu {
         }
         let cell_w = self.atlas.cell_w;
         let cell_h = self.atlas.cell_h;
-        const TOGGLE_X_PX: f32 = 180.0;
         let cells = ["  ", "\u{EBF4}", "  "].concat();
         let total_cells = cells.chars().count();
+        // Position branches on tab_layout:
+        //   * Vertical — anchor to the right edge of the sidebar
+        //     column so the toggle sits next to the divider (the
+        //     visual seam between sidebar and body). Reads as
+        //     "control for this divider".
+        //   * Horizontal — no sidebar to anchor against; keep the
+        //     legacy position next to the macOS traffic lights
+        //     (x = 180).
+        const TOGGLE_X_HORIZONTAL_PX: f32 = 180.0;
+        const SIDEBAR_RIGHT_PAD_CELLS: f32 = 1.0;
+        let toggle_x_px = match self.tab_layout {
+            crate::config::TabLayout::Vertical if self.sidebar_w_px > 0.0 => {
+                self.inset_px + self.sidebar_w_px
+                    - total_cells as f32 * cell_w
+                    - SIDEBAR_RIGHT_PAD_CELLS * cell_w
+            }
+            _ => TOGGLE_X_HORIZONTAL_PX,
+        };
         // Vertically center against the palette zone (same constant
         // `strip_palette_chip_instances` uses) so the toggle sits at
         // the same y as the macOS traffic-light buttons regardless
@@ -1884,16 +1901,19 @@ impl Gpu {
         let inset_y_total = self.inset_px + self.strip_h;
         let label_y = ((palette_zone_h - cell_h) * 0.5).max(0.0);
         let base_y = (label_y - inset_y_total) / cell_h;
-        let start_col = (TOGGLE_X_PX - self.inset_px - self.sidebar_w_px) / cell_w;
+        let start_col = (toggle_x_px - self.inset_px - self.sidebar_w_px) / cell_w;
         const TOGGLE_FG: [f32; 4] = [0.78, 0.80, 0.85, 1.0];
-        let btn_bg = palette().btn_bg;
+        // Match the surrounding strip bg so the glyph reads as a
+        // bare icon, not a pill — the lighter `btn_bg` painted a
+        // visible square around the glyph against the strip.
+        let toggle_bg = palette().strip_bg;
         let mut out: Vec<pipeline::Instance> = Vec::new();
         for (i, ch) in cells.chars().enumerate() {
             let g = self.atlas.glyph(ch, style_from_attrs(0), &self.queue);
             out.push(pipeline::Instance {
                 cell_pos: [start_col + i as f32, base_y],
                 fg: TOGGLE_FG,
-                bg: btn_bg,
+                bg: toggle_bg,
                 uv_min: g.uv_min,
                 uv_max: g.uv_max,
                 glyph_offset: g.offset,
@@ -1902,7 +1922,7 @@ impl Gpu {
                 _pad: 0,
             });
         }
-        let x0 = TOGGLE_X_PX;
+        let x0 = toggle_x_px;
         let x1 = x0 + total_cells as f32 * cell_w;
         let y0_px = 0.0;
         let y1_px = self.strip_h;
