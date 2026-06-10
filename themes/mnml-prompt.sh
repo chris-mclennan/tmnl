@@ -278,24 +278,23 @@ if [ -n "${ZSH_VERSION:-}" ]; then
     PROMPT='$(_mnml_build_left "$?")'
     RPROMPT='$(_mnml_build_right)'
 
-    # Transient prompt — Pure / Powerlevel10k pattern. Before
-    # submitting a command, rewrite the just-finished prompt to
-    # drop the RPROMPT (keep the left side intact). Without
-    # this, every scrollback line that was once a prompt keeps
-    # its RPROMPT chip strip — gets noisy in bottom-prompt mode.
-    #
-    # Use a UNIQUE widget name + `bindkey '^M'` directly so
-    # plugins that wrap `accept-line` (zsh-syntax-highlighting,
-    # autosuggestions) don't undo this binding.
-    _mnml_transient_accept_line() {
-        local saved="$RPROMPT"
+    # Transient prompt — drop the RPROMPT from prior prompts so
+    # scrollback isn't littered with stale chip strips. Use the
+    # `zle-line-finish` widget (fires when the user submits a
+    # line) to clear it, and a `precmd` hook to restore it for
+    # the next prompt. More reliable than rebinding accept-line
+    # — that gets clobbered by plugins like zsh-syntax-
+    # highlighting.
+    autoload -Uz add-zsh-hook 2>/dev/null
+    _mnml_zle_line_finish() {
         RPROMPT=''
         zle .reset-prompt
-        RPROMPT="$saved"
-        zle .accept-line
     }
-    zle -N _mnml_transient_accept_line
-    bindkey '^M' _mnml_transient_accept_line
+    zle -N zle-line-finish _mnml_zle_line_finish
+    _mnml_precmd() {
+        RPROMPT='$(_mnml_build_right)'
+    }
+    add-zsh-hook precmd _mnml_precmd 2>/dev/null
 elif [ -n "${BASH_VERSION:-}" ]; then
     # bash builds the prompt via PROMPT_COMMAND so `$?` is captured
     # before any other command runs. The build functions already
