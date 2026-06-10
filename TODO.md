@@ -7,6 +7,79 @@ messages and `findings/` reports.
 
 ---
 
+## Claude-Code-style prompt chrome with mode line
+
+Alt prompt visual that wraps the shell's actual prompt with
+terminal-rendered chrome (drawn by tmnl, not the shell script).
+Inspired by Claude Code's CLI.
+
+Layout — the prompt area occupies four rows of body chrome:
+
+```
+─────────────────────────────────────────  ← solid line (top)
+❯ user's command line here_                 ← prompt + cursor
+─────────────────────────────────────────  ← solid line (bottom)
+auto mode • opus 4.x • <other mode chips>   ← mode line (reserved)
+[gutter goes below]                         ← gutter / status
+```
+
+- **Two solid horizontal rules** bracket the single prompt row.
+  Drawn with `─` (U+2500) at the chrome accent color.
+- **Slim arrow** (`❯`, U+276F) prefixes the command. Same glyph
+  Claude Code + zsh / starship use.
+- **Cursor block** in the prompt row:
+  - Window active → solid block (current behavior in cell.wgsl
+    via `ATTR_CURSOR_BLOCK`).
+  - Window inactive → hollow block (new attr bit + shader path,
+    or a render-time recoloring of bg with `palette().clear_bg`).
+- **Mode line** below the lower rule is one cell row reserved
+  for future mode indicators (auto mode, model picker, prompt
+  position, etc.). Empty until something fills it.
+
+### Window-active detection
+
+Hook winit's `Focused(bool)` event on `WindowEvent`. Push a
+flag through to `Gpu` so cursor render branches on it.
+
+### OSC 133 anchors
+
+Tmnl already tracks prompt boundaries via `osc133::State`. The
+chrome can paint at the `A`-mark row and the `B`-mark cursor
+position. No new shell-side integration needed.
+
+### Settings control
+
+Settings overlay row: `Prompt style: [classic] / claude-code`.
+`classic` = no chrome (today's behavior); `claude-code` =
+the layout above. New config field `cfg.prompt_style`.
+
+Compose with existing `prompt_position` (Natural / Bottom)
+— `claude-code` style works in either; Bottom + claude-code
+matches Warp + Claude Code's UX most exactly.
+
+### Mode line population (later)
+
+When `claude-code` is on, mode line shows chips based on app
+state:
+- `auto mode` when an opt-in "let agents run autonomously"
+  setting is on (doesn't exist yet)
+- model name when tmnl picks one up from `MNML_CONTEXT` env
+- `bottom` / `natural` indicator for `prompt_position`
+- arbitrary user `[ui.mode_line]` entries
+
+Each chip is a small pill: bg + 1-cell pad + text + 1-cell pad,
+separated by `•`. Clicking a chip toggles its setting where
+applicable.
+
+### Scope
+
+~400-600 lines: cursor shader path (~30), focus tracking
+(~20), prompt-chrome renderer (~150), mode-line renderer
+(~150), Settings row (~30), config field + migration (~30),
+docs (~50). Not a one-session feature.
+
+---
+
 ## Sidebar toggle button in the strip
 
 Add a small chrome button (matching the existing arrow-pill / palette
