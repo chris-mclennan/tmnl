@@ -2317,11 +2317,7 @@ impl Gpu {
         }
         let cell_w = self.atlas.cell_w;
         let cell_h = self.atlas.cell_h;
-        // Nudge the handle a few physical px LEFT of the seam so
-        // it visually sits just inside the sidebar, not flush
-        // against the divider line. 2026-06-10 user feedback.
-        const HANDLE_LEFT_NUDGE_PX: f32 = 4.0;
-        let handle_x_px = self.inset_px + self.sidebar_w_px - cell_w - HANDLE_LEFT_NUDGE_PX;
+        let handle_x_px = self.inset_px + self.sidebar_w_px - cell_w;
         let base_col = (handle_x_px - self.inset_px - self.sidebar_w_px) / cell_w;
         let body_top_px = self.inset_px + self.strip_h;
         let body_bottom_px = self.config.height as f32;
