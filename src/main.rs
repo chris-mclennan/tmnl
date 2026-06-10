@@ -2324,9 +2324,14 @@ impl Gpu {
         let mid_py = (body_top_px + body_bottom_px) * 0.5;
         let inset_y_total = self.inset_px + self.strip_h;
         const HANDLE_FG: [f32; 4] = [0.30, 0.32, 0.36, 1.0];
+        // `▌` (U+258C LEFT HALF BLOCK) — fills the left half of
+        // the cell with a solid rectangle. Three stacked makes a
+        // continuous thin vertical bar at the seam (same look as
+        // mnml's tree-rail handle, image #39 reference) instead
+        // of the punctuation-style dots of `⋮`.
         let g = self
             .atlas
-            .glyph('\u{22EE}', style_from_attrs(0), &self.queue);
+            .glyph('\u{258C}', style_from_attrs(0), &self.queue);
         let mut out: Vec<pipeline::Instance> = Vec::with_capacity(3);
         for offset in -1i32..=1i32 {
             let glyph_top_px = mid_py + (offset as f32 - 0.5) * cell_h;
