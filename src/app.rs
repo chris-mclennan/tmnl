@@ -3705,8 +3705,28 @@ impl App {
                         }
                     }
                 } else if button == MouseButton::Left {
-                    // Released — end any in-flight drag.
+                    // Released inside the chrome region — END every
+                    // in-flight drag, not just `dragging_tab`. The
+                    // earlier "only tab" version was leaving
+                    // `dragging_sidebar` armed across releases that
+                    // landed in chrome (e.g. release in the same
+                    // sidebar cell column you pressed in), which
+                    // then mis-armed sidebar drag for ALL subsequent
+                    // clicks. 2026-06-09 user-reported regression.
                     self.dragging_tab = None;
+                    self.dragging_divider = None;
+                    if self.dragging_sidebar
+                        && self.sidebar_drag_press_x.is_some()
+                        && let Some(prev) = self.sidebar_drag_prev_override.take()
+                    {
+                        self.sidebar_w_override = prev;
+                        if let Some(w) = &self.window {
+                            w.request_redraw();
+                        }
+                    }
+                    self.sidebar_drag_prev_override = None;
+                    self.dragging_sidebar = false;
+                    self.sidebar_drag_press_x = None;
                 }
                 return;
             }

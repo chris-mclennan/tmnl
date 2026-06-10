@@ -553,6 +553,12 @@ struct Gpu {
     /// key combo to mnml (Ctrl+PageUp / Ctrl+PageDown / Ctrl+Shift+P /
     /// Ctrl+R) so the native client's existing keybindings fire.
     strip_palette_back_rect: Option<(f32, f32, f32, f32)>,
+    /// Leftmost pixel-x of the palette cluster (the back-arrow's
+    /// x0). Captured by `strip_palette_chip_instances` each frame
+    /// so `strip_sidebar_toggle_instances` (which paints after
+    /// it) can anchor the toggle just to the left of the
+    /// cluster. `None` when the palette didn't render this tick.
+    palette_left_x_px: Option<f32>,
     strip_palette_fwd_rect: Option<(f32, f32, f32, f32)>,
     strip_palette_chip_rect: Option<(f32, f32, f32, f32)>,
     strip_palette_dropdown_rect: Option<(f32, f32, f32, f32)>,
@@ -771,6 +777,7 @@ impl Gpu {
             strip_chips: Vec::new(),
             strip_chip_rects: Vec::new(),
             strip_palette_back_rect: None,
+            palette_left_x_px: None,
             strip_palette_fwd_rect: None,
             strip_palette_chip_rect: None,
             strip_sidebar_toggle_rect: None,
@@ -900,6 +907,7 @@ impl Gpu {
             strip_chips: Vec::new(),
             strip_chip_rects: Vec::new(),
             strip_palette_back_rect: None,
+            palette_left_x_px: None,
             strip_palette_fwd_rect: None,
             strip_palette_chip_rect: None,
             strip_sidebar_toggle_rect: None,
@@ -1374,6 +1382,14 @@ impl Gpu {
         if !vertical && self.strip_chips.len() <= 1 {
             return Vec::new();
         }
+        // 2026-06-09: vertical-mode chips render in the sidebar
+        // column, but if the sidebar is auto-hidden (single-tab
+        // TUI) `sidebar_w_px == 0` — the chip would otherwise
+        // paint at the body's top-left corner overlapping the
+        // hosted TUI. Skip the render in that case.
+        if vertical && self.sidebar_w_px <= 0.0 {
+            return Vec::new();
+        }
         let cell_w = self.atlas.cell_w;
         let cell_h = self.atlas.cell_h;
 
@@ -1657,6 +1673,7 @@ impl Gpu {
         self.strip_palette_fwd_rect = None;
         self.strip_palette_chip_rect = None;
         self.strip_palette_dropdown_rect = None;
+        self.palette_left_x_px = None;
         if self.strip_h <= 0.0 {
             return Vec::new();
         }
@@ -1889,6 +1906,7 @@ impl Gpu {
         self.strip_palette_fwd_rect = Some((fx0, fx1, y0, y1));
         self.strip_palette_chip_rect = Some((cx0, cx1, y0, y1));
         self.strip_palette_dropdown_rect = Some((dx0, dx1, y0, y1));
+        self.palette_left_x_px = Some(bx0);
         out
     }
 
@@ -1927,19 +1945,21 @@ impl Gpu {
         //     user can click it to RE-OPEN the sidebar.
         //   * Horizontal — no sidebar; keep the legacy position
         //     next to the macOS traffic lights (x = 180).
+        // 2026-06-09: Anchor the toggle to the LEFT of the palette
+        // cluster (just before the back-arrow), in the top strip's
+        // centered chrome row. User-requested — sits with the
+        // other palette controls instead of floating in body
+        // chrome on the body side of the seam.
+        //
+        // Fallback to the legacy traffic-light-adjacent position
+        // when the palette didn't render this tick (it always
+        // does in practice; this is defensive).
         const TOGGLE_X_HORIZONTAL_PX: f32 = 180.0;
-        // 5 px of pad past the seam so the toggle's leftmost pixel
-        // doesn't overlap the divider's drag grab zone (±3 px on
-        // the seam). Clicking the toggle was getting interpreted
-        // as "arm drag" instead of "flip layout" because the press
-        // handler tests the grab zone before any button hit-rect.
-        // 2026-06-09 user report follow-up.
-        const TOGGLE_LEFT_PAD_PX: f32 = 5.0;
-        let toggle_x_px = match self.tab_layout {
-            crate::config::TabLayout::Vertical => {
-                self.inset_px + self.sidebar_w_px + TOGGLE_LEFT_PAD_PX
-            }
-            _ => TOGGLE_X_HORIZONTAL_PX,
+        let toggle_w_px = total_cells as f32 * cell_w;
+        let gap_px = cell_w; // 1 cell of gap between toggle and back arrow
+        let toggle_x_px = match self.palette_left_x_px {
+            Some(palette_left) => palette_left - toggle_w_px - gap_px,
+            None => TOGGLE_X_HORIZONTAL_PX,
         };
         // Vertically center against the palette zone (same constant
         // `strip_palette_chip_instances` uses) so the toggle sits at
@@ -2287,12 +2307,11 @@ impl Gpu {
         out
     }
 
-    /// Vertical drag-handle dots painted on the sidebar's right
-    /// edge (the seam) so users can SEE where the drag zone is.
-    /// Three `⋮` glyphs (U+22EE) stacked vertically near the
-    /// vertical center of the body. Click-and-drag within the
-    /// rightmost cell column of the sidebar resizes — see
-    /// `App::handle_mouse_input`'s divider grab check.
+    /// Subtle vertical drag-handle painted on the sidebar's
+    /// right edge. Single `┃` glyph (U+2503, heavy vertical) at
+    /// the body's vertical midpoint, in the same cell column
+    /// that's the drag hot-zone. Mnml-style — visible but quiet,
+    /// not three stacked `⋮` dots that read as visual noise.
     fn sidebar_drag_handle_instances(&mut self) -> Vec<pipeline::Instance> {
         use crate::atlas::style_from_attrs;
         if !matches!(self.tab_layout, crate::config::TabLayout::Vertical)
@@ -2302,43 +2321,32 @@ impl Gpu {
         }
         let cell_w = self.atlas.cell_w;
         let cell_h = self.atlas.cell_h;
-        // Place the handle in the LAST cell column of the sidebar
-        // (right against the divider). That column IS the drag
-        // hot-zone, so the visual cue lands exactly where clicks
-        // arm a drag.
         let handle_x_px = self.inset_px + self.sidebar_w_px - cell_w;
         let base_col = (handle_x_px - self.inset_px - self.sidebar_w_px) / cell_w;
-        // Vertical center of the body region. body_top = inset_px
-        // + strip_h. body_bottom = config.height. Place three
-        // dots stacked around the midpoint.
         let body_top_px = self.inset_px + self.strip_h;
         let body_bottom_px = self.config.height as f32;
         let mid_py = (body_top_px + body_bottom_px) * 0.5;
         let inset_y_total = self.inset_px + self.strip_h;
-        // Three `⋮` glyphs (each already three vertical dots).
-        // Stacked top-to-bottom so the column has 9 dots total —
-        // a clear "drag me" hint without dominating the chrome.
-        const HANDLE_FG: [f32; 4] = [0.35, 0.37, 0.42, 1.0];
-        let mut out: Vec<pipeline::Instance> = Vec::with_capacity(3);
-        for offset in -1i32..=1i32 {
-            let glyph_top_px = mid_py + (offset as f32 - 0.5) * cell_h;
-            let base_y = (glyph_top_px - inset_y_total) / cell_h;
-            let g = self
-                .atlas
-                .glyph('\u{22EE}', style_from_attrs(0), &self.queue);
-            out.push(pipeline::Instance {
-                cell_pos: [base_col, base_y],
-                fg: HANDLE_FG,
-                bg: palette().clear_bg,
-                uv_min: g.uv_min,
-                uv_max: g.uv_max,
-                glyph_offset: g.offset,
-                glyph_size: g.size,
-                attrs: 0,
-                _pad: 0,
-            });
-        }
-        out
+        // Dim grey — a hair brighter than the divider line so the
+        // handle reads, but well below chrome accent so it
+        // doesn't dominate.
+        const HANDLE_FG: [f32; 4] = [0.30, 0.32, 0.36, 1.0];
+        let glyph_top_px = mid_py - cell_h * 0.5;
+        let base_y = (glyph_top_px - inset_y_total) / cell_h;
+        let g = self
+            .atlas
+            .glyph('\u{2503}', style_from_attrs(0), &self.queue);
+        vec![pipeline::Instance {
+            cell_pos: [base_col, base_y],
+            fg: HANDLE_FG,
+            bg: palette().clear_bg,
+            uv_min: g.uv_min,
+            uv_max: g.uv_max,
+            glyph_offset: g.offset,
+            glyph_size: g.size,
+            attrs: 0,
+            _pad: 0,
+        }]
     }
 
     fn resize(&mut self, w: u32, h: u32) -> Option<(u16, u16)> {
