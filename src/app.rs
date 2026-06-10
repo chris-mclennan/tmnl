@@ -4240,10 +4240,12 @@ impl App {
         //     shift active would push them off-screen and the user
         //     would have no way to dismiss them. 2026-06-09 user
         //     report: "select bottom and I can no longer do anything".
-        let any_overlay_open = self.settings.is_some()
-            || self.palette.is_some()
-            || self.welcome.is_some()
-            || self.help.is_some();
+        // Welcome is keyboard-only — it can coexist with
+        // bottom-prompt mode. Settings / palette / help are
+        // mouse-interactive and were unreachable with the prompt
+        // anchored at the body bottom, so they still suppress.
+        let any_overlay_open =
+            self.settings.is_some() || self.palette.is_some() || self.help.is_some();
         // Native panes (mnml / mixr) are full-screen TUIs that own
         // the entire grid — they're not a shell prompt at the
         // bottom of a scrollback. Bottom-prompt mode would shift
