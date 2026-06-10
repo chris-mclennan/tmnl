@@ -910,6 +910,21 @@ impl App {
     /// don't exist until the chip list does. SEV-2 chrome-hunt fix
     /// 2026-06-08 ("headless --app can't exercise chip clicks").
     pub(crate) fn compute_strip_chips(&self) -> Vec<(String, bool, bool)> {
+        self.compute_strip_chips_inner(true)
+    }
+
+    /// Variant used for sidebar-width computation only — produces
+    /// the same chip list but EXCLUDES the rename buffer label,
+    /// so the sidebar doesn't auto-grow as the user types into a
+    /// rename. Render path keeps using `compute_strip_chips` (with
+    /// the rename buffer); only the width math reads this.
+    /// 2026-06-10 user feedback: "when i right click a tab and
+    /// start typing the separator starts moving too soon".
+    pub(crate) fn compute_strip_chips_for_width(&self) -> Vec<(String, bool, bool)> {
+        self.compute_strip_chips_inner(false)
+    }
+
+    fn compute_strip_chips_inner(&self, include_rename: bool) -> Vec<(String, bool, bool)> {
         use std::collections::HashMap;
         let mut counts: HashMap<&str, usize> = HashMap::new();
         for t in &self.tabs {
@@ -924,7 +939,8 @@ impl App {
             .iter()
             .enumerate()
             .map(|(i, t)| {
-                if let Some((idx, buf)) = &rename
+                if include_rename
+                    && let Some((idx, buf)) = &rename
                     && *idx == i
                 {
                     return (format!("{buf}▏"), true, false);
@@ -949,6 +965,12 @@ impl App {
     /// have). No-op when the GPU isn't created yet (very-early-boot).
     pub(crate) fn refresh_strip_layout(&mut self) {
         let chips = self.compute_strip_chips();
+        // Width-only chip list — same as `chips` EXCEPT the rename
+        // buffer is excluded for the renaming tab. The sidebar
+        // sizes off the original label so it doesn't auto-grow as
+        // the user types. Render keeps using `chips` (with the
+        // rename buffer + caret) for the visible inline edit.
+        let chips_for_width = self.compute_strip_chips_for_width();
         let multi_tab = self.tabs.len() > 1;
         let active_is_native = self
             .tabs
@@ -982,7 +1004,7 @@ impl App {
                     } else {
                         self.sidebar_w_override
                             .map(|w| gpu.clamp_sidebar_w_px(w))
-                            .unwrap_or_else(|| gpu.compute_sidebar_w_px(&chips))
+                            .unwrap_or_else(|| gpu.compute_sidebar_w_px(&chips_for_width))
                     }
                 } else {
                     0.0
