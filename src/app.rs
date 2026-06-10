@@ -955,14 +955,22 @@ impl App {
                     && *idx == i
                 {
                     let chip = format!("{buf}▏");
-                    // Width path: use whichever of (chip, original
-                    // label) is longer, so the sidebar doesn't
-                    // shrink as the buffer starts empty but DOES
-                    // grow once it passes the original label width.
-                    let label = if rename_floor_to_label
-                        && chip.chars().count() < original_label.chars().count()
-                    {
-                        original_label
+                    let label = if rename_floor_to_label {
+                        // Width path: hold at the original label
+                        // until the rename buffer grows past
+                        // (original + grace), then grow at
+                        // chip-rate. Adds a few characters of
+                        // hysteresis so the separator doesn't
+                        // move on the very first overflow char.
+                        // 2026-06-10 user feedback (3rd pass).
+                        const HYSTERESIS_CELLS: usize = 4;
+                        let chip_chars = chip.chars().count();
+                        let original_chars = original_label.chars().count();
+                        if chip_chars <= original_chars + HYSTERESIS_CELLS {
+                            original_label
+                        } else {
+                            chip.chars().skip(HYSTERESIS_CELLS).collect()
+                        }
                     } else {
                         chip
                     };
