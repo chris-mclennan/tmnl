@@ -188,6 +188,7 @@ impl App {
             inset_px,
             cfg,
             altscreen_active: false,
+            prev_attention_count: 0,
             app_menu: None,
             settings: None,
             welcome: None,
@@ -1625,9 +1626,15 @@ impl App {
                 // sticks until the user actually focuses the tab. OSC
                 // 1337 also means "Claude finished", so drop the sticky
                 // status cache — next tick the OSC title takes over.
+                //
+                // `cfg.bell_notify` is the opt-out: when `false`, we
+                // still drain the flag (so it doesn't leak across
+                // ticks) but don't surface it as attention. OSC 1337
+                // is the explicit signal — bell is the "implicit BEL"
+                // signal that some users may want quieter.
                 let is_focused_active = i == active_idx && pi == focused;
                 if let PaneKind::Shell { session: Some(s) } = &pane.kind {
-                    let new_attn = s.take_attention();
+                    let new_attn = s.take_attention(self.cfg.bell_notify);
                     if new_attn {
                         pane.last_status = None;
                     }
@@ -1664,6 +1671,32 @@ impl App {
         // helper (notably ignored `sidebar_w_override`, which the
         // helper consults). One source of truth now.
         self.refresh_strip_layout();
+
+        // Attention notification pipeline. Chip dot is set above
+        // and ALWAYS happens — the user wanted "just the tab"
+        // as the mandatory surface. Dock badge + chime are opt-in.
+        // Both compare against `prev_attention_count`:
+        //   * Dock badge: only re-write when count changes (Cocoa
+        //     setBadgeLabel is cheap but not a no-op).
+        //   * Chime: only ring on a rising edge — `prev < now` —
+        //     so a sticky dot doesn't ring on every tick.
+        let attn_count = self
+            .tabs
+            .iter()
+            .filter(|t| t.panes.iter().any(|p| p.attention))
+            .count();
+        if self.cfg.dock_badge && attn_count != self.prev_attention_count {
+            let label = if attn_count == 0 {
+                None
+            } else {
+                Some(attn_count.to_string())
+            };
+            crate::notify::set_dock_badge(label.as_deref());
+        }
+        if self.cfg.chime && attn_count > self.prev_attention_count {
+            crate::notify::play_chime();
+        }
+        self.prev_attention_count = attn_count;
 
         // Shell mode only: auto-switch the inset when a full-screen TUI
         // takes the alt-screen (edge-to-edge), and back on exit.

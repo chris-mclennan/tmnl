@@ -90,6 +90,27 @@ pub struct Config {
     /// shell tab without surfacing the recents picker.
     #[serde(default = "default_show_welcome")]
     pub show_welcome: bool,
+    /// Treat a `BEL` (0x07) in a shell pane's pty output as an
+    /// attention signal. Default `true` — Claude Code, npm, make
+    /// all emit BEL on completion, and the chip dot is the
+    /// minimum-noise way to surface it. Set to `false` to ignore
+    /// shell bells entirely (OSC 1337 still fires either way).
+    #[serde(default = "default_bell_notify")]
+    pub bell_notify: bool,
+    /// Show a red badge on the macOS Dock icon counting unattended
+    /// tabs. Default `false` (opt-in). The chip dot alone is the
+    /// default surface; this is for users who want a glanceable
+    /// "N tabs need attention" from outside the app.
+    #[serde(default)]
+    pub dock_badge: bool,
+    /// Play `/System/Library/Sounds/Pop.aiff` when an unfocused
+    /// tab gets a new attention signal. Default `false` (opt-in).
+    #[serde(default)]
+    pub chime: bool,
+}
+
+fn default_bell_notify() -> bool {
+    true
 }
 
 fn default_show_welcome() -> bool {
@@ -180,6 +201,9 @@ impl Default for Config {
             launcher_position: LauncherPosition::Left,
             prompt_position: PromptPosition::Natural,
             show_welcome: true,
+            bell_notify: true,
+            dock_badge: false,
+            chime: false,
         }
     }
 }
@@ -272,6 +296,9 @@ mod tests {
             launcher_position: LauncherPosition::Left,
             prompt_position: PromptPosition::Natural,
             show_welcome: true,
+            bell_notify: true,
+            dock_badge: false,
+            chime: false,
         }
     }
 

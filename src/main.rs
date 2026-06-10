@@ -11,6 +11,7 @@ mod keymap;
 mod launcher;
 mod layout;
 mod menu;
+mod notify;
 mod osc133;
 mod palette;
 mod pipeline;
@@ -394,6 +395,12 @@ struct App {
     /// goes edge-to-edge) without the user having to flip anything in
     /// Settings.
     altscreen_active: bool,
+    /// Last tick's count of tabs with at least one pane needing
+    /// attention. Used by the notification pipeline to:
+    ///   * skip Dock-badge writes when the count is unchanged,
+    ///   * play the opt-in chime only on a rising edge (new
+    ///     attention) — not on every tick the chip dot is up.
+    prev_attention_count: usize,
     /// Native macOS menu bar — built once at startup and kept alive for
     /// the process. `None` until `resumed` runs (winit needs `NSApp` up
     /// first). Some platforms ignore this; macOS is the target.
@@ -3809,6 +3816,7 @@ fn main() {
         inset_px,
         cfg,
         altscreen_active: false,
+        prev_attention_count: 0,
         app_menu: None,
         settings: None,
         welcome: None,

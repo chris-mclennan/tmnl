@@ -25,15 +25,29 @@ const ATTR_UNDERLINE: u32 = 1 << 3;
 
 /// vt100 0.16 delivers the OSC window title through a [`vt100::Callbacks`]
 /// implementation rather than storing it on `Screen`. This sink keeps
-/// the latest title so `ShellSession::osc_title` can read it back.
+/// the latest title so `ShellSession::osc_title` can read it back. It
+/// also catches BEL (0x07) — when the child writes a bare bell byte,
+/// vt100 fires `audible_bell`; we flip the shared
+/// `attention_requested` flag so the chip dot + Dock badge surface it
+/// without having to byte-scan the stream separately.
 #[derive(Default)]
 struct TitleSink {
     title: String,
+    /// `Some` when the parent `ShellSession` opted into bell-as-
+    /// attention. Shares an `Arc<AtomicBool>` with the session so
+    /// the next `take_attention()` call drains it.
+    bell_attention: Option<Arc<AtomicBool>>,
 }
 
 impl vt100::Callbacks for TitleSink {
     fn set_window_title(&mut self, _: &mut vt100::Screen, title: &[u8]) {
         self.title = String::from_utf8_lossy(title).into_owned();
+    }
+
+    fn audible_bell(&mut self, _: &mut vt100::Screen) {
+        if let Some(a) = &self.bell_attention {
+            a.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 }
 
@@ -67,8 +81,14 @@ pub struct ShellSession {
     /// Set by the reader thread when an OSC 1337 sequence is seen in
     /// the pty stream (iTerm2 convention for "process needs attention").
     /// Claude Code emits this when a turn finishes and it's waiting on
-    /// the user. `take_attention()` reads + clears.
+    /// the user. `take_attention()` reads + clears (also OR'd with
+    /// `bell_attention` when the caller opts into bell-as-attention).
     attention_requested: Arc<AtomicBool>,
+    /// Set by `TitleSink::audible_bell` when the child writes a BEL
+    /// (0x07) outside an OSC sequence. Separate from
+    /// `attention_requested` so `cfg.bell_notify` can gate this
+    /// without also killing OSC 1337 reactions.
+    bell_attention: Arc<AtomicBool>,
     /// Basename of the shell we launched (`zsh` / `bash` / `fish` / …)
     /// — used as the tab label fallback when no OSC title has been set
     /// by anything running in the shell. Matches Terminal.app / iTerm2
@@ -153,11 +173,14 @@ impl ShellSession {
             .map_err(|e| format!("spawn {command}: {e}"))?;
         drop(pair.slave);
 
+        let attention_requested = Arc::new(AtomicBool::new(false));
+        let bell_attention = Arc::new(AtomicBool::new(false));
+        let title_sink = TitleSink {
+            title: String::new(),
+            bell_attention: Some(Arc::clone(&bell_attention)),
+        };
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
-            rows,
-            cols,
-            SCROLLBACK,
-            TitleSink::default(),
+            rows, cols, SCROLLBACK, title_sink,
         )));
         let exited = Arc::new(Mutex::new(false));
         let bytes_seen = Arc::new(AtomicU64::new(0));
@@ -166,7 +189,6 @@ impl ShellSession {
             .master
             .try_clone_reader()
             .map_err(|e| format!("clone pty reader: {e}"))?;
-        let attention_requested = Arc::new(AtomicBool::new(false));
         let integration = Arc::new(Mutex::new(osc133::State::default()));
         let reader = spawn_reader_thread(
             reader_handle,
@@ -210,6 +232,7 @@ impl ShellSession {
             default_bg,
             default_fg,
             attention_requested,
+            bell_attention,
             integration,
             scroll_dirty: false,
             shell_name: label,
@@ -266,11 +289,14 @@ impl ShellSession {
             .map_err(|e| format!("spawn {shell}: {e}"))?;
         drop(pair.slave);
 
+        let attention_requested = Arc::new(AtomicBool::new(false));
+        let bell_attention = Arc::new(AtomicBool::new(false));
+        let title_sink = TitleSink {
+            title: String::new(),
+            bell_attention: Some(Arc::clone(&bell_attention)),
+        };
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
-            rows,
-            cols,
-            SCROLLBACK,
-            TitleSink::default(),
+            rows, cols, SCROLLBACK, title_sink,
         )));
         let exited = Arc::new(Mutex::new(false));
         let bytes_seen = Arc::new(AtomicU64::new(0));
@@ -279,7 +305,6 @@ impl ShellSession {
             .master
             .try_clone_reader()
             .map_err(|e| format!("clone pty reader: {e}"))?;
-        let attention_requested = Arc::new(AtomicBool::new(false));
         let integration = Arc::new(Mutex::new(osc133::State::default()));
         let reader = spawn_reader_thread(
             reader_handle,
@@ -311,6 +336,7 @@ impl ShellSession {
             default_bg,
             default_fg,
             attention_requested,
+            bell_attention,
             integration,
             scroll_dirty: false,
             shell_name,
@@ -359,15 +385,17 @@ impl ShellSession {
             .try_clone()
             .map_err(|e| format!("clone adopted fd for writer: {e}"))?;
 
+        let attention_requested = Arc::new(AtomicBool::new(false));
+        let bell_attention = Arc::new(AtomicBool::new(false));
+        let title_sink = TitleSink {
+            title: String::new(),
+            bell_attention: Some(Arc::clone(&bell_attention)),
+        };
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
-            rows,
-            cols,
-            SCROLLBACK,
-            TitleSink::default(),
+            rows, cols, SCROLLBACK, title_sink,
         )));
         let exited = Arc::new(Mutex::new(false));
         let bytes_seen = Arc::new(AtomicU64::new(0));
-        let attention_requested = Arc::new(AtomicBool::new(false));
         let integration = Arc::new(Mutex::new(osc133::State::default()));
 
         let reader = spawn_reader_thread(
@@ -394,6 +422,7 @@ impl ShellSession {
             default_bg,
             default_fg,
             attention_requested,
+            bell_attention,
             integration,
             scroll_dirty: false,
             shell_name: label.to_string(),
@@ -616,12 +645,16 @@ fn poll_child_proc(parent_pid: u32, shell_name: &str) -> Option<String> {
 }
 
 impl ShellSession {
-    /// Read + clear the OSC 1337 attention flag. Returns `true` if
-    /// the shell emitted an attention-request since the last call —
-    /// app uses this to badge background tabs with a notification
-    /// indicator. Claude Code triggers this when waiting on input.
-    pub fn take_attention(&self) -> bool {
-        self.attention_requested.swap(false, Ordering::Relaxed)
+    /// Read + clear the attention flags. Returns `true` if the
+    /// shell emitted an attention-request since the last call.
+    /// `include_bell` controls whether a bare BEL counts as one
+    /// (gated by `cfg.bell_notify`); OSC 1337 always counts.
+    /// Both flags are always drained so they don't accumulate
+    /// across ticks when `include_bell` is `false`.
+    pub fn take_attention(&self, include_bell: bool) -> bool {
+        let osc = self.attention_requested.swap(false, Ordering::Relaxed);
+        let bell = self.bell_attention.swap(false, Ordering::Relaxed);
+        osc || (include_bell && bell)
     }
 
     pub fn resize(&mut self, rows: u16, cols: u16) {
