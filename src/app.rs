@@ -1058,21 +1058,30 @@ impl App {
                     | crate::config::LauncherPosition::Bottom => 0.0,
                 }
             };
-            let launcher_in_top_strip = !active_is_native
-                && matches!(
-                    self.cfg.launcher_position,
-                    crate::config::LauncherPosition::Top
-                );
             // Launcher Bottom + Prompt Bottom would stack two
             // separate rows of chrome at the bottom edge — the
-            // launcher row paints OVER the shell prompt. Suppress
-            // the launcher row when the prompt already lives at
-            // the bottom; integrating the icons INTO the prompt
-            // chrome is a follow-up. User feedback 2026-06-10.
+            // launcher row would paint OVER the shell prompt.
+            // 2026-06-10 mouse tester finding: previously this
+            // suppressed the launcher silently, so users who set
+            // both to `bottom` (the default) got no launcher rail
+            // at all. Now we auto-promote to `top` instead — the
+            // launcher stays visible, the user's "bottom is
+            // occupied" implicit preference is respected.
             let prompt_at_bottom = matches!(
                 self.cfg.prompt_position,
                 crate::config::PromptPosition::Bottom
             );
+            let launcher_top_requested = matches!(
+                self.cfg.launcher_position,
+                crate::config::LauncherPosition::Top
+            );
+            let launcher_bottom_displaced = prompt_at_bottom
+                && matches!(
+                    self.cfg.launcher_position,
+                    crate::config::LauncherPosition::Bottom
+                );
+            let launcher_in_top_strip =
+                !active_is_native && (launcher_top_requested || launcher_bottom_displaced);
             let launcher_in_bottom = !active_is_native
                 && !prompt_at_bottom
                 && matches!(
@@ -2500,6 +2509,16 @@ impl App {
                 true
             }
             Key::Character(s) => {
+                // 2026-06-10 hybrid + keyboard tester finding:
+                // `cmd+t` / `cmd+w` / `cmd+,` while palette is open
+                // landed as literal "t" / "w" / "," in the filter
+                // text. Same shape as the 2026-06-09 fix on
+                // `find_handle_key` / `tab_search_handle_key`. Skip
+                // when a command-level modifier is held so the
+                // chord registry gets a turn next.
+                if self.mods.super_key() || self.mods.control_key() || self.mods.alt_key() {
+                    return false;
+                }
                 for c in s.chars() {
                     st.insert_char(c);
                 }
@@ -2591,8 +2610,14 @@ impl App {
                 true
             }
             // `r` — reset focused row (family convention). `⌫` above is
-            // kept as an alias for muscle memory.
-            Key::Character(s) if s.as_str() == "r" => {
+            // kept as an alias for muscle memory. Modifier-bare so a
+            // `cmd+r` chord (recents) isn't eaten here.
+            Key::Character(s)
+                if s.as_str() == "r"
+                    && !self.mods.super_key()
+                    && !self.mods.control_key()
+                    && !self.mods.alt_key() =>
+            {
                 st.reset_row();
                 let edited = st.cfg.clone();
                 self.cfg = edited.clone();
@@ -2600,12 +2625,25 @@ impl App {
                 true
             }
             // `R` (shift+r) — reset all.
-            Key::Character(s) if s.as_str() == "R" => {
+            Key::Character(s)
+                if s.as_str() == "R"
+                    && !self.mods.super_key()
+                    && !self.mods.control_key()
+                    && !self.mods.alt_key() =>
+            {
                 st.reset_all();
                 let edited = st.cfg.clone();
                 self.cfg = edited.clone();
                 self.apply_inset_from_cfg(&edited);
                 true
+            }
+            // Modified chords (cmd+r, cmd+w, cmd+,, ...) — let the
+            // command registry handle them so settings can be
+            // dismissed via `cmd+,` / recents via `cmd+r` / etc.
+            Key::Character(_)
+                if self.mods.super_key() || self.mods.control_key() || self.mods.alt_key() =>
+            {
+                false
             }
             // Every other key gets eaten so it doesn't reach the shell
             // / native target underneath.
@@ -2932,12 +2970,13 @@ impl App {
                 true
             }
             Key::Named(NamedKey::Enter) => {
-                // 2026-06-10: previously did `tab_search.take()`,
-                // which cleared the query and the user lost their
-                // search text on Enter. Now switch to the first
-                // matching tab but KEEP the query visible — the
-                // user dismisses with Esc when they're done.
-                if let Some(q) = self.tab_search.clone()
+                // 2026-06-10 keyboard tester finding: keeping
+                // tab_search non-None after Enter trapped every
+                // subsequent ⌘-chord (no_modal_open thought a
+                // modal was still up) with zero visual cue. Clear
+                // on Enter — the user can re-open with ⌘⇧T if they
+                // want to refine.
+                if let Some(q) = self.tab_search.take()
                     && !q.is_empty()
                 {
                     let q_lower = q.to_lowercase();
@@ -3570,10 +3609,17 @@ impl App {
         // sits inside the chrome region (left edge) and clicks
         // here should fire the launcher specifically rather than
         // fall through to any tab-chip hit-test.
+        //
+        // 2026-06-10 hybrid tester finding: the previous
+        // `gpu.launcher_w_px > 0.0` gate only matched the LEFT-rail
+        // variant — `top` + `bottom` layouts paint icons but had
+        // `launcher_w_px == 0`, so their hit-rects were visible-
+        // but-dead. Drop the gate; the hit-rect lookup itself
+        // returns `None` when the list is empty (i.e. when no
+        // layout populated rects this frame).
         if pressed
             && button == MouseButton::Left
             && let Some(gpu) = &self.gpu
-            && gpu.launcher_w_px > 0.0
         {
             let (px, py) = self.cursor_px;
             let hit = gpu
@@ -4013,6 +4059,23 @@ impl App {
                 }
                 if self.find.is_some() {
                     self.find = None;
+                    if let Some(w) = &self.window {
+                        w.request_redraw();
+                    }
+                }
+                // 2026-06-10 hybrid + mouse tester finding: dismiss
+                // palette + help on body click for parity with the
+                // tab_search / find dismiss above. Settings is left
+                // alone — clicking outside should not silently
+                // discard unsaved row edits.
+                if self.palette.is_some() {
+                    self.palette = None;
+                    if let Some(w) = &self.window {
+                        w.request_redraw();
+                    }
+                }
+                if self.help.is_some() {
+                    self.help = None;
                     if let Some(w) = &self.window {
                         w.request_redraw();
                     }

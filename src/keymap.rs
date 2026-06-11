@@ -200,6 +200,22 @@ fn key_token(token: &str) -> Option<ChordKey> {
         "end" => ChordKey::Named(NamedKey::End),
         "pageup" | "pgup" => ChordKey::Named(NamedKey::PageUp),
         "pagedown" | "pgdn" | "pgdown" => ChordKey::Named(NamedKey::PageDown),
+        // Function keys — `command.rs` declares `F1` as a palette
+        // alias and may declare more in the future. Without these
+        // arms `parse_key_spec("f1")` returned None and the chord
+        // was silently dropped at `Keymap::build` time.
+        "f1" => ChordKey::Named(NamedKey::F1),
+        "f2" => ChordKey::Named(NamedKey::F2),
+        "f3" => ChordKey::Named(NamedKey::F3),
+        "f4" => ChordKey::Named(NamedKey::F4),
+        "f5" => ChordKey::Named(NamedKey::F5),
+        "f6" => ChordKey::Named(NamedKey::F6),
+        "f7" => ChordKey::Named(NamedKey::F7),
+        "f8" => ChordKey::Named(NamedKey::F8),
+        "f9" => ChordKey::Named(NamedKey::F9),
+        "f10" => ChordKey::Named(NamedKey::F10),
+        "f11" => ChordKey::Named(NamedKey::F11),
+        "f12" => ChordKey::Named(NamedKey::F12),
         _ => {
             let mut chars = token.chars();
             let c = chars.next()?;

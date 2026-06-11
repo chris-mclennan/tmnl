@@ -1,6 +1,6 @@
 [package]
 name = "tmnl-rs"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 rust-version = "1.85"
 description = "A GPU-rendered terminal for macOS — and a structured-cell display surface that apps can draw to directly."

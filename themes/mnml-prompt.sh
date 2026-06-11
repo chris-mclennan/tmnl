@@ -78,6 +78,7 @@ _mnml_reset="${_mnml_lb}"$'\033[0m'"${_mnml_rb}"
 # Powerline + nerd-font glyphs.
 _mnml_sep=$''      #  — right-pointing solid arrow (segment end)
 _mnml_sep_r=$''    #  — left-pointing solid arrow (right-side seg)
+_mnml_sep_l=$''    #  — same glyph; opens the right cluster at its left edge
 _mnml_branch=$''   #  — branch
 _mnml_arrow='❯'
 
@@ -234,27 +235,32 @@ _mnml_build_left() {
 }
 
 _mnml_build_right() {
-    # mnml-statusline-style: a single grey "info" chip on the
-    # left (now-playing · attention · clock), then a blue left-
-    # pointing powerline arrow into a blue context pill. Reads
-    # as a mirror of the left-side cwd → branch chips. Matches
-    # the look in mnml's right statusline (image #52 reference).
+    # mnml-statusline-style: a grey left-pointing powerline arrow
+    # leading into a single grey "info" chip (now-playing · attention
+    # · clock), then a blue right-pointing powerline arrow into a
+    # blue context pill. Reads as a mirror of the left-side cwd →
+    # branch chips. Matches mnml's right statusline.
     local out=""
+    # ─── grey LEFT chevron — opens the right cluster ────────
+    out+="$(_mnml_fg "$MNML_PROMPT_CHIP_BG")${_mnml_sep_l}${_mnml_reset}"
     # ─── grey info chip ─────────────────────────────────────
-    local info=""
+    # Now-playing slot: when mixr is actively playing, show the
+    # track. Otherwise fall back to the literal `mixr` app name so
+    # the chip's shape stays consistent.
+    local info="♪ "
     local np
     np=$(_mnml_seg_now_playing)
     if [ -n "$np" ]; then
-        info+="♪ ${np}"
+        info+="${np}"
+    else
+        info+="mixr"
     fi
     local at
     at=$(_mnml_seg_attention)
     if [ -n "$at" ]; then
-        [ -n "$info" ] && info+="  "
-        info+="● ${at}"
+        info+="  ● ${at}"
     fi
-    [ -n "$info" ] && info+="  "
-    info+="$(date +%H:%M)"
+    info+="  $(date +%H:%M)"
     # Paint the grey chip — dark-grey bg, dim grey fg.
     out+="$(_mnml_bg "$MNML_PROMPT_CHIP_BG")$(_mnml_fg "$MNML_PROMPT_GREY") ${info} ${_mnml_reset}"
     # ─── blue powerline arrow → blue context pill ──────────
